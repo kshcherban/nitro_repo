@@ -16,7 +16,8 @@ client with read access can fetch the artifacts directly.
 ## Proxy Mode
 
 - Switch the repository configuration to **Proxy** and add one or more upstream URLs (for example
-  `https://pypi.org/simple`).
+  `https://pypi.org`). Nitro Repo appends the request path automatically, so you do not need the
+  `/simple` suffix in the upstream.
 - Nitro Repo will fetch packages on demand. Binary artifacts are cached locally on first request;
   directory-style HTML responses are streamed directly from upstream.
 - If the repository is private, readers still need permission—Nitro Repo only reaches out to the
@@ -45,7 +46,7 @@ uv pip install https://<host>/repositories/<storage>/<repo>/<package>/<version>/
 ```
  (replace <filename> with the actual wheel or sdist you uploaded.)
 
-3. Proxy download – flip the repo to Proxy mode with an upstream such as https://pypi.org/simple, then:
+3. Proxy download – flip the repo to Proxy mode with an upstream such as https://pypi.org, then:
 
 ```
 uv pip install --index-url https://<host>/repositories/<storage>/<repo>/simple <package>

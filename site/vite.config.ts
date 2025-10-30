@@ -1,25 +1,29 @@
 import { fileURLToPath, URL } from "node:url";
 
-import { defineConfig } from "vite";
+import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import vueJsx from "@vitejs/plugin-vue-jsx";
-import vueDevTools from "vite-plugin-vue-devtools";
+import fs from "fs";
 import browserslistToEsbuild from "browserslist-to-esbuild";
 import { ViteEjsPlugin } from "vite-plugin-ejs";
-import fs from "fs";
-// https://vitejs.dev/config/
-export default defineConfig({
-  build: {
-    target: browserslistToEsbuild(undefined, {
-      path: ".browserlistrc",
-    }),
-  },
-  plugins: [
+
+const enableDevTools =
+  process.env.NODE_ENV !== "production" &&
+  process.env.VITE_DEVTOOLS !== "false";
+
+export default defineConfig(async (_env): Promise<UserConfig> => {
+  const plugins: PluginOption[] = [
     vue(),
     vueJsx(),
     ViteEjsPlugin(),
-    vueDevTools(),
-    {
+  ];
+
+  if (enableDevTools) {
+    const { default: vueDevTools } = await import("vite-plugin-vue-devtools");
+    plugins.push(vueDevTools());
+  }
+
+  plugins.push({
       name: "copy-routes",
       apply: "build",
 
@@ -37,19 +41,27 @@ export default defineConfig({
           },
         );
       },
+    });
+
+  return {
+    build: {
+      target: browserslistToEsbuild(undefined, {
+        path: ".browserlistrc",
+      }),
     },
-  ],
-  css: {
-    preprocessorOptions: {
-      scss: {
-        api: "modern-compiler",
+    plugins,
+    css: {
+      preprocessorOptions: {
+        scss: {
+          api: "modern-compiler",
+        },
+      },
+      devSourcemap: true,
+    },
+    resolve: {
+      alias: {
+        "@": fileURLToPath(new URL("./src", import.meta.url)),
       },
     },
-    devSourcemap: true,
-  },
-  resolve: {
-    alias: {
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
-    },
-  },
+  };
 });

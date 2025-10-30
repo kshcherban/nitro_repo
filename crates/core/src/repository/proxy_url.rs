@@ -58,13 +58,45 @@ impl ProxyURL {
     /// Creates a URL from a proxyURL and a path
     #[instrument]
     pub fn add_storage_path(&self, path: StoragePath) -> Result<Url, url::ParseError> {
-        let mut path = path.to_string();
-        if path.starts_with("/") {
-            path = path[1..].to_string();
+        let mut url = Url::parse(&self.0)?;
+        let base_segments: Vec<String> = url
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut extra_segments: Vec<String> = path
+            .into_iter()
+            .map(|segment| segment.to_string())
+            .collect();
+
+        if let (Some(last_base), Some(first_extra)) =
+            (base_segments.last(), extra_segments.first_mut())
+        {
+            if last_base == first_extra {
+                extra_segments.remove(0);
+            }
         }
-        let raw_url = format!("{}/{}", self.0, path);
-        trace!(url = %raw_url, "Creating URL");
-        let url = Url::parse(&format!("{}/{}", self.0, path))?;
+
+        if !extra_segments.is_empty() {
+            let mut segments_mut = url
+                .path_segments_mut()
+                .map_err(|_| url::ParseError::RelativeUrlWithoutBase)?;
+            for segment in &extra_segments {
+                segments_mut.push(segment);
+            }
+            drop(segments_mut);
+        }
+
+        if let Some(query) = url.query() {
+            trace!(url = %url, ?query, "Creating URL with query");
+        } else {
+            trace!(url = %url, "Creating URL");
+        }
         Ok(url)
     }
 }

@@ -2,7 +2,7 @@
 ############################
 # Frontend build stage
 ############################
-FROM node:20-bookworm AS frontend-builder
+FROM node:25-trixie AS frontend-builder
 WORKDIR /app/site
 
 COPY site/package*.json ./
@@ -34,12 +34,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target/release/build \
     --mount=type=cache,target=/app/target/release/deps \
     --mount=type=cache,target=/app/target/release/incremental \
+    --mount=type=cache,target=/app/target/release/.fingerprint \
     cargo build --release --features frontend
 
 ############################
 # Runtime stage
 ############################
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \

@@ -13,7 +13,7 @@
         :key="index"
         class="route-row"
       >
-        <TextInput v-model="route.url" required placeholder="https://pypi.org/simple"
+        <TextInput v-model="route.url" required placeholder="https://pypi.org"
           >Upstream URL</TextInput
         >
         <TextInput v-model="route.name" placeholder="Optional label">Display Name</TextInput>

@@ -3,6 +3,7 @@
     <TabsElement>
       <template #header>
         <TabElement id="main"> Main </TabElement>
+        <TabElement id="packages" v-if="showPackagesTab"> Packages </TabElement>
         <TabElement
           :id="configType"
           v-for="configType in configTypes"
@@ -13,6 +14,9 @@
       <template #content>
         <TabContent tabId="main">
           <BasicRepositoryInfo :repository="repository" />
+        </TabContent>
+        <TabContent v-if="showPackagesTab" tabId="packages">
+          <RepositoryPackagesTab :repositoryId="repositoryId" />
         </TabContent>
         <TabContent
           class="tab-content"
@@ -31,6 +35,7 @@
 <script setup lang="ts">
 import BasicRepositoryInfo from "@/components/admin/repository/BasicRepositoryInfo.vue";
 import FallBackEditor from "@/components/admin/repository/configs/FallBackEditor.vue";
+import RepositoryPackagesTab from "@/components/admin/repository/RepositoryPackagesTab.vue";
 import TabContent from "@/components/core/tabs/TabContent.vue";
 import TabElement from "@/components/core/tabs/TabElement.vue";
 import TabsElement from "@/components/core/tabs/TabsElement.vue";
@@ -49,6 +54,7 @@ const repositoryId = router.currentRoute.value.params.id as string;
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
 const configDescriptions = ref<Map<string, ConfigDescription>>(new Map());
 const configTypes = ref<string[]>([]);
+const showPackagesTab = computed(() => repository.value?.repository_type === "python");
 function getConfigTitleOrFallback(config: string) {
   return configDescriptions.value.get(config)?.name || config;
 }
