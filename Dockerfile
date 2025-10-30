@@ -1,36 +1,51 @@
-# Build Frontend
-FROM node:22-bookworm-slim AS frontend
-COPY ./site /home/frontend
-WORKDIR /home/frontend
+############################
+# Frontend build stage
+############################
+FROM node:20-bookworm AS frontend-builder
+WORKDIR /app/site
+
+COPY site/package*.json ./
 RUN npm install
+COPY site .
 RUN npm run build
-RUN echo $(ls -1 /home/frontend/dist)
-FROM rust:latest AS build
 
-COPY . /home/build
-WORKDIR /home/build
-COPY --from=frontend /home/frontend/dist /home/build/site-dist
-ENV FRONTEND_DIST=/home/build/site-dist/
+############################
+# Rust build stage
+############################
+FROM rust:1.78-bookworm AS rust-builder
+WORKDIR /app
 
-# Build Backend
-WORKDIR /home/build/
-RUN  cargo build --release --features frontend
-# Make sure the frontend got imported correctly
-RUN /home/build/target/release/nitro_repo validate-frontend
-LABEL org.label-schema.name="nitro_repo" \
-    org.label-schema.vendor="wyatt-herkamp" \
-    org.label-schema.schema-version="2.0-BETA" \
-    org.label-schema.url="https://nitro-repo.kingtux.dev/" \
-    org.label-schema.description="An open source artifact manager. Written in Rust back end and an Vue front end to create a fast and modern experience"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# The Final Image
-FROM debian:trixie-slim
+COPY Cargo.lock Cargo.toml ./
+COPY crates crates
+COPY nitro_repo nitro_repo
+COPY docs docs
+COPY site site
+COPY --from=frontend-builder /app/site/dist ./site/dist
 
-RUN apt-get update -y && apt-get -y install libssl-dev openssl
-RUN mkdir -p /opt/nitro-repo
-RUN mkdir -p /app
-COPY --from=build /home/build/target/release/nitro_repo /app/nitro-repo
-COPY --from=build /home/build/entrypoint.sh /app/entrypoint.sh
-WORKDIR /opt/nitro-repo
-ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]
+ENV FRONTEND_DIST=/app/site/dist
+
+RUN cargo build --release --features frontend
+
+############################
+# Runtime stage
+############################
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=rust-builder /app/target/release/nitro_repo ./nitro_repo
+
+EXPOSE 6742
+VOLUME ["/data"]
+
+ENV RUST_LOG=info
+
+ENTRYPOINT ["./nitro_repo"]
 CMD []

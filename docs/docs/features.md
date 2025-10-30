@@ -5,6 +5,8 @@
 |--|--|--|--| -- |
 | Maven | Yes | Yes | Yes | Yes |
 | NPM |  Yes | Yes | Yes | No |
+| Python | Yes | No | Yes | No |
+| PHP (Composer) | Yes | No | Yes | No |
 | NuGet | [Coming Soon](https://github.com/wherkamp/nitro_repo/issues/191) | Yes | Yes | No |
 | Cargo | [Coming Soon](https://github.com/wherkamp/nitro_repo/issues/6) | no | no | No |
 | APT | [Coming Soon](https://github.com/wherkamp/nitro_repo/issues/192) | no | Yes | No |

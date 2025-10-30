@@ -7,6 +7,11 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::database::entities::project::ProjectIds;
+
+pub mod php;
+pub use php::PhpPackageMetadata;
+pub mod python;
+pub use python::PythonPackageMetadata;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 pub struct ProjectResolution {
     pub project_id: Option<Uuid>,

@@ -30,6 +30,8 @@ pub use repo_http::*;
 pub mod commands;
 pub mod maven;
 pub mod npm;
+pub mod php;
+pub mod python;
 mod repo_type;
 pub use repo_type::*;
 use uuid::Uuid;
@@ -157,4 +159,6 @@ pub trait Repository: Send + Sync + Clone + Debug {
 pub enum DynRepository {
     Maven(maven::MavenRepository),
     NPM(npm::NPMRegistry),
+    Python(python::PythonRepository),
+    Php(php::PhpRepository),
 }

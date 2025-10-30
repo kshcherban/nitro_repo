@@ -6,7 +6,8 @@
 Please use one of the following options for your build
 1. Latest [Release](https://github.com/wherkamp/nitro_repo/releases) on Github
 2. Latest [Build](https://github.com/wherkamp/nitro_repo/actions/workflows/push.yml) on Github
-3. Build yourself. Instructions are [here](https://nitro-repo.kingtux.dev/compiling.html)
+3. Build yourself. Instructions are [here](https://nitro-repo.kingtux.dev/compiling.html).  
+   **Linux build prerequisites:** install `pkg-config` and the OpenSSL development headers (`libssl-dev` on Debian/Ubuntu, `openssl-devel` on Fedora/RHEL) before running `cargo build`.
 
 ## Setup
 1. Decompress the build inside your install directory. I use `/opt/nitro_repo`. Using the command `tar -xf nitro_repo.tar.gz` Note: You might have to decompress the zip for Github Latest Builds

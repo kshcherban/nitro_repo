@@ -8,56 +8,64 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(tag = "type", content = "config")]
-pub enum NPMRegistryConfig {
+pub enum PythonRepositoryConfig {
     #[default]
     Hosted,
-    Proxy(NpmProxyConfig),
+    Proxy(PythonProxyConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
-pub struct NpmProxyConfig {
+pub struct PythonProxyConfig {
     #[serde(default)]
-    pub routes: Vec<NpmProxyRoute>,
+    pub routes: Vec<PythonProxyRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct NpmProxyRoute {
+pub struct PythonProxyRoute {
     pub url: ProxyURL,
     #[serde(default)]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct NPMRegistryConfigType;
-impl RepositoryConfigType for NPMRegistryConfigType {
+pub struct PythonRepositoryConfigType;
+
+impl RepositoryConfigType for PythonRepositoryConfigType {
     fn get_type(&self) -> &'static str {
-        "npm"
+        "python"
     }
 
     fn get_type_static() -> &'static str
     where
         Self: Sized,
     {
-        "npm"
+        "python"
     }
+
     fn schema(&self) -> Option<schemars::Schema> {
-        Some(schema_for!(NPMRegistryConfig))
+        Some(schema_for!(PythonRepositoryConfig))
     }
+
     fn validate_config(&self, config: Value) -> Result<(), RepositoryConfigError> {
-        serde_json::from_value::<NPMRegistryConfig>(config)?;
+        serde_json::from_value::<PythonRepositoryConfig>(config)?;
         Ok(())
     }
+
     fn validate_change(&self, _old: Value, new: Value) -> Result<(), RepositoryConfigError> {
         self.validate_config(new)
     }
+
     fn default(&self) -> Result<Value, RepositoryConfigError> {
-        Ok(serde_json::to_value(NPMRegistryConfig::Hosted)?)
+        Ok(serde_json::to_value(PythonRepositoryConfig::Hosted)?)
     }
+
     fn get_description(&self) -> ConfigDescription {
         ConfigDescription {
-            name: "NPM Registry Config",
-            description: Some("Handles the type of NPM Registry"),
-            documentation_link: None,
+            name: "Python Repository Config",
+            description: Some("Handles the type of Python repository."),
+            documentation_link: Some(
+                "https://nitro-repo.kingtux.dev/repositoryTypes/python/configs/",
+            ),
             ..Default::default()
         }
     }

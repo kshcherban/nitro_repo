@@ -1,0 +1,38 @@
+# Nitro Repo Architecture Overview
+
+Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite front end.
+
+## Crate Layout
+- `nitro_repo/`: main binary crate. Hosts HTTP server (Axum), repository dispatch, authentication, OpenAPI, metrics.
+- `crates/core`: shared domain types (database entities, repository metadata, project models, security utilities).
+- `crates/storage`: abstraction over storage backends (local filesystem, S3). Provides `DynStorage` trait object used by repositories.
+- `crates/macros`: derives like `DynRepositoryHandler`.
+
+## Repository Abstractions
+- `Repository` trait: defines HTTP handling (`handle_get`, `handle_put`, etc.), metadata (id, visibility, configs).
+- `RepositoryType`: factory interface handling descriptor metadata, config validation, repository instantiation from DB.
+- Dynamic dispatch via `DynRepository` enum produced by `DynRepositoryHandler` macro.
+- Config descriptors (implementing `RepositoryConfigType`) supply schemars schemas, validation, defaults; registered in `REPOSITORY_CONFIG_TYPES`.
+
+## Repository Implementations
+- Maven: hosted + proxy support (`maven` module).
+- NPM: hosted registry (`npm` module).
+- Python / PHP (Composer): hosted-only modules introduced during current iteration, leveraging shared `RepositoryExt` helpers, metadata inserts into `VersionData.extra`.
+
+## HTTP Flow
+- `repository_router` in `repo_http.rs`: resolves storage/repo by path, constructs `RepositoryRequest` (HTTP parts, body, parsed `StoragePath`, authentication).
+- Repository-specific handler invoked via matching HTTP method.
+- `RepoResponse` converts storage/file metadata or custom responses into Axum responses. Shared tracing instrumentation ties into `RepositoryRequestTracing`.
+
+## Data Persistence
+- DB layer via `nr_core::database::entities`. Projects and versions inserted/queried directly in repositories for metadata.
+- Configs stored in `repository_configs` table; retrieved through `DBRepositoryConfig`.
+- Repository lookup/registration handled by `NitroRepo` state with in-memory caches keyed by UUID and name pair.
+
+## Front End Integration
+- Vue components under `site/`: repository type configs (`types/<repo>/`), helper views, admin panel integration.
+- `site/src/types/repository.ts`: registry of repository types/config components used in UI when creating/managing repositories.
+
+## Build/Test Notes
+- Rust workspace managed via Cargo; `cargo build` requires system `pkg-config` + OpenSSL headers (`libssl-dev`/`openssl-devel`).
+- Front end built separately with Vite (not covered in this summary).

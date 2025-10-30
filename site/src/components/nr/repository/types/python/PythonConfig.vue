@@ -1,8 +1,8 @@
 <template>
-  <form class="npm-config" @submit.prevent="save">
+  <form class="python-config" @submit.prevent="save">
     <DropDown
       v-model="selectedType"
-      :options="npmTypes"
+      :options="typeOptions"
       :disabled="!isCreate"
       required
     >Repository Type</DropDown>
@@ -13,15 +13,10 @@
         :key="index"
         class="route-row"
       >
-        <TextInput
-          v-model="route.url"
-          placeholder="https://registry.npmjs.org"
-          required
-        >Upstream URL</TextInput>
-        <TextInput
-          v-model="route.name"
-          placeholder="Optional label"
-        >Display Name</TextInput>
+        <TextInput v-model="route.url" required placeholder="https://pypi.org/simple"
+          >Upstream URL</TextInput
+        >
+        <TextInput v-model="route.name" placeholder="Optional label">Display Name</TextInput>
         <button
           class="nr-button nr-button--danger"
           type="button"
@@ -43,9 +38,9 @@ import { computed, defineProps, onMounted, ref, watch } from "vue";
 import DropDown from "@/components/form/dropdown/DropDown.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import http from "@/http";
-import { defaultProxy, type NPMConfigType } from "./npm";
+import { defaultProxy, type PythonConfigType } from "./python";
 
-const npmTypes = [
+const typeOptions = [
   { value: "Hosted", label: "Hosted" },
   { value: "Proxy", label: "Proxy" },
 ];
@@ -58,7 +53,7 @@ const props = defineProps({
   },
 });
 
-const value = defineModel<NPMConfigType>({
+const value = defineModel<PythonConfigType>({
   default: { type: "Hosted" },
 });
 
@@ -74,13 +69,12 @@ const proxyRoutes = computed(() => {
 
 watch(selectedType, (newType) => {
   if (newType === "Proxy") {
-    if (value.value?.type === "Proxy") {
-      return;
+    if (value.value?.type !== "Proxy") {
+      value.value = {
+        type: "Proxy",
+        config: defaultProxy(),
+      };
     }
-    value.value = {
-      type: "Proxy",
-      config: defaultProxy(),
-    };
   } else {
     value.value = { type: "Hosted" };
   }
@@ -113,7 +107,7 @@ async function load() {
     return;
   }
   try {
-    const response = await http.get(`/api/repository/${props.repository}/config/npm`);
+    const response = await http.get(`/api/repository/${props.repository}/config/python`);
     value.value = response.data;
     selectedType.value = value.value?.type ?? "Hosted";
   } catch (error) {
@@ -126,7 +120,7 @@ async function save() {
     return;
   }
   try {
-    await http.put(`/api/repository/${props.repository}/config/npm`, value.value);
+    await http.put(`/api/repository/${props.repository}/config/python`, value.value);
   } catch (error) {
     console.error(error);
   }
@@ -141,7 +135,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.npm-config {
+.python-config {
   display: flex;
   flex-direction: column;
   gap: 1rem;

@@ -274,7 +274,10 @@ impl LocalStorageInner {
                 next_path = next_path.join(part);
             }
         } else {
-            self.meta_update_sender.send(path.to_path_buf()).await.unwrap();
+            self.meta_update_sender
+                .send(path.to_path_buf())
+                .await
+                .unwrap();
             metas_updated += 1;
             let parent = path.parent();
             if let Some(parent) = parent {

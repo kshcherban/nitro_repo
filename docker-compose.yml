@@ -1,18 +1,41 @@
 version: "3.9"
+
 services:
-  nitro_repo:
-    # This is a link to the beta builds of the nitro repo
-    image: "git.kingtux.dev/wherkamp/nitro_repo/nitro_repo:latest"
-    # Startup policy
+  postgres:
+    image: postgres:15-alpine
     restart: unless-stopped
-    env:
-      # Basically it makes the frontend suggest this as the base path for the local storage
-      - SUGGESTED_LOCAL_STORAGE_PATH=/data/storages/
+    environment:
+      POSTGRES_DB: nitro_repo
+      POSTGRES_USER: nitro
+      POSTGRES_PASSWORD: nitro
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nitro -d nitro_repo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nitro_repo:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "6742:6742"
+    environment:
+      NITRO-REPO_DATABASE__USER: nitro
+      NITRO-REPO_DATABASE__PASSWORD: nitro
+      NITRO-REPO_DATABASE__DATABASE: nitro_repo
+      NITRO-REPO_DATABASE__HOST: postgres:5432
+      NITRO-REPO_SUGGESTED_LOCAL_STORAGE_PATH: /data/storages
+      NITRO-REPO_SESSIONS__DATABASE_LOCATION: /data/sessions.redb
+      NITRO-REPO_SITE__APP_URL: http://localhost:6742
+      RUST_LOG: info
     volumes:
-      - nitro_repo_data:/data/
+      - nitro_repo_data:/data
 
 volumes:
   nitro_repo_data:
-    name: nitro_repo_data
+  postgres_data:

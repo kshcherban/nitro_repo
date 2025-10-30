@@ -13,6 +13,8 @@
 import type { RepositoryWithStorageName } from "@/types/repository";
 import { computed, type PropType } from "vue";
 import MavenRepositoryHelper from "./types/maven/MavenRepositoryHelper.vue";
+import PythonRepositoryHelper from "./types/python/PythonRepositoryHelper.vue";
+import PhpRepositoryHelper from "./types/php/PhpRepositoryHelper.vue";
 
 const props = defineProps({
   repository: {
@@ -24,6 +26,14 @@ const helpers = [
   {
     type: "maven",
     component: MavenRepositoryHelper,
+  },
+  {
+    type: "python",
+    component: PythonRepositoryHelper,
+  },
+  {
+    type: "php",
+    component: PhpRepositoryHelper,
   },
 ];
 const repositoryHelper = computed(() => {

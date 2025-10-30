@@ -21,10 +21,7 @@ use tux_io_s3::{
         put::{PutHeaders, PutObject},
     },
     types::{
-        credentials::Credentials,
-        list::v2::ListBucketResult,
-        region::S3Region,
-        tag::OwnedTag,
+        credentials::Credentials, list::v2::ListBucketResult, region::S3Region, tag::OwnedTag,
     },
 };
 use utoipa::ToSchema;
@@ -200,9 +197,9 @@ impl S3StorageInner {
                 .prefix
                 .iter()
                 .find(|prefix| *prefix == &path_with_slash)
-            {
-                return (true, Some(directory.as_str()));
-            }
+        {
+            return (true, Some(directory.as_str()));
+        }
         (false, None)
     }
 
@@ -458,9 +455,10 @@ impl Storage for S3Storage {
         };
         let headers = get.headers();
         if let Some(content_type) = headers.get("content-type")
-            && content_type == "application/x-directory" {
-                return self.index_directory(&path).await;
-            }
+            && content_type == "application/x-directory"
+        {
+            return self.index_directory(&path).await;
+        }
         let meta = StorageFileMeta::<FileFileType> {
             name: location.to_string(),
             file_type: FileFileType {

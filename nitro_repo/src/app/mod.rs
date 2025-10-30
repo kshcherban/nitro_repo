@@ -48,6 +48,8 @@ use crate::{
         DynRepository, RepositoryType, StagingConfig,
         maven::{MavenPushRulesConfigType, MavenRepositoryConfigType, MavenRepositoryType},
         npm::{NPMRegistryConfigType, NpmRegistryType},
+        php::{PhpRepositoryConfigType, PhpRepositoryType},
+        python::{PythonRepositoryConfigType, PythonRepositoryType},
         repo_tracing::RepositoryMetricsMeter,
     },
     utils::ip_addr::HasForwardedHeader,
@@ -499,5 +501,12 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &MavenRepositoryConfigType,
     &MavenPushRulesConfigType,
     &NPMRegistryConfigType,
+    &PythonRepositoryConfigType,
+    &PhpRepositoryConfigType,
 ];
-pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[&MavenRepositoryType, &NpmRegistryType];
+pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
+    &MavenRepositoryType,
+    &NpmRegistryType,
+    &PythonRepositoryType,
+    &PhpRepositoryType,
+];

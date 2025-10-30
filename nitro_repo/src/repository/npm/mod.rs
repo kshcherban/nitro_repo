@@ -18,6 +18,7 @@ use types::InvalidNPMPackageName;
 
 pub mod hosted;
 pub mod login;
+pub mod proxy;
 pub mod types;
 pub mod utils;
 pub use super::prelude::*;
@@ -29,11 +30,13 @@ mod configs;
 pub use configs::*;
 
 use super::{DynRepository, NewRepository, RepositoryType, RepositoryTypeDescription};
+use proxy::NpmProxyRegistry;
 
 #[derive(Debug, Clone, DynRepositoryHandler)]
 #[repository_handler(error=NPMRegistryError)]
 pub enum NPMRegistry {
     Hosted(hosted::NPMHostedRegistry),
+    Proxy(NpmProxyRegistry),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +60,10 @@ pub enum NPMRegistryError {
     InvalidPackageAttachment(DecodeError),
     #[error("Only one release or attachment can be uploaded at a time")]
     OnlyOneReleaseOrAttachmentAtATime,
+    #[error("Upstream proxy {url} returned status {status}")]
+    ProxyUpstream { url: String, status: StatusCode },
+    #[error("Failed to fetch from proxy {url}: {error}")]
+    ProxyFetch { url: String, error: String },
     #[error("{0}")]
     Other(Box<dyn IntoErrorResponse>),
 }
@@ -100,6 +107,14 @@ impl IntoResponse for NPMRegistryError {
             NPMRegistryError::InvalidGetRequest => Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body("Invalid GET request".into())
+                .unwrap(),
+            NPMRegistryError::ProxyUpstream { url, status } => Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(format!("Proxy upstream {url} returned status {status}").into())
+                .unwrap(),
+            NPMRegistryError::ProxyFetch { url, error } => Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(format!("Failed to fetch from proxy {url}: {error}").into())
                 .unwrap(),
             NPMRegistryError::Other(other) => other.into_response_boxed(),
             bad_request => {
@@ -149,7 +164,7 @@ impl RepositoryType for NpmRegistryType {
                     NPMRegistryConfigType::get_type_static(),
                 ))?
                 .clone();
-            let maven_config: NPMRegistryConfig = match serde_json::from_value(sub_type) {
+            let _registry_config: NPMRegistryConfig = match serde_json::from_value(sub_type) {
                 Ok(ok) => ok,
                 Err(err) => {
                     return Err(RepositoryFactoryError::InvalidConfig(
@@ -174,22 +189,23 @@ impl RepositoryType for NpmRegistryType {
         website: NitroRepo,
     ) -> BoxFuture<'static, Result<DynRepository, RepositoryFactoryError>> {
         Box::pin(async move {
-            let Some(npm_config_db) = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
+            let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
                 repo.id,
                 NPMRegistryConfigType::get_type_static(),
                 &website.database,
             )
             .await?
-            else {
-                return Err(RepositoryFactoryError::MissingConfig(
-                    NPMRegistryConfigType::get_type_static(),
-                ));
-            };
-            let npm_config = npm_config_db.value.0;
-            match npm_config {
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
                 NPMRegistryConfig::Hosted => {
-                    let maven_hosted = NPMHostedRegistry::load(website, storage, repo).await?;
-                    Ok(NPMRegistry::Hosted(maven_hosted).into())
+                    let hosted = NPMHostedRegistry::load(website, storage, repo).await?;
+                    Ok(NPMRegistry::Hosted(hosted).into())
+                }
+                NPMRegistryConfig::Proxy(proxy_config) => {
+                    let proxy =
+                        NpmProxyRegistry::load(website, storage, repo, proxy_config).await?;
+                    Ok(NPMRegistry::Proxy(proxy).into())
                 }
             }
         })
