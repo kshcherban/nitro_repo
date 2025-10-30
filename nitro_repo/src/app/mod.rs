@@ -404,6 +404,14 @@ impl NitroRepo {
         repositories.insert(id, repository);
     }
 
+    pub fn loaded_repositories(&self) -> Vec<(Uuid, DynRepository)> {
+        let repositories = self.repositories.read();
+        repositories
+            .iter()
+            .map(|(id, repository)| (*id, repository.clone()))
+            .collect()
+    }
+
     pub fn update_app_url(&self, app_url: &Uri) {
         info!(?app_url, "Updating app url");
         // TODO:

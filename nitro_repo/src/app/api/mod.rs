@@ -15,6 +15,7 @@ use tracing::{error, instrument};
 use utoipa::ToSchema;
 pub mod project;
 pub mod repository;
+pub mod search;
 pub mod storage;
 pub mod user;
 pub mod user_management;
@@ -35,6 +36,7 @@ pub fn api_routes() -> axum::Router<NitroRepo> {
             user_management::user_management_routes(),
         )
         .nest("/repository", repository::repository_routes())
+        .nest("/search", search::search_routes())
         .nest("/project", project::project_routes())
         .fallback(route_not_found)
         .layer(CorsLayer::very_permissive())
