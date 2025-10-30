@@ -67,6 +67,27 @@ const proxyRoutes = computed(() => {
   return value.value.config.routes;
 });
 
+function normalizeValue() {
+  if (!value.value || typeof value.value !== "object") {
+    value.value = { type: "Hosted" };
+  }
+  if (value.value?.type === "Proxy") {
+    const routes = value.value.config?.routes ?? [];
+    value.value = {
+      type: "Proxy",
+      config: {
+        routes,
+      },
+    };
+    selectedType.value = "Proxy";
+    return;
+  }
+  value.value = { type: "Hosted" };
+  selectedType.value = "Hosted";
+}
+
+normalizeValue();
+
 watch(selectedType, (newType) => {
   if (newType === "Proxy") {
     if (value.value?.type !== "Proxy") {
@@ -109,7 +130,7 @@ async function load() {
   try {
     const response = await http.get(`/api/repository/${props.repository}/config/python`);
     value.value = response.data;
-    selectedType.value = value.value?.type ?? "Hosted";
+    normalizeValue();
   } catch (error) {
     console.error(error);
   }

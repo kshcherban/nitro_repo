@@ -1,15 +1,16 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
+    network_mode: "bridge"
     environment:
       POSTGRES_DB: nitro_repo
       POSTGRES_USER: nitro
       POSTGRES_PASSWORD: nitro
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "172.17.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nitro -d nitro_repo"]
       interval: 5s
@@ -19,23 +20,30 @@ services:
   nitro_repo:
     build: .
     restart: unless-stopped
+    network_mode: "bridge"
     depends_on:
       postgres:
         condition: service_healthy
+    links:
+      - postgres
     ports:
       - "6742:6742"
+    command: ["start", "--config", "/data/nitro_repo.toml"]
     environment:
-      NITRO-REPO_DATABASE__USER: nitro
-      NITRO-REPO_DATABASE__PASSWORD: nitro
-      NITRO-REPO_DATABASE__DATABASE: nitro_repo
-      NITRO-REPO_DATABASE__HOST: postgres:5432
-      NITRO-REPO_SUGGESTED_LOCAL_STORAGE_PATH: /data/storages
-      NITRO-REPO_SESSIONS__DATABASE_LOCATION: /data/sessions.redb
-      NITRO-REPO_SITE__APP_URL: http://localhost:6742
       RUST_LOG: info
+    labels:
+      - "traefik.frontend.rule=Host:tv.sudoers.dev"
+      - "traefik.enable=true"
+      - "traefik.port=6742"
     volumes:
       - nitro_repo_data:/data
+      - ./docker/config/nitro_repo.toml:/data/nitro_repo.toml:ro
 
 volumes:
   nitro_repo_data:
   postgres_data:
+
+networks:
+  default:
+    external: true
+    name: bridge

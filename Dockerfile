@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.6
 ############################
 # Frontend build stage
 ############################
@@ -5,14 +6,14 @@ FROM node:20-bookworm AS frontend-builder
 WORKDIR /app/site
 
 COPY site/package*.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm npm install
 COPY site .
-RUN npm run build
+RUN --mount=type=cache,target=/root/.npm npm run build
 
 ############################
 # Rust build stage
 ############################
-FROM rust:1.78-bookworm AS rust-builder
+FROM rust:1.90.0 AS rust-builder
 WORKDIR /app
 
 RUN apt-get update \
@@ -28,7 +29,12 @@ COPY --from=frontend-builder /app/site/dist ./site/dist
 
 ENV FRONTEND_DIST=/app/site/dist
 
-RUN cargo build --release --features frontend
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target/release/build \
+    --mount=type=cache,target=/app/target/release/deps \
+    --mount=type=cache,target=/app/target/release/incremental \
+    cargo build --release --features frontend
 
 ############################
 # Runtime stage
@@ -48,4 +54,4 @@ VOLUME ["/data"]
 ENV RUST_LOG=info
 
 ENTRYPOINT ["./nitro_repo"]
-CMD []
+CMD ["start"]

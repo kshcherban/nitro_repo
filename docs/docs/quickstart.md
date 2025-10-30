@@ -23,6 +23,10 @@ docker compose build
 
 This compiles the Rust backend and packages the pre-built Vue frontend into the binary.
 
+The compose stack mounts `docker/config/nitro_repo.toml` into the container at
+`/data/nitro_repo.toml`. Edit this file before starting the services if you want to change default
+database credentials, storage paths, or session lifetimes.
+
 ## 3. Start PostgreSQL
 
 ```bash

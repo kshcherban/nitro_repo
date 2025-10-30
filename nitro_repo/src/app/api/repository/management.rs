@@ -70,7 +70,7 @@ pub async fn new_repository(
     }
     let NewRepositoryRequest {
         name,
-        configs,
+        mut configs,
         storage,
     } = request;
     let Some(repository_factory) = site.get_repository_type(&repository_type) else {
@@ -88,6 +88,47 @@ pub async fn new_repository(
     }
 
     let uuid = DBRepository::generate_uuid(&site.database).await?;
+    for config_key in repository_factory.config_types() {
+        if configs.contains_key(config_key) {
+            continue;
+        }
+        let Some(config_type) = site.get_repository_config_type(config_key) else {
+            error!(
+                "Repository {} requires config {} but type was not registered",
+                repository_factory.get_type(),
+                config_key
+            );
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(
+                    format!(
+                        "Missing repository config type registration for key {}",
+                        config_key
+                    )
+                    .into(),
+                )
+                .unwrap());
+        };
+        match config_type.default() {
+            Ok(default) => {
+                configs.insert((*config_key).to_string(), default);
+            }
+            Err(err) => {
+                error!(
+                    "Failed to load default config {} for repository {}: {}",
+                    config_key,
+                    repository_factory.get_type(),
+                    err
+                );
+                return Ok(InvalidRepositoryConfig::InvalidConfig {
+                    config_key: config_key.to_string(),
+                    error: err,
+                }
+                .into_response());
+            }
+        }
+    }
+
     let repository = repository_factory
         .create_new(name, uuid, configs, loaded_storage.clone())
         .await;

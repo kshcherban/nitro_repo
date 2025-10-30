@@ -1,0 +1,17 @@
+mode = "Debug"
+suggested_local_storage_path = "/data/storages"
+
+[database]
+user = "nitro"
+password = "nitro"
+database = "nitro_repo"
+host = "172.17.0.1"
+port = 5432
+
+[sessions]
+lifespan = 86400
+cleanup_interval = 3600
+database_location = "/data/sessions.redb"
+
+[site]
+app_url = "https://tv.sudoers.dev"

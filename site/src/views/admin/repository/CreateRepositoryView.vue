@@ -54,7 +54,7 @@ import type { StorageItem } from "@/components/nr/storage/storageTypes";
 import http from "@/http";
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
-import { getConfigType, type RepositoryTypeDescription } from "@/types/repository";
+import { getConfigType, getConfigTypeDefault, type RepositoryTypeDescription } from "@/types/repository";
 import { notify } from "@kyvg/vue3-notification";
 import { computed, ref, watch } from "vue";
 const input = ref({
@@ -85,15 +85,27 @@ const currentRepositoryType = computed(() => {
   return repositoryTypes.value.find((type) => type.type_name === selectedRepositoryType.value);
 });
 const requiredConfigValues = ref<Record<string, any>>({});
-watch(selectedRepositoryType, (newValue, old) => {
-  if (newValue !== old) {
-    console.log(`Changed repository type to ${newValue} from '${old}'. Resetting required configs`);
+watch(
+  selectedRepositoryType,
+  async (newValue, old) => {
+    if (newValue === old) {
+      return;
+    }
+    console.log(
+      `Changed repository type to ${newValue} from '${old}'. Resetting required configs`,
+    );
     requiredConfigValues.value = {} as Record<string, any>;
     for (const config of currentRepositoryType.value?.required_configs || []) {
-      requiredConfigValues.value[config] = {} as any;
+      try {
+        const defaultValue = await getConfigTypeDefault(config);
+        requiredConfigValues.value[config] = defaultValue ?? {};
+      } catch (error) {
+        console.error(`Failed to load default config for ${config}`, error);
+        requiredConfigValues.value[config] = {};
+      }
     }
-  }
-});
+  },
+);
 watch(requiredConfigValues, () => {
   console.log(requiredConfigValues.value);
 });

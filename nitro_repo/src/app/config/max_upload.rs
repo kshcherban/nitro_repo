@@ -20,7 +20,7 @@ pub enum MaxUpload {
 impl From<MaxUpload> for axum::extract::DefaultBodyLimit {
     fn from(value: MaxUpload) -> Self {
         match value {
-            MaxUpload::Limit(size) => axum::extract::DefaultBodyLimit::max(size.size),
+            MaxUpload::Limit(size) => axum::extract::DefaultBodyLimit::max(size.get_as_bytes()),
             MaxUpload::Unlimited => axum::extract::DefaultBodyLimit::disable(),
         }
     }
