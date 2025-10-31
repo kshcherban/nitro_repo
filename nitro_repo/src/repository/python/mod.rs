@@ -16,7 +16,10 @@ pub mod utils;
 
 use proxy::PythonProxy;
 
-use super::{DynRepository, NewRepository, RepositoryType, RepositoryTypeDescription};
+use super::{
+    DynRepository, NewRepository, RepositoryAuthConfigType, RepositoryType,
+    RepositoryTypeDescription,
+};
 
 #[derive(Debug, Clone, DynRepositoryHandler)]
 #[repository_handler(error = PythonRepositoryError)]
@@ -140,7 +143,10 @@ impl RepositoryType for PythonRepositoryType {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![PythonRepositoryConfigType::get_type_static()]
+        vec![
+            PythonRepositoryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn get_description(&self) -> RepositoryTypeDescription {

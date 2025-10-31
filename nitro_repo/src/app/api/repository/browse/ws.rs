@@ -29,7 +29,9 @@ use crate::{
         authentication::ws::{WebSocketAuthentication, WebSocketAuthenticationMessage},
     },
     error::InternalError,
-    repository::{DynRepository, Repository, utils::can_read_repository},
+    repository::{
+        DynRepository, Repository, RepositoryAuthConfig, utils::can_read_repository_with_auth,
+    },
 };
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -65,9 +67,14 @@ pub struct BrowseWSState {
     pub authentication: Option<WebSocketAuthentication>,
     pub access_status: WSPermissionsStatus,
     pub active_path: StoragePathStream,
+    pub auth_config: RepositoryAuthConfig,
 }
 impl BrowseWSState {
-    pub fn new(repository: DynRepository, site: NitroRepo) -> Self {
+    pub fn new(
+        repository: DynRepository,
+        site: NitroRepo,
+        auth_config: RepositoryAuthConfig,
+    ) -> Self {
         let active_path = StoragePathStream::new(repository.clone());
         BrowseWSState {
             repository,
@@ -75,6 +82,7 @@ impl BrowseWSState {
             authentication: None,
             access_status: WSPermissionsStatus::Pending,
             active_path,
+            auth_config,
         }
     }
 
@@ -141,11 +149,12 @@ impl BrowseWSState {
         match incoming_message {
             WebsocketIncomingMessage::ListDirectory(path) => {
                 if self.access_status != WSPermissionsStatus::Authorized {
-                    if !can_read_repository(
+                    if !can_read_repository_with_auth(
                         &self.authentication,
                         self.repository.visibility(),
                         self.repository.id(),
                         self.site.as_ref(),
+                        &self.auth_config,
                     )
                     .await?
                     {
@@ -181,11 +190,12 @@ impl BrowseWSState {
                     Ok(auth) => {
                         event!(Level::DEBUG, ?auth, "Authenticated");
                         self.authentication = Some(auth);
-                        if !can_read_repository(
+                        if !can_read_repository_with_auth(
                             &self.authentication,
                             self.repository.visibility(),
                             self.repository.id(),
                             self.site.as_ref(),
+                            &self.auth_config,
                         )
                         .await?
                         {
@@ -258,7 +268,19 @@ pub(super) async fn handle_socket(
         event!(Level::ERROR, ?socket, "Failed to send ping");
         return;
     }
-    let mut state = BrowseWSState::new(repository, site);
+    let auth_config = match site.get_repository_auth_config(repository.id()).await {
+        Ok(config) => config,
+        Err(err) => {
+            event!(
+                Level::ERROR,
+                ?err,
+                "Failed to load repository auth config for browse websocket"
+            );
+            RepositoryAuthConfig::default()
+        }
+    };
+
+    let mut state = BrowseWSState::new(repository, site, auth_config);
     loop {
         select! {
              message = socket.recv() => {

@@ -29,7 +29,10 @@ use crate::{
 mod configs;
 pub use configs::*;
 
-use super::{DynRepository, NewRepository, RepositoryType, RepositoryTypeDescription};
+use super::{
+    DynRepository, NewRepository, RepositoryAuthConfigType, RepositoryType,
+    RepositoryTypeDescription,
+};
 use proxy::NpmProxyRegistry;
 
 #[derive(Debug, Clone, DynRepositoryHandler)]
@@ -170,7 +173,10 @@ impl RepositoryType for NpmRegistryType {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![NPMRegistryConfigType::get_type_static()]
+        vec![
+            NPMRegistryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn get_description(&self) -> RepositoryTypeDescription {

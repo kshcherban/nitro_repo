@@ -5,6 +5,7 @@ import PhpConfig from "@/components/nr/repository/types/php/PhpConfig.vue";
 
 import type { Component } from "vue";
 import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
+import RepositoryAuthConfig from "@/components/admin/repository/configs/RepositoryAuthConfig.vue";
 import { apiURL } from "@/config";
 
 import { MavenFrontendDefinition } from "@/components/nr/repository/types/maven/maven";
@@ -64,6 +65,11 @@ export const configTypes: ConfigType[] = [
     name: "page",
     title: "Page",
     component: RepositoryPageEditor,
+  },
+  {
+    name: "auth",
+    title: "Authentication",
+    component: RepositoryAuthConfig,
   },
   {
     name: "npm",

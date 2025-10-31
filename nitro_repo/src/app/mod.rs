@@ -15,7 +15,7 @@ use nr_core::{
     database::{
         DatabaseConfig,
         entities::{
-            repository::DBRepository,
+            repository::{DBRepository, DBRepositoryConfig},
             storage::{DBStorage, StorageDBType},
             user::user_utils,
         },
@@ -45,7 +45,8 @@ use uuid::Uuid;
 pub mod open_api;
 use crate::{
     repository::{
-        DynRepository, RepositoryType, StagingConfig,
+        DynRepository, RepositoryAuthConfig, RepositoryAuthConfigType, RepositoryType,
+        StagingConfig,
         maven::{MavenPushRulesConfigType, MavenRepositoryConfigType, MavenRepositoryType},
         npm::{NPMRegistryConfigType, NpmRegistryType},
         php::{PhpRepositoryConfigType, PhpRepositoryType},
@@ -412,6 +413,19 @@ impl NitroRepo {
             .collect()
     }
 
+    pub async fn get_repository_auth_config(
+        &self,
+        repository_id: Uuid,
+    ) -> Result<RepositoryAuthConfig, sqlx::Error> {
+        let config = DBRepositoryConfig::<RepositoryAuthConfig>::get_config(
+            repository_id,
+            RepositoryAuthConfigType::get_type_static(),
+            &self.database,
+        )
+        .await?;
+        Ok(config.map(|cfg| cfg.value.0).unwrap_or_default())
+    }
+
     pub fn update_app_url(&self, app_url: &Uri) {
         info!(?app_url, "Updating app url");
         // TODO:
@@ -511,6 +525,7 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &NPMRegistryConfigType,
     &PythonRepositoryConfigType,
     &PhpRepositoryConfigType,
+    &RepositoryAuthConfigType,
 ];
 pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
     &MavenRepositoryType,

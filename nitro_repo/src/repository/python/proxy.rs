@@ -17,12 +17,13 @@ use uuid::Uuid;
 use super::{
     PythonRepositoryError,
     configs::{PythonProxyConfig, PythonProxyRoute, PythonRepositoryConfigType},
+    utils::normalize_package_name,
 };
 use crate::{
     app::NitroRepo,
     repository::{
-        RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest,
-        utils::can_read_repository,
+        RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
+        RepositoryRequest, utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
 };
@@ -125,6 +126,26 @@ impl PythonProxy {
                         self.storage()
                             .save_file(self.id(), FileContent::Bytes(bytes.clone()), path)
                             .await?;
+
+                        if let Some(cache_path) = cache_path_for_python_proxy(path) {
+                            if cache_path != *path {
+                                if let Err(err) = self
+                                    .storage()
+                                    .save_file(
+                                        self.id(),
+                                        FileContent::Bytes(bytes.clone()),
+                                        &cache_path,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        ?cache_path,
+                                        "Failed to persist python proxy cache entry"
+                                    );
+                                }
+                            }
+                        }
                         debug!(%url, "Cached python proxy resource");
                         return Ok(true);
                     }
@@ -259,7 +280,10 @@ impl Repository for PythonProxy {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![PythonRepositoryConfigType::get_type_static()]
+        vec![
+            PythonRepositoryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn name(&self) -> String {
@@ -289,11 +313,12 @@ impl Repository for PythonProxy {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 this.visibility(),
                 this.id(),
                 this.site().as_ref(),
+                &request.auth_config,
             )
             .await?
             {
@@ -316,13 +341,26 @@ impl Repository for PythonProxy {
                 ));
             }
 
+            let cache_path = cache_path_for_python_proxy(&path);
+
             if let Some(file) = this.storage().open_file(this.id(), &path).await? {
                 return Ok(file.into());
+            }
+
+            if let Some(cache_path) = &cache_path {
+                if let Some(file) = this.storage().open_file(this.id(), cache_path).await? {
+                    return Ok(file.into());
+                }
             }
 
             if this.download_and_cache(&path, query.as_deref()).await? {
                 if let Some(file) = this.storage().open_file(this.id(), &path).await? {
                     return Ok(file.into());
+                }
+                if let Some(cache_path) = &cache_path {
+                    if let Some(file) = this.storage().open_file(this.id(), cache_path).await? {
+                        return Ok(file.into());
+                    }
                 }
             }
 
@@ -347,11 +385,12 @@ impl Repository for PythonProxy {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 this.visibility(),
                 this.id(),
                 this.site().as_ref(),
+                &request.auth_config,
             )
             .await?
             {
@@ -374,12 +413,24 @@ impl Repository for PythonProxy {
                 ));
             }
 
+            let cache_path = cache_path_for_python_proxy(&path);
+
             if let Some(meta) = this
                 .storage()
                 .get_file_information(this.id(), &path)
                 .await?
             {
                 return Ok(meta.into());
+            }
+
+            if let Some(cache_path) = &cache_path {
+                if let Some(meta) = this
+                    .storage()
+                    .get_file_information(this.id(), cache_path)
+                    .await?
+                {
+                    return Ok(meta.into());
+                }
             }
 
             if this.download_and_cache(&path, query.as_deref()).await? {
@@ -389,6 +440,15 @@ impl Repository for PythonProxy {
                     .await?
                 {
                     return Ok(meta.into());
+                }
+                if let Some(cache_path) = &cache_path {
+                    if let Some(meta) = this
+                        .storage()
+                        .get_file_information(this.id(), cache_path)
+                        .await?
+                    {
+                        return Ok(meta.into());
+                    }
                 }
             }
 
@@ -404,6 +464,58 @@ impl Repository for PythonProxy {
                 "File not found",
             ))
         }
+    }
+}
+
+fn cache_path_for_python_proxy(path: &StoragePath) -> Option<StoragePath> {
+    if path.is_directory() {
+        return None;
+    }
+    let components: Vec<String> = path
+        .clone()
+        .into_iter()
+        .map(|component| component.to_string())
+        .collect();
+    if components.is_empty() {
+        return None;
+    }
+    if matches!(components.first().map(String::as_str), Some("packages")) {
+        return Some(path.clone());
+    }
+    if components.len() >= 3 && matches!(components.first().map(String::as_str), Some("simple")) {
+        let package = components.get(1)?.clone();
+        let file_name = components.last()?.clone();
+        let normalized = normalize_package_name(&package);
+        return Some(StoragePath::from(format!(
+            "packages/{}/{}",
+            normalized, file_name
+        )));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_for_simple_package() {
+        let path = StoragePath::from("simple/Example_Pkg/example-1.0.0.whl");
+        let cache = cache_path_for_python_proxy(&path).expect("cache path");
+        assert_eq!(cache.to_string(), "packages/example-pkg/example-1.0.0.whl");
+    }
+
+    #[test]
+    fn cache_path_for_directory_returns_none() {
+        let path = StoragePath::from("simple/example/");
+        assert!(cache_path_for_python_proxy(&path).is_none());
+    }
+
+    #[test]
+    fn cache_path_preserves_existing_packages_path() {
+        let path = StoragePath::from("packages/example/example-1.0.0.whl");
+        let cache = cache_path_for_python_proxy(&path).expect("cache path");
+        assert_eq!(cache.to_string(), "packages/example/example-1.0.0.whl");
     }
 }
 

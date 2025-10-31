@@ -54,7 +54,10 @@ const repositoryId = router.currentRoute.value.params.id as string;
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
 const configDescriptions = ref<Map<string, ConfigDescription>>(new Map());
 const configTypes = ref<string[]>([]);
-const showPackagesTab = computed(() => repository.value?.repository_type === "python");
+const showPackagesTab = computed(() => {
+  const type = repository.value?.repository_type;
+  return type === "python" || type === "npm";
+});
 function getConfigTitleOrFallback(config: string) {
   return configDescriptions.value.get(config)?.name || config;
 }

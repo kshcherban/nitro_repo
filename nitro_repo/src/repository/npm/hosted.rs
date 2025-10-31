@@ -23,7 +23,8 @@ use super::{
 use crate::{
     app::NitroRepo,
     repository::{
-        RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest,
+        RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
+        RepositoryRequest,
         npm::{NPMRegistryConfigType, NPMRegistryError, types::PublishRequest},
         utils::RepositoryExt,
     },
@@ -131,7 +132,10 @@ impl Repository for NPMHostedRegistry {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![NPMRegistryConfigType::get_type_static()]
+        vec![
+            NPMRegistryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn name(&self) -> String {

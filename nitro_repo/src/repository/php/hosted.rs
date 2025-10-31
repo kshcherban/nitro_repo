@@ -26,8 +26,11 @@ use super::{
 };
 use crate::{
     app::NitroRepo,
-    repository::utils::{RepositoryExt, can_read_repository},
     repository::{RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest},
+    repository::{
+        RepositoryAuthConfigType,
+        utils::{RepositoryExt, can_read_repository_with_auth},
+    },
     utils::ResponseBuilder,
 };
 
@@ -180,6 +183,7 @@ impl Repository for PhpHosted {
             PhpRepositoryConfigType::get_type_static(),
             ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
         ]
     }
 
@@ -212,11 +216,12 @@ impl Repository for PhpHosted {
         let site = self.site();
         let storage = self.storage();
         async move {
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 visibility,
                 repository_id,
                 site.as_ref(),
+                &request.auth_config,
             )
             .await?
             {
@@ -255,11 +260,12 @@ impl Repository for PhpHosted {
         let site = self.site();
         let storage = self.storage();
         async move {
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 visibility,
                 repository_id,
                 site.as_ref(),
+                &request.auth_config,
             )
             .await?
             {

@@ -13,7 +13,10 @@ pub use configs::*;
 pub mod hosted;
 pub mod utils;
 
-use super::{DynRepository, NewRepository, RepositoryType, RepositoryTypeDescription};
+use super::{
+    DynRepository, NewRepository, RepositoryAuthConfigType, RepositoryType,
+    RepositoryTypeDescription,
+};
 
 #[derive(Debug, Clone, DynRepositoryHandler)]
 #[repository_handler(error = PhpRepositoryError)]
@@ -77,7 +80,10 @@ impl RepositoryType for PhpRepositoryType {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![PhpRepositoryConfigType::get_type_static()]
+        vec![
+            PhpRepositoryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn get_description(&self) -> RepositoryTypeDescription {

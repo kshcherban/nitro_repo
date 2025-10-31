@@ -34,7 +34,7 @@ use super::{
 use crate::{
     app::NitroRepo,
     repository::{
-        Repository, RepositoryFactoryError,
+        Repository, RepositoryAuthConfigType, RepositoryFactoryError,
         maven::{MavenRepositoryConfigType, configs::MavenPushRulesConfigType},
         utils::RepositoryExt,
     },
@@ -201,6 +201,7 @@ impl Repository for MavenHosted {
             MavenPushRulesConfigType::get_type_static(),
             ProjectConfigType::get_type_static(),
             MavenRepositoryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
         ]
     }
     #[instrument(fields(repository_type = "maven/hosted"))]

@@ -26,7 +26,7 @@ use crate::{
         responses::{MissingPermission, RepositoryNotFound},
     },
     error::InternalError,
-    repository::{Repository, utils::can_read_repository},
+    repository::{Repository, utils::can_read_repository_with_auth},
     utils::{ResponseBuilder, request_logging::request_id::RequestId},
 };
 pub fn browse_routes() -> axum::Router<NitroRepo> {
@@ -83,11 +83,14 @@ async fn browse(
     let Some(repository) = site.get_repository(browse_path.repository_id) else {
         return Ok(RepositoryNotFound::Uuid(browse_path.repository_id).into_response());
     };
-    if !can_read_repository(
+    let auth_config = site.get_repository_auth_config(repository.id()).await?;
+
+    if !can_read_repository_with_auth(
         &auth,
         repository.visibility(),
         repository.id(),
         site.as_ref(),
+        &auth_config,
     )
     .await?
     {

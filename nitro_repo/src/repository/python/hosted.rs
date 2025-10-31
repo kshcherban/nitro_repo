@@ -27,8 +27,11 @@ use super::{
 };
 use crate::{
     app::NitroRepo,
-    repository::utils::{RepositoryExt, can_read_repository},
-    repository::{RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest},
+    repository::{
+        RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
+        RepositoryRequest,
+        utils::{RepositoryExt, can_read_repository_with_auth},
+    },
     utils::ResponseBuilder,
 };
 
@@ -187,6 +190,7 @@ impl Repository for PythonHosted {
             PythonRepositoryConfigType::get_type_static(),
             ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
         ]
     }
 
@@ -219,11 +223,12 @@ impl Repository for PythonHosted {
         let storage = self.storage();
         let repository_id = self.id();
         async move {
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 visibility,
                 repository_id,
                 site.as_ref(),
+                &request.auth_config,
             )
             .await?
             {
@@ -254,11 +259,12 @@ impl Repository for PythonHosted {
         let storage = self.storage();
         let repository_id = self.id();
         async move {
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 visibility,
                 repository_id,
                 site.as_ref(),
+                &request.auth_config,
             )
             .await?
             {

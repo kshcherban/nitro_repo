@@ -31,7 +31,10 @@ use super::{
     MavenError, MavenRepositoryConfig, MavenRepositoryConfigType, REPOSITORY_TYPE_ID, RepoResponse,
     RepositoryRequest, repo_type::RepositoryFactoryError, utils::MavenRepositoryExt,
 };
-use crate::{app::NitroRepo, repository::Repository};
+use crate::{
+    app::NitroRepo,
+    repository::{Repository, RepositoryAuthConfigType},
+};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MavenProxyConfig {
     pub routes: Vec<MavenProxyRepositoryRoute>,
@@ -235,6 +238,7 @@ impl Repository for MavenProxy {
             RepositoryPageType::get_type_static(),
             ProjectConfigType::get_type_static(),
             MavenRepositoryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
         ]
     }
 

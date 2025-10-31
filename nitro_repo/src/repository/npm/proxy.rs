@@ -18,8 +18,8 @@ use super::{
 use crate::{
     app::NitroRepo,
     repository::{
-        RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest,
-        utils::can_read_repository,
+        RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
+        RepositoryRequest, utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
 };
@@ -106,6 +106,26 @@ impl NpmProxyRegistry {
                         self.storage()
                             .save_file(self.0.id, FileContent::Bytes(bytes.clone()), path)
                             .await?;
+
+                        if let Some(cache_path) = cache_path_for_npm_proxy(path) {
+                            if cache_path != *path {
+                                if let Err(err) = self
+                                    .storage()
+                                    .save_file(
+                                        self.0.id,
+                                        FileContent::Bytes(bytes.clone()),
+                                        &cache_path,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        ?cache_path,
+                                        "Failed to persist npm proxy cache entry"
+                                    );
+                                }
+                            }
+                        }
                         debug!(%url, "Cached npm proxy resource");
                         return Ok(true);
                     }
@@ -220,7 +240,10 @@ impl Repository for NpmProxyRegistry {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![NPMRegistryConfigType::get_type_static()]
+        vec![
+            NPMRegistryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn name(&self) -> String {
@@ -250,11 +273,12 @@ impl Repository for NpmProxyRegistry {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 this.visibility(),
                 this.id(),
                 this.site().as_ref(),
+                &request.auth_config,
             )
             .await?
             {
@@ -262,6 +286,8 @@ impl Repository for NpmProxyRegistry {
             }
 
             let path = request.path;
+
+            let cache_path = cache_path_for_npm_proxy(&path);
 
             if path.is_directory() {
                 if let Some(response) = this
@@ -280,9 +306,20 @@ impl Repository for NpmProxyRegistry {
                 return Ok(file.into());
             }
 
+            if let Some(cache_path) = &cache_path {
+                if let Some(file) = this.storage().open_file(this.id(), cache_path).await? {
+                    return Ok(file.into());
+                }
+            }
+
             if this.download_and_cache(&path, query.as_deref()).await? {
                 if let Some(file) = this.storage().open_file(this.id(), &path).await? {
                     return Ok(file.into());
+                }
+                if let Some(cache_path) = &cache_path {
+                    if let Some(file) = this.storage().open_file(this.id(), cache_path).await? {
+                        return Ok(file.into());
+                    }
                 }
             }
 
@@ -307,11 +344,12 @@ impl Repository for NpmProxyRegistry {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository(
+            if !can_read_repository_with_auth(
                 &request.authentication,
                 this.visibility(),
                 this.id(),
                 this.site().as_ref(),
+                &request.auth_config,
             )
             .await?
             {
@@ -319,6 +357,8 @@ impl Repository for NpmProxyRegistry {
             }
 
             let path = request.path;
+
+            let cache_path = cache_path_for_npm_proxy(&path);
 
             if path.is_directory() {
                 if let Some(response) = this
@@ -341,6 +381,16 @@ impl Repository for NpmProxyRegistry {
                 return Ok(meta.into());
             }
 
+            if let Some(cache_path) = &cache_path {
+                if let Some(meta) = this
+                    .storage()
+                    .get_file_information(this.id(), cache_path)
+                    .await?
+                {
+                    return Ok(meta.into());
+                }
+            }
+
             if this.download_and_cache(&path, query.as_deref()).await? {
                 if let Some(meta) = this
                     .storage()
@@ -348,6 +398,15 @@ impl Repository for NpmProxyRegistry {
                     .await?
                 {
                     return Ok(meta.into());
+                }
+                if let Some(cache_path) = &cache_path {
+                    if let Some(meta) = this
+                        .storage()
+                        .get_file_information(this.id(), cache_path)
+                        .await?
+                    {
+                        return Ok(meta.into());
+                    }
                 }
             }
 
@@ -363,6 +422,67 @@ impl Repository for NpmProxyRegistry {
                 "File not found",
             ))
         }
+    }
+}
+
+fn cache_path_for_npm_proxy(path: &StoragePath) -> Option<StoragePath> {
+    if path.is_directory() {
+        return None;
+    }
+    let components: Vec<String> = path
+        .clone()
+        .into_iter()
+        .map(|component| component.to_string())
+        .collect();
+    if components.is_empty() {
+        return None;
+    }
+    if matches!(components.first().map(String::as_str), Some("packages")) {
+        return Some(path.clone());
+    }
+    if components.len() < 3 {
+        return None;
+    }
+    if components.get(components.len() - 2).map(String::as_str) != Some("-") {
+        return None;
+    }
+    let file_name = components.last()?.clone();
+    let package_components = &components[..components.len() - 2];
+    if package_components.is_empty() {
+        return None;
+    }
+    let package_path = package_components.join("/");
+    Some(StoragePath::from(format!(
+        "packages/{}/{}",
+        package_path, file_name
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_for_scoped_package() {
+        let path = StoragePath::from("@scope/package/-/package-1.0.0.tgz");
+        let cache = cache_path_for_npm_proxy(&path).expect("cache path");
+        assert_eq!(
+            cache.to_string(),
+            "packages/@scope/package/package-1.0.0.tgz"
+        );
+    }
+
+    #[test]
+    fn cache_path_for_unscoped_package() {
+        let path = StoragePath::from("left-pad/-/left-pad-1.3.0.tgz");
+        let cache = cache_path_for_npm_proxy(&path).expect("cache path");
+        assert_eq!(cache.to_string(), "packages/left-pad/left-pad-1.3.0.tgz");
+    }
+
+    #[test]
+    fn cache_path_requires_tarball_segment() {
+        let path = StoragePath::from("left-pad/latest");
+        assert!(cache_path_for_npm_proxy(&path).is_none());
     }
 }
 

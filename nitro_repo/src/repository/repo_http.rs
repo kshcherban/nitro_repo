@@ -14,7 +14,7 @@ use crate::{
         responses::RepositoryNotFound,
     },
     error::IllegalStateError,
-    repository::Repository,
+    repository::{Repository, RepositoryAuthConfig},
     utils::{
         bad_request::BadRequestErrors, header::date_time::date_time_for_header,
         request_logging::request_span::RequestSpan,
@@ -90,6 +90,7 @@ pub struct RepositoryRequest {
     pub body: RepositoryRequestBody,
     pub path: StoragePath,
     pub authentication: RepositoryAuthentication,
+    pub auth_config: RepositoryAuthConfig,
     pub trace: RepositoryRequestTracing,
 }
 impl RepositoryRequest {
@@ -403,13 +404,35 @@ pub async fn handle_repo_request(
     let trace =
         RepositoryRequestTracing::new(&repository, &parent_span, site.repository_metrics.clone());
     trace.path(&path);
+    let auth_config = match site.get_repository_auth_config(repository.id()).await {
+        Ok(config) => config,
+        Err(err) => {
+            error!(?err, "Failed to load repository auth config");
+            return Ok(RepoResponse::internal_error(err).into_response_default());
+        }
+    };
+
     let request = RepositoryRequest {
         parts,
         body: RepositoryRequestBody(body),
         path,
         authentication,
+        auth_config: auth_config.clone(),
         trace: trace.clone(),
     };
+
+    if auth_config.enabled {
+        let is_authenticated = matches!(
+            request.authentication,
+            RepositoryAuthentication::AuthToken(..)
+                | RepositoryAuthentication::Session(..)
+                | RepositoryAuthentication::Basic(..)
+        );
+        if !is_authenticated {
+            return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
+                .into_response_default());
+        }
+    }
     drop(entered_guard);
     let response = {
         let _guard = trace.span.enter();

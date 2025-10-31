@@ -7,11 +7,9 @@ import fs from "fs";
 import browserslistToEsbuild from "browserslist-to-esbuild";
 import { ViteEjsPlugin } from "vite-plugin-ejs";
 
-const enableDevTools =
-  process.env.NODE_ENV !== "production" &&
-  process.env.VITE_DEVTOOLS !== "false";
-
-export default defineConfig(async (_env): Promise<UserConfig> => {
+export default defineConfig(async ({ command }): Promise<UserConfig> => {
+  const enableDevTools =
+    command === "serve" && process.env.VITE_DEVTOOLS !== "false";
   const plugins: PluginOption[] = [
     vue(),
     vueJsx(),

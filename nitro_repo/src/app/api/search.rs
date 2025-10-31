@@ -81,7 +81,9 @@ async fn search_packages(
             break;
         }
 
-        if repository.get_type() != "python" {
+        let repo_type = repository.get_type();
+        let supported = matches!(repo_type, "python" | "npm");
+        if !supported {
             continue;
         }
 

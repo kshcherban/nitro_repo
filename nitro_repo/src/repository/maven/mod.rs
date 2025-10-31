@@ -40,6 +40,7 @@ impl RepositoryType for MavenRepositoryType {
         vec![
             MavenPushRulesConfigType::get_type_static(),
             ProjectConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
         ]
     }
 
