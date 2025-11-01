@@ -23,7 +23,12 @@ export type PythonConfigType =
 
 export function defaultProxy(): PythonProxyConfigType {
   return {
-    routes: [],
+    routes: [
+      {
+        url: "https://pypi.org/simple",
+        name: "PyPI",
+      },
+    ],
   };
 }
 

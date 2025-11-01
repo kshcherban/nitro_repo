@@ -24,6 +24,7 @@ pub struct DBProjectVersion {
     /// The version of the project
     pub version: String,
     /// Release type
+    #[sqlx(try_from = "String")]
     pub release_type: ReleaseType,
     /// The path to the release
     pub path: String,

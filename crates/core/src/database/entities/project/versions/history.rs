@@ -13,6 +13,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, FromRow, ToSchema)]
 pub struct VersionHistoryItem {
     pub id: Uuid,
+    #[sqlx(try_from = "String")]
     pub release_type: ReleaseType,
     pub version: String,
     pub updated_at: DateTime<FixedOffset>,

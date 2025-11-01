@@ -1,13 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use http::StatusCode;
 use nr_core::{
-    database::entities::repository::DBRepository,
+    database::entities::repository::{DBRepository, DBRepositoryConfig},
     repository::{Visibility, config::RepositoryConfigType, proxy_url::ProxyURL},
     storage::StoragePath,
 };
 use nr_storage::{DynStorage, FileContent, Storage};
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -31,13 +31,27 @@ pub struct NpmProxyInner {
     pub visibility: RwLock<Visibility>,
     pub storage: DynStorage,
     pub site: NitroRepo,
-    pub routes: Vec<NpmProxyRoute>,
+    pub routes: RwLock<Vec<NpmProxyRoute>>,
     pub client: reqwest::Client,
     pub active: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct NpmProxyRegistry(pub Arc<NpmProxyInner>);
+
+static DEFAULT_ROUTE: LazyLock<NpmProxyRoute> = LazyLock::new(|| NpmProxyRoute {
+    url: ProxyURL::try_from(String::from("https://registry.npmjs.org"))
+        .expect("valid npm default route"),
+    name: Some("npmjs".to_string()),
+});
+
+fn normalize_routes(routes: Vec<NpmProxyRoute>) -> Vec<NpmProxyRoute> {
+    if routes.is_empty() {
+        vec![DEFAULT_ROUTE.clone()]
+    } else {
+        routes
+    }
+}
 
 impl NpmProxyRegistry {
     pub async fn load(
@@ -61,7 +75,7 @@ impl NpmProxyRegistry {
             visibility: RwLock::new(repository.visibility),
             storage,
             site,
-            routes: config.routes,
+            routes: RwLock::new(normalize_routes(config.routes)),
             client,
             active: repository.active,
         })))
@@ -76,8 +90,8 @@ impl NpmProxyRegistry {
     fn visibility(&self) -> Visibility {
         *self.0.visibility.read()
     }
-    fn routes(&self) -> &[NpmProxyRoute] {
-        &self.0.routes
+    fn routes(&self) -> RwLockReadGuard<'_, Vec<NpmProxyRoute>> {
+        self.0.routes.read()
     }
 
     async fn download_and_cache(
@@ -88,7 +102,11 @@ impl NpmProxyRegistry {
         if path.is_directory() {
             return Ok(false);
         }
-        for route in self.routes() {
+        let routes = {
+            let guard = self.routes();
+            guard.clone()
+        };
+        for route in routes.iter() {
             let Some(url) = build_url(&route.url, path.clone(), query) else {
                 continue;
             };
@@ -103,9 +121,17 @@ impl NpmProxyRegistry {
                                     url: url.to_string(),
                                     error: err.to_string(),
                                 })?;
-                        self.storage()
+                        match self
+                            .storage()
                             .save_file(self.0.id, FileContent::Bytes(bytes.clone()), path)
-                            .await?;
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(nr_storage::StorageError::PathCollision(_)) => {
+                                debug!(%url, "Skipping cache write for existing npm metadata file");
+                            }
+                            Err(other) => return Err(other.into()),
+                        }
 
                         if let Some(cache_path) = cache_path_for_npm_proxy(path) {
                             if cache_path != *path {
@@ -118,11 +144,22 @@ impl NpmProxyRegistry {
                                     )
                                     .await
                                 {
-                                    warn!(
-                                        ?err,
-                                        ?cache_path,
-                                        "Failed to persist npm proxy cache entry"
-                                    );
+                                    match err {
+                                        nr_storage::StorageError::PathCollision(_) => {
+                                            debug!(
+                                                ?cache_path,
+                                                "Cache file already exists, skipping overwrite"
+                                            );
+                                        }
+                                        other => {
+                                            warn!(
+                                                ?other,
+                                                ?cache_path,
+                                                "Failed to persist npm proxy cache entry"
+                                            );
+                                            return Err(other.into());
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -154,7 +191,11 @@ impl NpmProxyRegistry {
     ) -> Result<Option<RepoResponse>, NPMRegistryError> {
         use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 
-        for route in self.routes() {
+        let routes = {
+            let guard = self.routes();
+            guard.clone()
+        };
+        for route in routes.iter() {
             let Some(url) = build_url(&route.url, path.clone(), query) else {
                 continue;
             };
@@ -264,6 +305,20 @@ impl Repository for NpmProxyRegistry {
 
     fn site(&self) -> NitroRepo {
         self.site()
+    }
+
+    async fn reload(&self) -> Result<(), RepositoryFactoryError> {
+        let config = DBRepositoryConfig::<NpmProxyConfig>::get_config(
+            self.0.id,
+            NPMRegistryConfigType::get_type_static(),
+            self.site().as_ref(),
+        )
+        .await?
+        .map(|cfg| cfg.value.0)
+        .unwrap_or_default();
+        let mut routes = self.0.routes.write();
+        *routes = normalize_routes(config.routes);
+        Ok(())
     }
 
     fn handle_get(
@@ -483,6 +538,24 @@ mod tests {
     fn cache_path_requires_tarball_segment() {
         let path = StoragePath::from("left-pad/latest");
         assert!(cache_path_for_npm_proxy(&path).is_none());
+    }
+
+    #[test]
+    fn normalize_routes_adds_default_when_empty() {
+        let routes = normalize_routes(Vec::new());
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0], DEFAULT_ROUTE.clone());
+    }
+
+    #[test]
+    fn normalize_routes_keeps_existing_entries() {
+        let custom = NpmProxyRoute {
+            url: ProxyURL::try_from(String::from("https://mirror.npm.internal"))
+                .expect("valid url"),
+            name: Some("mirror".to_string()),
+        };
+        let routes = normalize_routes(vec![custom.clone()]);
+        assert_eq!(routes, vec![custom]);
     }
 }
 

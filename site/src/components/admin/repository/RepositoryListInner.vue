@@ -34,6 +34,8 @@
           Storage Name
         </div>
         <div :class="['col']">Repository Type</div>
+        <div :class="['col']">Auth</div>
+        <div :class="['col']">Storage</div>
         <div :class="['col']">Active</div>
       </div>
       <div
@@ -58,6 +60,8 @@
           {{ repository.storage_name }}
         </div>
         <div class="col">{{ repository.repository_type }}</div>
+        <div class="col">{{ repository.auth_enabled ? 'On' : 'Off' }}</div>
+        <div class="col">{{ formatBytes(repository.storage_usage_bytes) }}</div>
         <div class="col">{{ repository.active }}</div>
       </div>
     </div>
@@ -74,6 +78,19 @@ const props = defineProps({
   repositories: Array as PropType<RepositoryWithStorageName[]>,
 });
 const sortBy = ref<string>("id");
+
+function formatBytes(bytes?: number | null): string {
+  if (bytes === null || bytes === undefined) {
+    return "—";
+  }
+  if (bytes === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+}
 
 function sortList(a: RepositoryWithStorageName, b: RepositoryWithStorageName) {
   switch (sortBy.value) {
@@ -137,7 +154,7 @@ const filteredTable = computed(() => {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 0.5fr 0.5fr 0.5fr 0.5fr;
+  grid-template-columns: 1fr 0.5fr 0.5fr 0.5fr 0.4fr 0.5fr 0.4fr;
   grid-template-rows: auto;
   .col {
     padding: 1rem;

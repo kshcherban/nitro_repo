@@ -37,10 +37,12 @@ services:
       - "traefik.port=6742"
     volumes:
       - nitro_repo_data:/data
+      - nitro_repo_logs:/logs
       - ./docker/config/nitro_repo.toml:/data/nitro_repo.toml:ro
 
 volumes:
   nitro_repo_data:
+  nitro_repo_logs:
   postgres_data:
 
 networks:

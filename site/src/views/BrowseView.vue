@@ -1,6 +1,9 @@
 <template>
   <main v-if="repository">
     <BrowseHeader :repository="repository" />
+    <RepositoryPackagesPublic
+      v-if="showPackages"
+      :repository-id="repository.id" />
     <div v-if="files">
       <div class="browse">
         <BrowseList
@@ -24,16 +27,19 @@
 import BrowseHeader from "@/components/nr/repository/browse/BrowseHeader.vue";
 import BrowseList from "@/components/nr/repository/browse/BrowseList.vue";
 import BrowseProject from "@/components/nr/repository/project/BrowseProject.vue";
+import RepositoryPackagesPublic from "@/components/nr/repository/RepositoryPackagesPublic.vue";
 import { websocketPath } from "@/config";
 
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
 import type { ProjectResolution, RawBrowseFile, WSBrowseResponse } from "@/types/browse";
 import { type RepositoryWithStorageName } from "@/types/repository";
-import { onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 const repoStore = useRepositoryStore();
 const repositoryId = ref(router.currentRoute.value.params.id as string);
-const catchAll = ref(router.currentRoute.value.params.catchAll as string);
+const catchAll = ref(
+  (router.currentRoute.value.params.catchAll as string | undefined) ?? "",
+);
 console.log(`Browsing repository ${repositoryId.value} with catchAll ${catchAll.value}`);
 
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
@@ -75,6 +81,17 @@ async function loadRepository() {
 }
 const numberOfFiles = ref(0);
 
+const supportsPackageListing = computed(() => {
+  const type = repository.value?.repository_type;
+  return type === "python" || type === "npm";
+});
+
+const isRootPath = computed(() => catchAll.value === "" || catchAll.value === "/");
+
+const showPackages = computed(() => {
+  return repository.value !== undefined && supportsPackageListing.value && isRootPath.value;
+});
+
 loadRepository();
 
 function changeDirectory(path: string) {
@@ -85,7 +102,8 @@ watch(
   () => router.currentRoute.value.params.catchAll,
   () => {
     console.log("CatchAll changed");
-    catchAll.value = router.currentRoute.value.params.catchAll as string;
+    catchAll.value =
+      (router.currentRoute.value.params.catchAll as string | undefined) ?? "";
     files.value = undefined;
     projectResolution.value = undefined;
     changeDirectory(catchAll.value);

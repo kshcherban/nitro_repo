@@ -1,4 +1,4 @@
-mode = "Debug"
+mode = "Release"
 suggested_local_storage_path = "/data/storages"
 
 [database]
@@ -15,3 +15,18 @@ database_location = "/data/sessions.redb"
 
 [site]
 app_url = "https://tv.sudoers.dev"
+
+
+[log.levels]
+default = "Info"
+
+[log.loggers.file]
+type = "RollingFile"
+
+  [log.loggers.file.config]
+  path = "/logs"
+  file_prefix = "nitro_repo"
+  interval = "Never"          # or "Hourly", "Minutely", "Never"
+
+    [log.loggers.file.config.levels]
+    default = "Info"

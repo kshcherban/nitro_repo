@@ -24,6 +24,14 @@
             <label>Storage Id Type</label>
             <span class="value">{{ repository.storage_id }}</span>
           </div>
+          <div class="keyValue">
+            <label>Authentication</label>
+            <span class="value">{{ repository.auth_enabled ? "Enabled" : "Disabled" }}</span>
+          </div>
+          <div class="keyValue">
+            <label>Storage Usage</label>
+            <span class="value">{{ formatBytes(repository.storage_usage_bytes) }}</span>
+          </div>
         </div>
       </div>
       <div id="enableDisable">
@@ -67,6 +75,18 @@ const repositoryStatus = computed(() => {
   if (!props.repository) return "No Repository";
   return props.repository.active ? "Active" : "Inactive";
 });
+function formatBytes(bytes?: number | null): string {
+  if (bytes === null || bytes === undefined) {
+    return "Unknown";
+  }
+  if (bytes === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+}
 async function deleteRepository() {
   http.delete(`/api/repository/${props.repository.id}`).then(() => {
     notify({

@@ -1,10 +1,17 @@
 use std::sync::Arc;
 
-use http::StatusCode;
+use axum::body::Body;
+use bytes::Bytes;
+use futures::stream;
+use http::{
+    StatusCode,
+    header::{CONTENT_TYPE, LOCATION},
+};
 use nr_core::repository::config::RepositoryConfigType;
+use nr_core::storage::StoragePath;
 use nr_core::{
     database::entities::{
-        project::{DBProject, ProjectDBType, versions::DBProjectVersion},
+        project::{DBProject, DBProjectColumn, versions::DBProjectVersion},
         repository::DBRepository,
     },
     repository::{
@@ -14,9 +21,8 @@ use nr_core::{
     },
     user::permissions::RepositoryActions,
 };
-use nr_storage::{DynStorage, Storage};
+use nr_storage::{DynStorage, FileContent, Storage};
 use parking_lot::RwLock;
-use serde_json::to_value;
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
 
@@ -34,6 +40,16 @@ use crate::{
     },
     utils::ResponseBuilder,
 };
+
+use nr_core::database::{
+    entities::project::ProjectDBType,
+    prelude::{
+        DynEncodeType, FilterExpr, QueryTool, SQLOrder, SelectQueryBuilder, TableQuery, TableType,
+        WhereableTool,
+    },
+};
+use nr_storage::{FileType, StorageFile};
+use serde_json::{from_value, to_value};
 
 #[derive(Debug)]
 pub struct PythonRepositoryInner {
@@ -81,14 +97,111 @@ impl PythonHosted {
         else {
             return Ok(RepoResponse::unauthorized());
         };
+        let publisher = user.id;
+        let _ = user;
+        let content_type = request
+            .parts
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+
+        if let Some(content_type) = content_type {
+            if content_type.starts_with("multipart/form-data") {
+                return self
+                    .handle_multipart_upload(request, publisher, content_type)
+                    .await;
+            }
+        }
+
         let bytes = request.body.body_as_bytes().await?;
         let info = PythonPackagePathInfo::try_from(&request.path)?;
         info!(path = %request.path, ?info, "Saving Python package");
         self.storage()
-            .save_file(self.id(), bytes.into(), &request.path)
+            .save_file(self.id(), FileContent::Bytes(bytes), &request.path)
             .await?;
 
-        self.upsert_metadata(user.id, &info).await?;
+        self.upsert_metadata(publisher, &info).await?;
+
+        Ok(RepoResponse::Other(ResponseBuilder::created().empty()))
+    }
+
+    async fn handle_multipart_upload(
+        &self,
+        request: RepositoryRequest,
+        publisher: i32,
+        content_type: String,
+    ) -> Result<RepoResponse, PythonRepositoryError> {
+        let boundary = multer::parse_boundary(&content_type)
+            .map_err(|err| PythonRepositoryError::InvalidPath(err.to_string()))?;
+        let body = request.body.body_as_bytes().await?;
+        let stream = stream::once(async move { Ok::<Bytes, multer::Error>(body) });
+        let mut multipart = multer::Multipart::new(stream, boundary);
+
+        let mut package: Option<String> = None;
+        let mut version: Option<String> = None;
+        let mut filename: Option<String> = None;
+        let mut file_bytes: Option<Vec<u8>> = None;
+
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(|err| PythonRepositoryError::InvalidPath(err.to_string()))?
+        {
+            match field.name() {
+                Some("name") => {
+                    package = Some(
+                        field
+                            .text()
+                            .await
+                            .map_err(|err| PythonRepositoryError::InvalidPath(err.to_string()))?,
+                    );
+                }
+                Some("version") => {
+                    version = Some(
+                        field
+                            .text()
+                            .await
+                            .map_err(|err| PythonRepositoryError::InvalidPath(err.to_string()))?,
+                    );
+                }
+                Some("content") => {
+                    if filename.is_none() {
+                        filename = field.file_name().map(|value| value.to_string());
+                    }
+                    let bytes = field
+                        .bytes()
+                        .await
+                        .map_err(|err| PythonRepositoryError::InvalidPath(err.to_string()))?;
+                    file_bytes = Some(bytes.to_vec());
+                }
+                _ => {
+                    // Ignore other fields
+                }
+            }
+        }
+
+        let package = package.ok_or_else(|| {
+            PythonRepositoryError::InvalidPath("missing package name".to_string())
+        })?;
+        let version = version.ok_or_else(|| {
+            PythonRepositoryError::InvalidPath("missing package version".to_string())
+        })?;
+        let filename = filename.ok_or_else(|| {
+            PythonRepositoryError::InvalidPath("missing package filename".to_string())
+        })?;
+        let file_bytes = file_bytes.ok_or_else(|| {
+            PythonRepositoryError::InvalidPath("missing package content".to_string())
+        })?;
+
+        let storage_path = StoragePath::from(format!("{}/{}/{}", package, version, filename));
+        let info = PythonPackagePathInfo::try_from(&storage_path)?;
+
+        self.storage()
+            .save_file(self.id(), FileContent::Content(file_bytes), &storage_path)
+            .await?;
+
+        self.upsert_metadata(publisher, &info).await?;
 
         Ok(RepoResponse::Other(ResponseBuilder::created().empty()))
     }
@@ -222,6 +335,7 @@ impl Repository for PythonHosted {
         let site = self.site();
         let storage = self.storage();
         let repository_id = self.id();
+        let this = self.clone();
         async move {
             if !can_read_repository_with_auth(
                 &request.authentication,
@@ -237,6 +351,20 @@ impl Repository for PythonHosted {
                     "Missing permission to read repository",
                 ));
             }
+
+            let uri_path = request.parts.uri.path().to_string();
+            let path_clone = request.path.clone();
+            let ctx = PythonSimpleRequestContext::new(&path_clone, &uri_path);
+
+            if ctx.is_directory {
+                if ctx.redirect_needed {
+                    return Ok(RepoResponse::Other(redirect_to_trailing_slash(&uri_path)));
+                }
+                if let Some(response) = storage_request_directory(&this, &ctx).await? {
+                    return Ok(RepoResponse::Other(response));
+                }
+            }
+
             let file = storage.open_file(repository_id, &request.path).await?;
             Ok(file.into())
         }
@@ -258,6 +386,7 @@ impl Repository for PythonHosted {
         let site = self.site();
         let storage = self.storage();
         let repository_id = self.id();
+        let this = self.clone();
         async move {
             if !can_read_repository_with_auth(
                 &request.authentication,
@@ -273,6 +402,21 @@ impl Repository for PythonHosted {
                     "Missing permission to read repository",
                 ));
             }
+
+            let uri_path = request.parts.uri.path().to_string();
+            let path_clone = request.path.clone();
+            let ctx = PythonSimpleRequestContext::new(&path_clone, &uri_path);
+
+            if ctx.is_directory {
+                if ctx.redirect_needed {
+                    return Ok(RepoResponse::Other(redirect_to_trailing_slash(&uri_path)));
+                }
+                if let Some(response) = storage_request_directory(&this, &ctx).await? {
+                    let response = response.map(|_| Body::empty());
+                    return Ok(RepoResponse::Other(response));
+                }
+            }
+
             let meta = storage
                 .get_file_information(repository_id, &request.path)
                 .await?;
@@ -286,5 +430,283 @@ impl Repository for PythonHosted {
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
         let this = self.clone();
         async move { this.handle_upload(request).await }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PythonSimpleRequestContext {
+    components: Vec<String>,
+    is_directory: bool,
+    redirect_needed: bool,
+    prefix_to_root: String,
+}
+
+impl PythonSimpleRequestContext {
+    fn new(path: &StoragePath, uri_path: &str) -> Self {
+        let mut components: Vec<String> = path.clone().into_iter().map(String::from).collect();
+
+        if let Some(first) = components.first() {
+            if first.eq_ignore_ascii_case("simple") {
+                components.remove(0);
+            }
+        }
+
+        let request_segments = path.clone().into_iter().count();
+        let mut prefix_to_root = String::new();
+        for _ in 0..request_segments {
+            prefix_to_root.push_str("../");
+        }
+
+        let trailing_slash = uri_path.ends_with('/');
+        let is_directory =
+            path.is_directory() || trailing_slash || components.is_empty() || components.len() == 1;
+
+        let redirect_needed = is_directory && !trailing_slash;
+
+        Self {
+            components,
+            is_directory,
+            redirect_needed,
+            prefix_to_root,
+        }
+    }
+}
+
+async fn storage_request_directory(
+    repository: &PythonHosted,
+    ctx: &PythonSimpleRequestContext,
+) -> Result<Option<axum::response::Response>, PythonRepositoryError> {
+    if ctx.components.is_empty() {
+        return repository.render_root_simple_index(ctx).await.map(Some);
+    }
+
+    if ctx.components.len() == 1 {
+        return repository
+            .render_package_simple_index(ctx, ctx.components[0].as_str())
+            .await
+            .map(Some);
+    }
+
+    Ok(None)
+}
+
+async fn list_projects(repository: &PythonHosted) -> Result<Vec<DBProject>, PythonRepositoryError> {
+    let projects = SelectQueryBuilder::with_columns(DBProject::table_name(), DBProject::columns())
+        .filter(DBProjectColumn::RepositoryId.equals(repository.id().value()))
+        .order_by(DBProjectColumn::Key, SQLOrder::Ascending)
+        .query_as()
+        .fetch_all(repository.site().as_ref())
+        .await?;
+
+    Ok(projects)
+}
+
+impl PythonHosted {
+    async fn render_root_simple_index(
+        &self,
+        ctx: &PythonSimpleRequestContext,
+    ) -> Result<axum::response::Response, PythonRepositoryError> {
+        let projects = list_projects(self).await?;
+
+        let mut body = String::from(
+            "<!DOCTYPE html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>Simple index</title>\n  </head>\n  <body>\n",
+        );
+
+        if projects.is_empty() {
+            body.push_str("    <p>No packages uploaded yet.</p>\n");
+        } else {
+            for project in projects {
+                let href = format!("{}{}", ctx.prefix_to_root, project.path);
+                body.push_str("    <a href=\"");
+                body.push_str(&html_escape(&href));
+                body.push_str("\">");
+                body.push_str(&html_escape(&project.key));
+                body.push_str("</a><br/>\n");
+            }
+        }
+
+        body.push_str("  </body>\n</html>\n");
+
+        Ok(ResponseBuilder::ok().html(body))
+    }
+
+    async fn render_package_simple_index(
+        &self,
+        ctx: &PythonSimpleRequestContext,
+        package_component: &str,
+    ) -> Result<axum::response::Response, PythonRepositoryError> {
+        let normalized = normalize_package_name(package_component);
+        let Some(project) =
+            DBProject::find_by_project_key(&normalized, self.id(), self.site().as_ref()).await?
+        else {
+            let message = format!(
+                "<!DOCTYPE html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>Package not found</title>\n  </head>\n  <body>\n    <p>Package {} not found.</p>\n  </body>\n</html>\n",
+                html_escape(package_component)
+            );
+            return Ok(ResponseBuilder::not_found().html(message));
+        };
+
+        let mut versions =
+            DBProjectVersion::get_all_versions(project.id, self.site().as_ref()).await?;
+        versions.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+        let project_dir = project.path.trim_end_matches('/');
+
+        let mut lines = Vec::new();
+
+        for version in versions {
+            let version_path = format!("{project_dir}/{}/", version.version);
+            let storage_path = StoragePath::from(version_path.as_str());
+            let metadata = version
+                .extra
+                .extra
+                .as_ref()
+                .and_then(|value| from_value::<PythonPackageMetadata>(value.clone()).ok());
+            let requires_python = metadata
+                .as_ref()
+                .and_then(|meta| meta.requires_python.as_deref());
+            let metadata_hash = metadata.as_ref().and_then(|meta| meta.sha256.as_deref());
+
+            if let Some(StorageFile::Directory { files, .. }) =
+                self.storage().open_file(self.id(), &storage_path).await?
+            {
+                let mut file_entries = files
+                    .iter()
+                    .filter_map(|entry| match entry.file_type() {
+                        FileType::File(file_meta) => Some((entry.name().to_string(), file_meta)),
+                        FileType::Directory(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                file_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+                for (file_name, file_meta) in file_entries {
+                    if should_ignore(&file_name) {
+                        continue;
+                    }
+                    let relative_path = format!("{project_dir}/{}/{file_name}", version.version);
+                    let mut href = format!("{}{}", ctx.prefix_to_root, relative_path);
+                    if let Some(hash) = file_meta.file_hash.sha2_256.as_deref().or(metadata_hash) {
+                        href.push_str("#sha256=");
+                        href.push_str(hash);
+                    }
+
+                    let mut line = String::from("    <a href=\"");
+                    line.push_str(&html_escape(&href));
+                    line.push('"');
+                    if let Some(rp) = requires_python {
+                        line.push_str(" data-requires-python=\"");
+                        line.push_str(&html_escape(rp));
+                        line.push_str("\"");
+                    }
+                    line.push('>');
+                    line.push_str(&html_escape(&file_name));
+                    line.push_str("</a><br/>\n");
+                    lines.push(line);
+                }
+            }
+        }
+
+        let display_name = if project.name.is_empty() {
+            package_component
+        } else {
+            project.name.as_str()
+        };
+
+        let mut body = format!(
+            "<!DOCTYPE html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>Links for {}</title>\n  </head>\n  <body>\n    <h1>Links for {}</h1>\n",
+            html_escape(display_name),
+            html_escape(display_name)
+        );
+
+        if lines.is_empty() {
+            body.push_str("    <p>No files available.</p>\n");
+        } else {
+            for line in lines {
+                body.push_str(&line);
+            }
+        }
+
+        body.push_str("  </body>\n</html>\n");
+
+        Ok(ResponseBuilder::ok().html(body))
+    }
+}
+
+fn redirect_to_trailing_slash(uri_path: &str) -> axum::response::Response {
+    let mut location = if uri_path.is_empty() {
+        String::from("/")
+    } else if uri_path.ends_with('/') {
+        uri_path.to_string()
+    } else {
+        format!("{}/", uri_path)
+    };
+
+    if location.is_empty() {
+        location = String::from("/");
+    }
+
+    ResponseBuilder::default()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header(LOCATION, location)
+        .empty()
+}
+
+fn should_ignore(name: &str) -> bool {
+    name.starts_with('.') || name.ends_with(".nr-meta")
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| match ch {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '\"' => "&quot;".to_string(),
+            '\'' => "&#x27;".to_string(),
+            _ => ch.to_string(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::header::LOCATION;
+
+    #[test]
+    fn escapes_html_characters() {
+        let escaped = html_escape("<a href=\"test\">'&'</a>");
+        assert_eq!(
+            escaped,
+            "&lt;a href=&quot;test&quot;&gt;&#x27;&amp;&#x27;&lt;/a&gt;"
+        );
+    }
+
+    #[test]
+    fn context_prefix_for_root_is_empty() {
+        let path = StoragePath::default();
+        let ctx = PythonSimpleRequestContext::new(&path, "/repositories/test/py-hosted/");
+        assert!(ctx.prefix_to_root.is_empty());
+        assert!(ctx.is_directory);
+        assert!(!ctx.redirect_needed);
+    }
+
+    #[test]
+    fn context_prefix_for_simple_package() {
+        let path = StoragePath::from("simple/example/");
+        let ctx =
+            PythonSimpleRequestContext::new(&path, "/repositories/test/py-hosted/simple/example/");
+        assert_eq!(ctx.prefix_to_root, "../../");
+        assert!(ctx.is_directory);
+    }
+
+    #[test]
+    fn redirect_adds_trailing_slash() {
+        let response = redirect_to_trailing_slash("/repositories/test/py-hosted");
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+        let location = response.headers().get(LOCATION).unwrap();
+        assert_eq!(location, "/repositories/test/py-hosted/");
     }
 }

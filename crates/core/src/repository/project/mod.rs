@@ -44,7 +44,8 @@ impl From<ProjectIds> for ProjectResolution {
     Type,
     ValueExprType,
 )]
-#[sqlx(type_name = "TEXT")]
+#[sqlx(type_name = "VARCHAR")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 #[derive(Default)]
 pub enum ReleaseType {
     /// Stable Release
@@ -64,6 +65,17 @@ pub enum ReleaseType {
 }
 
 impl ReleaseType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReleaseType::Stable => "stable",
+            ReleaseType::Beta => "beta",
+            ReleaseType::Alpha => "alpha",
+            ReleaseType::Snapshot => "snapshot",
+            ReleaseType::ReleaseCandidate => "release_candidate",
+            ReleaseType::Unknown => "unknown",
+        }
+    }
+
     pub fn release_type_from_version(version: &str) -> ReleaseType {
         let version = version.to_lowercase();
         if version.contains("snapshot") {
@@ -79,6 +91,16 @@ impl ReleaseType {
         }
     }
 }
+
+impl TryFrom<String> for ReleaseType {
+    type Error = ();
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+        ReleaseType::from_str(&value).map_err(|_| ())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, sqlx::Type)]
 pub enum ProjectState {
     Active,

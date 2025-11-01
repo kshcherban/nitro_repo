@@ -1,7 +1,7 @@
 <template>
   <div>
     <form @submit.prevent="">
-      <TextInput v-model="value!.type" disabled>Repository Type</TextInput>
+      <TextInput v-model="value.type" disabled>Repository Type</TextInput>
     </form>
   </div>
 </template>
@@ -19,7 +19,9 @@ const props = defineProps({
   },
 });
 
-const value = defineModel<PhpConfigType>({ default: { type: "Hosted" } });
+const value = defineModel<PhpConfigType>({
+  default: { type: "Hosted" },
+});
 
 onMounted(async () => {
   if (props.repository) {

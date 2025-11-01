@@ -2,12 +2,12 @@ use std::sync::{Arc, LazyLock};
 
 use http::StatusCode;
 use nr_core::{
-    database::entities::repository::DBRepository,
+    database::entities::repository::{DBRepository, DBRepositoryConfig},
     repository::{Visibility, config::RepositoryConfigType, proxy_url::ProxyURL},
     storage::StoragePath,
 };
 use nr_storage::{DynStorage, FileContent, Storage};
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard};
 use regex::Regex;
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -19,6 +19,20 @@ use super::{
     configs::{PythonProxyConfig, PythonProxyRoute, PythonRepositoryConfigType},
     utils::normalize_package_name,
 };
+
+static DEFAULT_ROUTE: LazyLock<PythonProxyRoute> = LazyLock::new(|| PythonProxyRoute {
+    url: ProxyURL::try_from(String::from("https://pypi.org/simple"))
+        .expect("valid PyPI default route"),
+    name: Some("PyPI".to_string()),
+});
+
+fn normalize_routes(routes: Vec<PythonProxyRoute>) -> Vec<PythonProxyRoute> {
+    if routes.is_empty() {
+        vec![DEFAULT_ROUTE.clone()]
+    } else {
+        routes
+    }
+}
 use crate::{
     app::NitroRepo,
     repository::{
@@ -35,7 +49,7 @@ pub struct PythonProxyInner {
     pub visibility: RwLock<Visibility>,
     pub storage: DynStorage,
     pub site: NitroRepo,
-    pub routes: Vec<PythonProxyRoute>,
+    pub routes: RwLock<Vec<PythonProxyRoute>>,
     pub client: reqwest::Client,
     pub active: bool,
     pub storage_name: String,
@@ -67,7 +81,7 @@ impl PythonProxy {
             visibility: RwLock::new(repository.visibility),
             storage,
             site,
-            routes: config.routes,
+            routes: RwLock::new(normalize_routes(config.routes)),
             client,
             active: repository.active,
             storage_name,
@@ -86,8 +100,8 @@ impl PythonProxy {
     fn visibility(&self) -> Visibility {
         *self.0.visibility.read()
     }
-    fn routes(&self) -> &[PythonProxyRoute] {
-        &self.0.routes
+    fn routes(&self) -> RwLockReadGuard<'_, Vec<PythonProxyRoute>> {
+        self.0.routes.read()
     }
     fn storage_name(&self) -> &str {
         &self.0.storage_name
@@ -111,7 +125,11 @@ impl PythonProxy {
         if path.is_directory() {
             return Ok(false);
         }
-        for route in self.routes() {
+        let routes = {
+            let guard = self.routes();
+            guard.clone()
+        };
+        for route in routes.iter() {
             let Some(url) = build_url(&route.url, path.clone(), query) else {
                 continue;
             };
@@ -175,7 +193,11 @@ impl PythonProxy {
     ) -> Result<Option<RepoResponse>, PythonRepositoryError> {
         use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 
-        for route in self.routes() {
+        let routes = {
+            let guard = self.routes();
+            guard.clone()
+        };
+        for route in routes.iter() {
             let Some(url) = build_url(&route.url, path.clone(), query) else {
                 continue;
             };
@@ -304,6 +326,20 @@ impl Repository for PythonProxy {
 
     fn site(&self) -> NitroRepo {
         self.site()
+    }
+
+    async fn reload(&self) -> Result<(), RepositoryFactoryError> {
+        let config = DBRepositoryConfig::<PythonProxyConfig>::get_config(
+            self.id(),
+            PythonRepositoryConfigType::get_type_static(),
+            self.site().as_ref(),
+        )
+        .await?
+        .map(|cfg| cfg.value.0)
+        .unwrap_or_default();
+        let mut routes = self.0.routes.write();
+        *routes = normalize_routes(config.routes);
+        Ok(())
     }
 
     fn handle_get(
@@ -516,6 +552,24 @@ mod tests {
         let path = StoragePath::from("packages/example/example-1.0.0.whl");
         let cache = cache_path_for_python_proxy(&path).expect("cache path");
         assert_eq!(cache.to_string(), "packages/example/example-1.0.0.whl");
+    }
+
+    #[test]
+    fn normalize_routes_injects_default_when_empty() {
+        let routes = normalize_routes(Vec::new());
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0], DEFAULT_ROUTE.clone());
+    }
+
+    #[test]
+    fn normalize_routes_retains_existing_entries() {
+        let custom = PythonProxyRoute {
+            url: ProxyURL::try_from(String::from("https://internal.example/simple"))
+                .expect("valid url"),
+            name: Some("Internal".to_string()),
+        };
+        let routes = normalize_routes(vec![custom.clone()]);
+        assert_eq!(routes, vec![custom]);
     }
 }
 

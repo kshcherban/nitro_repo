@@ -1,7 +1,7 @@
 <template>
   <section class="auth-config">
     <label class="toggle">
-      <input type="checkbox" v-model="model.enabled" :disabled="isSaving" />
+      <input type="checkbox" v-model="enabled" :disabled="isSaving" />
       <span>Require authentication for repository access</span>
     </label>
     <p class="hint">
@@ -13,7 +13,7 @@
       <template v-else-if="isSaving">Saving…</template>
       <template v-else-if="hasLoaded">Saved</template>
     </p>
-  </section>
+ </section>
 </template>
 
 <script setup lang="ts">
@@ -32,11 +32,17 @@ const isCreate = computed(() => !props.repository);
 const isSaving = ref(false);
 const error = ref<string | null>(null);
 const hasLoaded = ref(false);
+const enabled = computed({
+  get: () => model.value.enabled,
+  set: (value: boolean) => {
+    model.value = { ...model.value, enabled: value };
+  },
+});
 
 onMounted(load);
 
 watch(
-  () => model.value.enabled,
+  () => enabled.value,
   async (enabled) => {
     if (!props.repository || !hasLoaded.value) {
       return;

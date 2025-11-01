@@ -22,7 +22,12 @@ export type NPMConfigType =
 
 export function defaultProxy(): NpmProxyConfigType {
   return {
-    routes: [],
+    routes: [
+      {
+        url: "https://registry.npmjs.org",
+        name: "npmjs",
+      },
+    ],
   };
 }
 

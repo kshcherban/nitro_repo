@@ -10,13 +10,16 @@ import { ViteEjsPlugin } from "vite-plugin-ejs";
 export default defineConfig(async ({ command }): Promise<UserConfig> => {
   const enableDevTools =
     command === "serve" && process.env.VITE_DEVTOOLS !== "false";
+  const hasWindow =
+    typeof globalThis !== "undefined" &&
+    typeof (globalThis as { window?: unknown }).window !== "undefined";
   const plugins: PluginOption[] = [
     vue(),
     vueJsx(),
     ViteEjsPlugin(),
   ];
 
-  if (enableDevTools) {
+  if (enableDevTools && hasWindow) {
     const { default: vueDevTools } = await import("vite-plugin-vue-devtools");
     plugins.push(vueDevTools());
   }

@@ -38,6 +38,8 @@ export interface RepositoryWithStorageName {
   visibility: Visibility;
   updated_at: string;
   created_at: string;
+  auth_enabled: boolean;
+  storage_usage_bytes: number | null;
 }
 export interface ConfigDescription {
   name: string;

@@ -2,25 +2,13 @@
   <section class="packages">
     <header class="packages__header">
       <h2>Cached Packages</h2>
-      <div v-if="!isLoading" class="packages__header-meta">
-        <div class="packages__counts">
-          <span>{{ totalPackages }} package(s)</span>
-          <span v-if="packages.length">Showing {{ packages.length }} file(s)</span>
-        </div>
-        <div class="packages__actions">
-          <span v-if="selectedCount > 0">{{ selectedCount }} selected</span>
-          <button
-            class="nr-button nr-button--danger"
-            type="button"
-            @click="deleteSelected"
-            :disabled="selectedCount === 0 || isDeleting">
-            Delete Selected
-          </button>
-        </div>
+      <div v-if="!isLoading" class="packages__counts">
+        <span>{{ totalPackages }} package(s)</span>
+        <span v-if="packages.length">Showing {{ packages.length }} file(s)</span>
       </div>
     </header>
 
-    <div v-if="isLoading" class="packages__state">Loading packages...</div>
+    <div v-if="isLoading" class="packages__state">Loading packages…</div>
     <div v-else-if="error" class="packages__state packages__state--error">
       Failed to load packages: {{ error }}
     </div>
@@ -33,14 +21,6 @@
     <table v-else class="packages__table">
       <thead>
         <tr>
-          <th class="packages__checkbox">
-            <input
-              type="checkbox"
-              :checked="allSelected"
-              :indeterminate.prop="isIndeterminate"
-              @change="toggleSelectAll"
-              :disabled="isDeleting" />
-          </th>
           <th>Package</th>
           <th>Name</th>
           <th>Size</th>
@@ -50,13 +30,6 @@
       </thead>
       <tbody>
         <tr v-for="pkg in packages" :key="pkg.cachePath">
-          <td class="packages__checkbox">
-            <input
-              type="checkbox"
-              :value="pkg.cachePath"
-              v-model="selected"
-              :disabled="isDeleting" />
-          </td>
           <td>{{ pkg.package }}</td>
           <td>{{ pkg.name }}</td>
           <td>{{ formatBytes(pkg.size) }}</td>
@@ -92,7 +65,6 @@
 <script setup lang="ts">
 import http from "@/http";
 import { computed, onMounted, ref, watch } from "vue";
-import { notify } from "@kyvg/vue3-notification";
 
 interface PackageEntry {
   name: string;
@@ -108,20 +80,18 @@ const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
 const currentPage = ref(1);
-const perPage = ref(50);
+const perPage = ref(25);
 const totalPackages = ref(0);
 const perPageOptions = [25, 50, 100];
-const selected = ref<string[]>([]);
-const isDeleting = ref(false);
 
 onMounted(loadPackages);
+
 watch(
   () => props.repositoryId,
   () => {
     packages.value = [];
     error.value = null;
     currentPage.value = 1;
-    selected.value = [];
     loadPackages();
   },
 );
@@ -130,7 +100,6 @@ watch([currentPage, perPage], () => {
   if (!props.repositoryId) {
     return;
   }
-  selected.value = [];
   loadPackages();
 });
 
@@ -148,14 +117,6 @@ const pageLabel = computed(() => {
   const start = (currentPage.value - 1) * perPage.value + 1;
   const end = packages.value.length === 0 ? start - 1 : start + packages.value.length - 1;
   return `Page ${currentPage.value} of ${totalPages.value} · Showing ${Math.max(start, 0)}-${Math.max(end, 0)}`;
-});
-
-const selectedCount = computed(() => selected.value.length);
-const allSelected = computed(() => {
-  return packages.value.length > 0 && selected.value.length === packages.value.length;
-});
-const isIndeterminate = computed(() => {
-  return selected.value.length > 0 && selected.value.length < packages.value.length;
 });
 
 async function loadPackages() {
@@ -178,56 +139,11 @@ async function loadPackages() {
     }));
     packages.value = items;
     totalPackages.value = data.total_packages ?? 0;
-    selected.value = [];
   } catch (err) {
     console.error(err);
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     isLoading.value = false;
-  }
-}
-
-async function deleteSelected() {
-  if (!props.repositoryId || selected.value.length === 0) {
-    return;
-  }
-  const confirmed = window.confirm(
-    `Delete ${selected.value.length} cached package(s)? This removes cached files but not upstream artifacts.`,
-  );
-  if (!confirmed) {
-    return;
-  }
-  isDeleting.value = true;
-  try {
-    await http.delete(`/api/repository/${props.repositoryId}/packages`, {
-      data: { paths: selected.value },
-    });
-    notify({
-      type: "success",
-      title: "Packages deleted",
-      text: `${selected.value.length} cached package(s) removed`,
-    });
-    selected.value = [];
-    await loadPackages();
-  } catch (err: any) {
-    console.error(err);
-    const message = err?.response?.data?.message ?? err?.message ?? "Failed to delete packages";
-    notify({
-      type: "error",
-      title: "Deletion failed",
-      text: message,
-    });
-  } finally {
-    isDeleting.value = false;
-  }
-}
-
-function toggleSelectAll(event: Event) {
-  const target = event.target as HTMLInputElement;
-  if (target.checked) {
-    selected.value = packages.value.map((pkg) => pkg.cachePath);
-  } else {
-    selected.value = [];
   }
 }
 
@@ -270,7 +186,7 @@ function updatePerPage(event: Event) {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  padding: 1rem;
+  padding: 1rem 0;
 }
 
 .packages__header {
@@ -278,12 +194,6 @@ function updatePerPage(event: Event) {
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
-}
-
-.packages__header-meta {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
   flex-wrap: wrap;
 }
 
@@ -292,12 +202,6 @@ function updatePerPage(event: Event) {
   gap: 0.75rem;
   color: var(--text-secondary, #6c757d);
   font-size: 0.9rem;
-}
-
-.packages__actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
 }
 
 .packages__state {
@@ -321,11 +225,6 @@ function updatePerPage(event: Event) {
 
   code {
     font-size: 0.85rem;
-  }
-
-  .packages__checkbox {
-    width: 2rem;
-    text-align: center;
   }
 }
 

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use axum::{
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
@@ -10,16 +12,18 @@ use nr_core::{
         DBRepositoryWithStorageName,
     },
     repository::{
-        Visibility,
+        RepositoryName, Visibility,
         browse::{BrowseFile, BrowseResponse},
         config::repository_page::{PageType, RepositoryPage},
         project::ProjectResolution,
     },
+    storage::{StorageName, StoragePath},
     user::permissions::{HasPermissions, RepositoryActions},
 };
+use nr_storage::{FileType, Storage, StorageFile};
 use page::RepositoryPageRoutes;
 use serde::{Deserialize, Serialize};
-use tracing::instrument;
+use tracing::{instrument, warn};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use uuid::Uuid;
 
@@ -30,12 +34,13 @@ use crate::{
         responses::{MissingPermission, RepositoryNotFound},
     },
     error::InternalError,
-    repository::{Repository, RepositoryTypeDescription},
+    repository::{DynRepository, Repository, RepositoryTypeDescription},
     utils::ResponseBuilder,
 };
 mod browse;
 mod config;
 mod management;
+mod packages;
 mod page;
 mod types;
 #[derive(OpenApi)]
@@ -56,6 +61,7 @@ mod types;
         management::get_configs_for_repository,
         management::delete_repository,
         browse::browse,
+        packages::list_cached_packages,
     ),
     components(schemas(
         DBRepository,
@@ -68,7 +74,10 @@ mod types;
         BrowseResponse,
         ProjectResolution,
         DBRepositoryNames,
-        DBRepositoryNamesWithVisibility
+        DBRepositoryNamesWithVisibility,
+        RepositoryListEntry,
+        packages::PackageDeleteRequest,
+        packages::PackageDeleteResponse
     )),
     nest(
         (path = "/page", api = RepositoryPageRoutes, tags=["repository", "page"]),
@@ -87,8 +96,24 @@ pub fn repository_routes() -> axum::Router<NitroRepo> {
         .nest("/page", page::page_apis())
         .route("/types", get(types::repository_types))
         .merge(browse::browse_routes())
+        .merge(packages::package_routes())
         .merge(management::management_routes())
         .merge(config::config_routes())
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RepositoryListEntry {
+    pub id: Uuid,
+    pub storage_id: Uuid,
+    pub storage_name: StorageName,
+    pub name: RepositoryName,
+    pub repository_type: String,
+    pub visibility: Visibility,
+    pub active: bool,
+    pub updated_at: chrono::DateTime<chrono::FixedOffset>,
+    pub created_at: chrono::DateTime<chrono::FixedOffset>,
+    pub auth_enabled: bool,
+    pub storage_usage_bytes: Option<u64>,
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RepositoryIdResponse {
@@ -157,14 +182,29 @@ pub async fn get_repository(
         return Ok(MissingPermission::ReadRepository(repository).into_response());
     }
 
-    Ok(ResponseBuilder::ok().json(&config))
+    let storage_usage = compute_repository_storage_usage(&site, config.id).await;
+    let auth_config = site.get_repository_auth_config(config.id).await?;
+    let response = RepositoryListEntry {
+        id: config.id,
+        storage_id: config.storage_id,
+        storage_name: config.storage_name,
+        name: config.name,
+        repository_type: config.repository_type,
+        visibility: config.visibility,
+        active: config.active,
+        updated_at: config.updated_at,
+        created_at: config.created_at,
+        auth_enabled: auth_config.enabled,
+        storage_usage_bytes: storage_usage,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
 }
 
 #[utoipa::path(
     get,
     path = "/list",
     responses(
-        (status = 200, description = "List Repositories", body = [DBRepositoryWithStorageName]),
+        (status = 200, description = "List Repositories", body = [RepositoryListEntry]),
     )
 )]
 #[instrument]
@@ -172,15 +212,88 @@ pub async fn list_repositories(
     auth: Option<Authentication>,
     State(site): State<NitroRepo>,
 ) -> Result<Response, InternalError> {
-    let repositories: Vec<_> = DBRepositoryWithStorageName::get_all(site.as_ref())
-        .await?
-        .into_iter()
-        .filter(|repo| match repo.visibility {
-            Visibility::Private | Visibility::Public => true, // TODO FIX
-            _ => true,
-        })
-        .collect();
-    Ok(ResponseBuilder::ok().json(&repositories))
+    let repositories = DBRepositoryWithStorageName::get_all(site.as_ref()).await?;
+    let mut entries = Vec::with_capacity(repositories.len());
+    for repository in repositories {
+        if matches!(
+            repository.visibility,
+            Visibility::Private | Visibility::Hidden
+        ) && !auth
+            .has_action(RepositoryActions::Read, repository.id, site.as_ref())
+            .await?
+        {
+            continue;
+        }
+        let storage_usage_bytes = compute_repository_storage_usage(&site, repository.id).await;
+        let auth_config = site.get_repository_auth_config(repository.id).await?;
+        entries.push(RepositoryListEntry {
+            id: repository.id,
+            storage_id: repository.storage_id,
+            storage_name: repository.storage_name.clone(),
+            name: repository.name.clone(),
+            repository_type: repository.repository_type.clone(),
+            visibility: repository.visibility,
+            active: repository.active,
+            updated_at: repository.updated_at,
+            created_at: repository.created_at,
+            auth_enabled: auth_config.enabled,
+            storage_usage_bytes,
+        });
+    }
+    Ok(ResponseBuilder::ok().json(&entries))
+}
+
+async fn compute_repository_storage_usage(site: &NitroRepo, repository_id: Uuid) -> Option<u64> {
+    let repository = site.get_repository(repository_id)?;
+    match calculate_repository_storage_usage(&repository).await {
+        Ok(size) => Some(size),
+        Err(err) => {
+            warn!(%repository_id, ?err, "Failed to calculate repository storage usage");
+            None
+        }
+    }
+}
+
+async fn calculate_repository_storage_usage(
+    repository: &DynRepository,
+) -> Result<u64, nr_storage::StorageError> {
+    let storage = repository.get_storage();
+    let mut total = 0u64;
+    let repository_id = repository.id();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    queue.push_back("/".to_string());
+
+    while let Some(path) = queue.pop_front() {
+        let storage_path = StoragePath::from(path.as_str());
+        let Some(entry) = storage.open_file(repository_id, &storage_path).await? else {
+            continue;
+        };
+        match entry {
+            StorageFile::File { meta, .. } => {
+                total += meta.file_type.file_size;
+            }
+            StorageFile::Directory { files, .. } => {
+                for entry in files {
+                    match entry.file_type() {
+                        FileType::File(file_meta) => {
+                            total += file_meta.file_size;
+                        }
+                        FileType::Directory(_) => {
+                            let mut next_path = path.clone();
+                            if !next_path.ends_with('/') {
+                                next_path.push('/');
+                            }
+                            next_path.push_str(entry.name());
+                            next_path.push('/');
+                            queue.push_back(next_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(total)
 }
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
