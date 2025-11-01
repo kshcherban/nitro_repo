@@ -16,7 +16,10 @@
           <BasicRepositoryInfo :repository="repository" />
         </TabContent>
         <TabContent v-if="showPackagesTab" tabId="packages">
-          <RepositoryPackagesTab :repositoryId="repositoryId" />
+          <RepositoryPackagesTab
+            :repository-id="repositoryId"
+            :repository-type="repository?.repository_type"
+            :repository-kind="repositoryKind" />
         </TabContent>
         <TabContent
           class="tab-content"
@@ -54,6 +57,7 @@ const repositoryId = router.currentRoute.value.params.id as string;
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
 const configDescriptions = ref<Map<string, ConfigDescription>>(new Map());
 const configTypes = ref<string[]>([]);
+const repositoryKind = ref<string | null>(null);
 const showPackagesTab = computed(() => {
   const type = repository.value?.repository_type;
   return type === "python" || type === "npm";
@@ -103,8 +107,29 @@ async function getRepository() {
   await http.get(`/api/repository/${repositoryId}/configs`).then((response) => {
     configTypes.value = response.data;
   });
+  await loadRepositoryKind();
 }
 getRepository();
+
+async function loadRepositoryKind() {
+  const type = repository.value?.repository_type;
+  if (!type) {
+    repositoryKind.value = null;
+    return;
+  }
+  const configKey = type.toLowerCase();
+  try {
+    const response = await http.get(`/api/repository/${repositoryId}/config/${configKey}`);
+    if (response?.data?.type) {
+      repositoryKind.value = String(response.data.type);
+    } else {
+      repositoryKind.value = null;
+    }
+  } catch (error) {
+    console.error("Failed to load repository kind", error);
+    repositoryKind.value = null;
+  }
+}
 </script>
 <style scoped lang="scss">
 @import "@/assets/styles/theme";

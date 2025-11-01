@@ -1,11 +1,22 @@
 <template>
   <section class="packages">
     <header class="packages__header">
-      <h2>Cached Packages</h2>
+      <div class="packages__title-row">
+        <h2>{{ headerTitle }}</h2>
+        <div class="packages__search" v-if="!isLoading && totalPackages > 0">
+          <input
+            type="search"
+            :placeholder="`Search ${headerTitle.toLowerCase()}…`"
+            v-model="searchTerm"
+            aria-label="Search packages" />
+        </div>
+      </div>
       <div v-if="!isLoading" class="packages__header-meta">
         <div class="packages__counts">
           <span>{{ totalPackages }} package(s)</span>
-          <span v-if="packages.length">Showing {{ packages.length }} file(s)</span>
+          <span v-if="visiblePackages.length">
+            Showing {{ visiblePackages.length }} file(s)
+          </span>
         </div>
         <div class="packages__actions">
           <span v-if="selectedCount > 0">{{ selectedCount }} selected</span>
@@ -25,10 +36,10 @@
       Failed to load packages: {{ error }}
     </div>
     <div v-else-if="totalPackages === 0" class="packages__state">
-      No cached packages yet. Trigger a download to populate this list.
+      {{ emptyRepositoryMessage }}
     </div>
-    <div v-else-if="packages.length === 0" class="packages__state">
-      No packages on this page. Try a different page.
+    <div v-else-if="visiblePackages.length === 0" class="packages__state">
+      No packages match your search on this page. Try a different page or clear the filters.
     </div>
     <table v-else class="packages__table">
       <thead>
@@ -49,7 +60,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="pkg in packages" :key="pkg.cachePath">
+        <tr v-for="pkg in visiblePackages" :key="pkg.cachePath">
           <td class="packages__checkbox">
             <input
               type="checkbox"
@@ -102,7 +113,11 @@ interface PackageEntry {
   package: string;
 }
 
-const props = defineProps<{ repositoryId: string }>();
+const props = defineProps<{
+  repositoryId: string;
+  repositoryType?: string;
+  repositoryKind?: string | null;
+}>();
 
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
@@ -113,6 +128,7 @@ const totalPackages = ref(0);
 const perPageOptions = [25, 50, 100];
 const selected = ref<string[]>([]);
 const isDeleting = ref(false);
+const searchTerm = ref("");
 
 onMounted(loadPackages);
 watch(
@@ -122,6 +138,7 @@ watch(
     error.value = null;
     currentPage.value = 1;
     selected.value = [];
+    searchTerm.value = "";
     loadPackages();
   },
 );
@@ -132,6 +149,10 @@ watch([currentPage, perPage], () => {
   }
   selected.value = [];
   loadPackages();
+});
+
+watch(searchTerm, () => {
+  currentPage.value = 1;
 });
 
 const totalPages = computed(() => {
@@ -146,17 +167,63 @@ const pageLabel = computed(() => {
     return "Page 1 of 1";
   }
   const start = (currentPage.value - 1) * perPage.value + 1;
-  const end = packages.value.length === 0 ? start - 1 : start + packages.value.length - 1;
+  const end = visiblePackages.value.length === 0 ? start - 1 : start + visiblePackages.value.length - 1;
   return `Page ${currentPage.value} of ${totalPages.value} · Showing ${Math.max(start, 0)}-${Math.max(end, 0)}`;
+});
+
+const normalizedSearchTerm = computed(() => searchTerm.value.trim().toLowerCase());
+
+const visiblePackages = computed(() => {
+  const term = normalizedSearchTerm.value;
+  if (!term) {
+    return packages.value;
+  }
+  return packages.value.filter((pkg) => {
+    const haystack = [pkg.package, pkg.name, pkg.cachePath]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(term);
+  });
 });
 
 const selectedCount = computed(() => selected.value.length);
 const allSelected = computed(() => {
-  return packages.value.length > 0 && selected.value.length === packages.value.length;
+  return (
+    visiblePackages.value.length > 0 &&
+    visiblePackages.value.every((pkg) => selected.value.includes(pkg.cachePath))
+  );
 });
 const isIndeterminate = computed(() => {
-  return selected.value.length > 0 && selected.value.length < packages.value.length;
+  const visibleSelected = visiblePackages.value.filter((pkg) =>
+    selected.value.includes(pkg.cachePath),
+  ).length;
+  return visibleSelected > 0 && visibleSelected < visiblePackages.value.length;
 });
+
+const derivedHostedFromPackages = computed(() => {
+  if (packages.value.length === 0) {
+    return false;
+  }
+  return !packages.value.some((pkg) => pkg.cachePath.startsWith("packages/"));
+});
+
+const isHostedRepository = computed(() => {
+  if (props.repositoryKind) {
+    return props.repositoryKind.toLowerCase() === "hosted";
+  }
+  if (props.repositoryType === "python") {
+    return derivedHostedFromPackages.value;
+  }
+  return false;
+});
+
+const headerTitle = computed(() => (isHostedRepository.value ? "Packages" : "Cached Packages"));
+
+const emptyRepositoryMessage = computed(() =>
+  isHostedRepository.value
+    ? "No packages yet. Upload a package to populate this list."
+    : "No cached packages yet. Trigger a download to populate this list.",
+);
 
 async function loadPackages() {
   if (!props.repositoryId) {
@@ -191,8 +258,11 @@ async function deleteSelected() {
   if (!props.repositoryId || selected.value.length === 0) {
     return;
   }
+  const count = selected.value.length;
   const confirmed = window.confirm(
-    `Delete ${selected.value.length} cached package(s)? This removes cached files but not upstream artifacts.`,
+    isHostedRepository.value
+      ? `Delete ${count} package(s)? This removes files from the repository.`
+      : `Delete ${count} cached package(s)? This removes cached files but not upstream artifacts.`,
   );
   if (!confirmed) {
     return;
@@ -205,7 +275,9 @@ async function deleteSelected() {
     notify({
       type: "success",
       title: "Packages deleted",
-      text: `${selected.value.length} cached package(s) removed`,
+      text: isHostedRepository.value
+        ? `${count} package(s) removed`
+        : `${count} cached package(s) removed`,
     });
     selected.value = [];
     await loadPackages();
@@ -225,9 +297,13 @@ async function deleteSelected() {
 function toggleSelectAll(event: Event) {
   const target = event.target as HTMLInputElement;
   if (target.checked) {
-    selected.value = packages.value.map((pkg) => pkg.cachePath);
+    const visibleKeys = visiblePackages.value.map((pkg) => pkg.cachePath);
+    const current = new Set(selected.value);
+    visibleKeys.forEach((key) => current.add(key));
+    selected.value = Array.from(current);
   } else {
-    selected.value = [];
+    const visibleKeys = new Set(visiblePackages.value.map((pkg) => pkg.cachePath));
+    selected.value = selected.value.filter((value) => !visibleKeys.has(value));
   }
 }
 
@@ -278,6 +354,14 @@ function updatePerPage(event: Event) {
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.packages__title-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .packages__header-meta {
@@ -285,6 +369,13 @@ function updatePerPage(event: Event) {
   align-items: center;
   gap: 1.5rem;
   flex-wrap: wrap;
+}
+
+.packages__search input {
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+  min-width: 220px;
 }
 
 .packages__counts {

@@ -129,7 +129,7 @@ impl MavenProxy {
         pom: Bytes,
     ) -> Result<(), MavenError> {
         let pom = self.parse_pom(pom.to_vec())?;
-        let version_dir = path.parent();
+        let version_dir = path.clone().parent();
         let http_client = reqwest::Client::builder()
             .user_agent("Nitro Repo")
             .build()
@@ -154,6 +154,7 @@ impl MavenProxy {
                 }
             }
         }
+        self.post_pom_upload(path.clone(), None, pom).await;
         // TODO: Trigger project indexing
         Ok(())
     }
