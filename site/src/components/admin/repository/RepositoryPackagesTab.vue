@@ -55,7 +55,7 @@
           <th>Package</th>
           <th>Name</th>
           <th>Size</th>
-          <th>Cached Path</th>
+          <th>{{ pathColumnTitle }}</th>
           <th>Cached At</th>
         </tr>
       </thead>
@@ -218,6 +218,7 @@ const isHostedRepository = computed(() => {
 });
 
 const headerTitle = computed(() => (isHostedRepository.value ? "Packages" : "Cached Packages"));
+const pathColumnTitle = computed(() => (isHostedRepository.value ? "Path" : "Cached Path"));
 
 const emptyRepositoryMessage = computed(() =>
   isHostedRepository.value

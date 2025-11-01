@@ -3,9 +3,12 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use axum::response::Response;
+use axum::{body::Body, response::Response};
 use bytes::Bytes;
-use http::StatusCode;
+use http::{
+    StatusCode,
+    header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED},
+};
 use maven_rs::pom::Pom;
 use nr_core::{
     database::entities::repository::{DBRepository, DBRepositoryConfig},
@@ -217,6 +220,65 @@ impl MavenProxy {
         }
         Ok(None)
     }
+
+    #[instrument(skip(self), fields(nr.repository.id = %self.id, nr.repository.name = %self.name))]
+    pub async fn head_from_proxy(
+        &self,
+        path: StoragePath,
+    ) -> Result<Option<RepoResponse>, MavenError> {
+        let proxy_config = self.config.read().clone();
+        let http_client = reqwest::Client::builder()
+            .user_agent("Nitro Repo")
+            .build()
+            .expect("Failed to build HTTP Client");
+
+        for route in proxy_config.routes {
+            let mut path_as_string = path.to_string();
+            if path_as_string.starts_with('/') {
+                path_as_string = path_as_string[1..].into();
+            }
+            let url_string = format!("{}/{}", route.url, path_as_string);
+            debug!(?url_string, "HEAD proxying request");
+            let url = match url::Url::parse(&url_string) {
+                Ok(ok) => ok,
+                Err(err) => {
+                    error!(?err, ?url_string, "Failed to parse URL");
+                    continue;
+                }
+            };
+
+            let response = match http_client.head(url).send().await {
+                Ok(ok) => ok,
+                Err(err) => {
+                    warn!(?err, ?url_string, "Failed to send HEAD request");
+                    continue;
+                }
+            };
+
+            if response.status().is_success() {
+                let mut builder = Response::builder().status(response.status());
+                if let Some(headers) = builder.headers_mut() {
+                    for header in [CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, ETAG] {
+                        if let Some(value) = response.headers().get(&header) {
+                            headers.insert(header.clone(), value.clone());
+                        }
+                    }
+                }
+
+                let response = builder.body(Body::empty()).unwrap_or_else(|err| {
+                    warn!(?err, "Failed to build HEAD proxy response");
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Failed to proxy HEAD request"))
+                        .unwrap()
+                });
+
+                return Ok(Some(RepoResponse::Other(response)));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 impl Repository for MavenProxy {
@@ -337,7 +399,12 @@ impl Repository for MavenProxy {
             return Ok(err);
         }
         let file = self.storage.get_file_information(self.id, &path).await?;
-        return self.indexing_check_option(file, &authentication).await;
+        if file.is_none() {
+            if let Some(response) = self.head_from_proxy(path.clone()).await? {
+                return Ok(response);
+            }
+        }
+        self.indexing_check_option(file, &authentication).await
     }
     fn site(&self) -> NitroRepo {
         self.0.site.clone()
