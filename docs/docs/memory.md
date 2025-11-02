@@ -11,6 +11,7 @@
 - **Packages API**: Added strategy-aware listing and deletion to support Maven hosted/proxy and Python hosted layout. Hosted repos now list directly from root paths; proxies stay under `packages/`.
 - **Admin Packages UI**: Added search, dynamic headers, and hosted/proxy messaging; extended visibility to Maven repos.
 - **Maven Proxy**: Implemented upstream `HEAD` fallback so Maven clients probing uncached artifacts (e.g. `maven-resources-plugin`) receive accurate metadata instead of 404.
+- **Artipie Compatibility**: Added `/api/artifact/...` and `/api/meta/...` redirectors so legacy Artipie API paths reach Nitro repositories without changing client configuration.
 - **Python Hosted Simple Index**: Served PEP 503 simple index HTML pages (root and package-specific) including hashing and `data-requires-python` attributes.
 
 ## Operational Notes

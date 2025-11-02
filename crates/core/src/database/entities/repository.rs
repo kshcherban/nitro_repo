@@ -62,6 +62,20 @@ impl DBRepositoryWithStorageName {
         .await?;
         Ok(repository)
     }
+
+    pub async fn get_by_name(
+        name: impl AsRef<str>,
+        database: &PgPool,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        let repositories = sqlx::query_as(
+            r#"SELECT r.id, r.storage_id, s.name AS storage_name, r.name, r.repository_type, r.visibility, r.active, r.created_at, r.updated_at
+                FROM repositories r INNER JOIN storages s ON s.id = r.storage_id WHERE r.name = $1"#,
+        )
+        .bind(name.as_ref())
+        .fetch_all(database)
+        .await?;
+        Ok(repositories)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow, ToSchema, TableType)]

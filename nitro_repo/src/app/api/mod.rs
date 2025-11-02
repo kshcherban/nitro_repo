@@ -13,6 +13,7 @@ use strum::IntoEnumIterator;
 use tower_http::cors::CorsLayer;
 use tracing::{error, instrument};
 use utoipa::ToSchema;
+pub mod artipie;
 pub mod project;
 pub mod repository;
 pub mod search;
@@ -38,6 +39,7 @@ pub fn api_routes() -> axum::Router<NitroRepo> {
         .nest("/repository", repository::repository_routes())
         .nest("/search", search::search_routes())
         .nest("/project", project::project_routes())
+        .merge(artipie::routes())
         .fallback(route_not_found)
         .layer(CorsLayer::very_permissive())
 }
