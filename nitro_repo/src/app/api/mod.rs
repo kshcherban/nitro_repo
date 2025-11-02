@@ -17,6 +17,7 @@ pub mod artipie;
 pub mod project;
 pub mod repository;
 pub mod search;
+pub mod security;
 pub mod storage;
 pub mod user;
 pub mod user_management;
@@ -38,6 +39,7 @@ pub fn api_routes() -> axum::Router<NitroRepo> {
         )
         .nest("/repository", repository::repository_routes())
         .nest("/search", search::search_routes())
+        .nest("/security", security::security_routes())
         .nest("/project", project::project_routes())
         .merge(artipie::routes())
         .fallback(route_not_found)

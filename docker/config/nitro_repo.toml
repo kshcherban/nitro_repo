@@ -17,6 +17,21 @@ database_location = "/data/sessions.redb"
 app_url = "https://tv.sudoers.dev"
 
 
+[security]
+allow_basic_without_tokens = false
+
+  [security.sso]
+  enabled = true
+  login_path = "/api/user/sso/login"
+  login_button_text = "Sign in with Cloudflare"
+  provider_login_url = "https://tv.sudoers.dev/cdn-cgi/access/login"
+  provider_redirect_param = "redirect_url"
+  username_header = "CF-Access-Authenticated-User-Email"
+  email_header = "CF-Access-Authenticated-User-Email"
+  display_name_header = "CF-Access-Authenticated-User-Name"
+  auto_create_users = true
+
+
 [log.levels]
 default = "Info"
 

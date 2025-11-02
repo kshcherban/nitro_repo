@@ -40,3 +40,29 @@ ssl_cert_key='/etc/letsencrypt/live/{domain}/cert.pem'
 ### 
 
 Finally Restart Nitro Repo
+
+## Enabling SSO Login
+Nitro Repo can delegate authentication to an upstream SSO provider (Keycloak, Authelia, Dex, etc.) that injects identity headers after a successful login. Configure the security section in `cfg/nitro_repo.toml` to enable the feature:
+
+```toml
+[security.sso]
+enabled = true
+login_path = "/api/user/sso/login"
+login_button_text = "Sign in with SSO"
+provider_login_url = "https://example.com/login"
+provider_redirect_param = "redirect"
+username_header = "X-Forwarded-User"
+email_header = "X-Forwarded-Email"
+display_name_header = "X-Forwarded-Name"
+auto_create_users = true
+```
+
+- `login_path` is where the UI redirects users when clicking the "Sign in with SSO" button. Keep it pointed at Nitro Repo if your SSO proxy rewrites the request.
+- `username_header`, `email_header`, and `display_name_header` must match the headers your proxy provides. Only `username_header` is required.
+- Adjust `login_button_text` if you need a custom label on the login screen.
+- `provider_login_url` can point to the IdP's login endpoint (for example, Cloudflare Access). Nitro Repo appends its own SSO callback URL using `provider_redirect_param` (defaults to `redirect`).
+- When `auto_create_users` is `true`, Nitro Repo will create an account automatically on first login using the forwarded identity information. Set it to `false` to require manual user provisioning.
+
+You can also manage these settings under **Admin → System → Single Sign-On** without editing configuration files or restarting the service.
+
+Requests that reach `/api/user/sso/login` must already be authenticated by the upstream proxy; Nitro Repo only validates the forwarded headers, issues its own session cookie, and redirects back to the UI.

@@ -24,6 +24,11 @@ Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite 
 - Repository-specific handler invoked via matching HTTP method.
 - `RepoResponse` converts storage/file metadata or custom responses into Axum responses. Shared tracing instrumentation ties into `RepositoryRequestTracing`.
 
+## Authentication
+- Session cookies power the browser experience (`/api/user/login` manually verifies credentials and issues a 24h session).
+- API tokens expose scoped automation access and authenticate via the `Authorization: Bearer <token>` header.
+- Optional SSO support is exposed through `/api/user/sso/login`. When enabled (`SecuritySettings.sso`), Nitro Repo expects the upstream SSO proxy to forward identity headers (`X-Forwarded-User` by default) and can auto-provision users when `auto_create_users` is true. Administrators can update these settings at runtime via `/api/security/sso` (exposed in the Admin UI) and the values persist in the `application_settings` table.
+
 ## Data Persistence
 - DB layer via `nr_core::database::entities`. Projects and versions inserted/queried directly in repositories for metadata.
 - Configs stored in `repository_configs` table; retrieved through `DBRepositoryConfig`.

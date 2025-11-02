@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::{OpenApi, ToSchema};
 mod password_reset;
+mod sso;
 mod tokens;
 use crate::{
     app::{
@@ -47,6 +48,7 @@ use crate::{
         me,
         whoami,
         login,
+        sso::login,
         get_sessions,
         logout,
         change_password,
@@ -78,6 +80,7 @@ pub fn user_routes() -> axum::Router<NitroRepo> {
         .route("/change-password", post(change_password))
         .route("/whoami", axum::routing::get(whoami))
         .route("/login", axum::routing::post(login))
+        .route("/sso/login", axum::routing::get(sso::login))
         .route("/sessions", axum::routing::get(get_sessions))
         .route("/logout", axum::routing::post(logout))
         .nest("/password-reset", password_reset::password_reset_routes())

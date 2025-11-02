@@ -51,10 +51,12 @@ router.beforeEach((to) => {
   if (to.meta.requiresAuth && store.session === undefined) {
     return {
       name: "login",
+      query: { redirect: to.fullPath },
     };
   } else if (to.meta.requiresIdentity === true && store.session === undefined) {
     return {
       name: "login",
+      query: { redirect: to.fullPath },
     };
   }
 });

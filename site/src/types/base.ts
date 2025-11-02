@@ -51,14 +51,31 @@ export interface SiteInfo {
   description: string;
   is_installed: boolean;
   version: string;
-  password_rules: PasswordRules;
+  password_rules?: PasswordRules;
+  sso?: SsoInfo;
 }
 export interface PasswordRules {
   min_length: number;
   require_uppercase: boolean;
   require_lowercase: boolean;
   require_number: boolean;
-  require_special: boolean;
+  require_symbol: boolean;
+  require_special?: boolean;
+}
+
+export interface SsoInfo {
+  login_path: string;
+  login_button_text: string;
+  provider_login_url?: string | null;
+  provider_redirect_param?: string | null;
+  auto_create_users: boolean;
+}
+
+export interface SsoConfiguration extends SsoInfo {
+  enabled: boolean;
+  username_header: string;
+  email_header?: string | null;
+  display_name_header?: string | null;
 }
 
 export enum RepositoryActions {

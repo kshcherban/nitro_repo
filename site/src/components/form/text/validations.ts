@@ -185,7 +185,9 @@ export function passwordValidationRules(
       },
     });
   }
-  if (actualPasswordRules.require_special) {
+  const requireSymbol =
+    actualPasswordRules.require_symbol ?? actualPasswordRules.require_special ?? false;
+  if (requireSymbol) {
     validations.push({
       id: "password-require-special",
       message: "Password must contain at least one special character",

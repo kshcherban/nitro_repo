@@ -4,7 +4,7 @@ use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use authentication::session::{SessionManager, SessionManagerConfig};
 use axum::extract::State;
-use config::{Mode, PasswordRules, SecuritySettings, SiteSetting};
+use config::{Mode, PasswordRules, SecuritySettings, SiteSetting, SsoSettings};
 use derive_more::{AsRef, derive::Deref};
 use email::EmailSetting;
 use email_service::{EmailAccess, EmailService};
@@ -16,6 +16,7 @@ use nr_core::{
         DatabaseConfig,
         entities::{
             repository::{DBRepository, DBRepositoryConfig},
+            settings::ApplicationSettings,
             storage::{DBStorage, StorageDBType},
             user::user_utils,
         },
@@ -70,6 +71,30 @@ pub struct Instance {
     pub version: semver::Version,
     pub mode: Mode,
     pub password_rules: Option<PasswordRules>,
+    pub sso: Option<InstanceSsoSettings>,
+}
+
+#[derive(Debug, Serialize, Clone, ToSchema)]
+pub struct InstanceSsoSettings {
+    pub login_path: String,
+    pub login_button_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_login_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_redirect_param: Option<String>,
+    pub auto_create_users: bool,
+}
+
+impl From<&SsoSettings> for InstanceSsoSettings {
+    fn from(settings: &SsoSettings) -> Self {
+        Self {
+            login_path: settings.login_path.clone(),
+            login_button_text: settings.login_button_text.clone(),
+            provider_login_url: settings.provider_login_url.clone(),
+            provider_redirect_param: settings.provider_redirect_param.clone(),
+            auto_create_users: settings.auto_create_users,
+        }
+    }
 }
 #[derive(Debug, Clone, Hash, PartialEq, Eq, IntoParams, Deserialize)]
 #[into_params(parameter_in = Path)]
@@ -120,7 +145,7 @@ pub struct NitroRepoInner {
     pub storages: RwLock<HashMap<Uuid, DynStorage>>,
     pub repositories: RwLock<HashMap<Uuid, DynRepository>>,
     pub name_lookup_table: Mutex<HashMap<RepositoryStorageName, Uuid>>,
-    pub general_security_settings: SecuritySettings,
+    pub general_security_settings: RwLock<SecuritySettings>,
     #[cfg(feature = "frontend")]
     pub frontend: frontend::HostedFrontend,
     pub staging_config: StagingConfig,
@@ -245,6 +270,14 @@ impl NitroRepo {
         suggested_local_storage_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let database = Self::load_database(database).await?;
+        let stored_sso = ApplicationSettings::get::<SsoSettings>("security.sso", &database)
+            .await
+            .context("Failed to load stored SSO settings")?;
+        let mut security = security;
+        if let Some(stored_sso) = stored_sso {
+            security.sso = Some(stored_sso);
+        }
+
         let is_installed = user_utils::does_user_exist(&database).await?;
         let instance = Instance {
             mode,
@@ -255,6 +288,11 @@ impl NitroRepo {
             description: site.description,
             is_https: site.is_https,
             password_rules: security.password_rules.clone(),
+            sso: security
+                .sso
+                .as_ref()
+                .filter(|cfg| cfg.enabled)
+                .map(InstanceSsoSettings::from),
         };
         let mut services = InternalServices::default();
 
@@ -270,7 +308,7 @@ impl NitroRepo {
             storages: RwLock::new(HashMap::new()),
             repositories: RwLock::new(HashMap::new()),
             name_lookup_table: Mutex::new(HashMap::new()),
-            general_security_settings: security,
+            general_security_settings: RwLock::new(security),
             staging_config,
             services: Mutex::new(services),
             #[cfg(feature = "frontend")]
@@ -392,6 +430,23 @@ impl NitroRepo {
             .find(|config_type| config_type.get_type().eq_ignore_ascii_case(name))
             .copied()
     }
+
+    pub fn security_settings(&self) -> SecuritySettings {
+        self.inner.general_security_settings.read().clone()
+    }
+
+    pub fn sso_settings(&self) -> Option<SsoSettings> {
+        self.inner
+            .general_security_settings
+            .read()
+            .sso
+            .clone()
+            .filter(|cfg| cfg.enabled)
+    }
+
+    pub fn sso_settings_raw(&self) -> Option<SsoSettings> {
+        self.inner.general_security_settings.read().sso.clone()
+    }
     pub fn get_repository(&self, id: Uuid) -> Option<DynRepository> {
         let repository = self.repositories.read();
         repository.get(&id).cloned()
@@ -429,6 +484,28 @@ impl NitroRepo {
     pub fn update_app_url(&self, app_url: &Uri) {
         info!(?app_url, "Updating app url");
         // TODO:
+    }
+    pub async fn update_sso_settings(&self, settings: Option<SsoSettings>) -> anyhow::Result<()> {
+        {
+            let mut security = self.inner.general_security_settings.write();
+            security.sso = settings.clone();
+        }
+
+        {
+            let mut instance = self.inner.instance.lock();
+            instance.sso = settings
+                .as_ref()
+                .filter(|cfg| cfg.enabled)
+                .map(InstanceSsoSettings::from);
+        }
+
+        if let Some(settings) = settings {
+            ApplicationSettings::upsert("security.sso", &settings, &self.database).await?;
+        } else {
+            ApplicationSettings::delete("security.sso", &self.database).await?;
+        }
+
+        Ok(())
     }
     /// Checks if a repository name and storage pair are found in the lookup table. If not queries the database.
     /// If found in the database, adds the pair to the lookup table
