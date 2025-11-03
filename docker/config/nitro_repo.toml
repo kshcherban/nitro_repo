@@ -1,4 +1,4 @@
-mode = "Release"
+mode = "Debug"
 suggested_local_storage_path = "/data/storages"
 
 [database]
@@ -14,26 +14,26 @@ cleanup_interval = 3600
 database_location = "/data/sessions.redb"
 
 [site]
-app_url = "https://tv.sudoers.dev"
+app_url = "https://repo.sudoers.dev"
 
 
 [security]
-allow_basic_without_tokens = false
+allow_basic_without_tokens = true
 
-  [security.sso]
-  enabled = true
-  login_path = "/api/user/sso/login"
-  login_button_text = "Sign in with Cloudflare"
-  provider_login_url = "https://tv.sudoers.dev/cdn-cgi/access/login"
-  provider_redirect_param = "redirect_url"
-  username_header = "CF-Access-Authenticated-User-Email"
-  email_header = "CF-Access-Authenticated-User-Email"
-  display_name_header = "CF-Access-Authenticated-User-Name"
-  auto_create_users = true
+  # [security.sso]
+  # enabled = true
+  # login_path = "/api/user/sso/login"
+  # login_button_text = "Sign in with Cloudflare"
+  # provider_login_url = "https://repo.sudoers.dev/cdn-cgi/access/login"
+  # provider_redirect_param = "redirect_url"
+  # username_header = "CF-Access-Authenticated-User-Email"
+  # email_header = "CF-Access-Authenticated-User-Email"
+  # display_name_header = "CF-Access-Authenticated-User-Name"
+  # auto_create_users = true
 
 
 [log.levels]
-default = "Info"
+default = "Debug"
 
 [log.loggers.file]
 type = "RollingFile"
@@ -44,4 +44,4 @@ type = "RollingFile"
   interval = "Never"          # or "Hourly", "Minutely", "Never"
 
     [log.loggers.file.config.levels]
-    default = "Info"
+    default = "Debug"

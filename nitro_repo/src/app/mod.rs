@@ -1,10 +1,13 @@
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
 use ahash::{HashMap, HashMapExt};
-use anyhow::Context;
-use authentication::session::{SessionManager, SessionManagerConfig};
+use anyhow::{Context, anyhow};
+use authentication::{
+    oauth::{OAuth2Rbac, OAuth2Service},
+    session::{SessionManager, SessionManagerConfig},
+};
 use axum::extract::State;
-use config::{Mode, PasswordRules, SecuritySettings, SiteSetting, SsoSettings};
+use config::{Mode, OAuth2Settings, PasswordRules, SecuritySettings, SiteSetting, SsoSettings};
 use derive_more::{AsRef, derive::Deref};
 use email::EmailSetting;
 use email_service::{EmailAccess, EmailService};
@@ -72,6 +75,7 @@ pub struct Instance {
     pub mode: Mode,
     pub password_rules: Option<PasswordRules>,
     pub sso: Option<InstanceSsoSettings>,
+    pub oauth2: Option<InstanceOAuth2Settings>,
 }
 
 #[derive(Debug, Serialize, Clone, ToSchema)]
@@ -93,6 +97,52 @@ impl From<&SsoSettings> for InstanceSsoSettings {
             provider_login_url: settings.provider_login_url.clone(),
             provider_redirect_param: settings.provider_redirect_param.clone(),
             auto_create_users: settings.auto_create_users,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Clone, ToSchema)]
+pub struct InstanceOAuth2Settings {
+    pub login_path: String,
+    pub callback_path: String,
+    pub providers: Vec<InstanceOAuth2Provider>,
+    pub auto_create_users: bool,
+    pub group_role_mappings: Vec<config::OAuth2GroupRoleMapping>,
+}
+
+#[derive(Debug, Serialize, Clone, ToSchema)]
+pub struct InstanceOAuth2Provider {
+    pub provider: String,
+    pub redirect_path: Option<String>,
+}
+
+impl From<&OAuth2Settings> for InstanceOAuth2Settings {
+    fn from(settings: &OAuth2Settings) -> Self {
+        let mut providers = Vec::new();
+        if settings.google.is_some() {
+            providers.push(InstanceOAuth2Provider {
+                provider: "google".to_string(),
+                redirect_path: settings
+                    .google
+                    .as_ref()
+                    .and_then(|cfg| cfg.redirect_path.clone()),
+            });
+        }
+        if settings.microsoft.is_some() {
+            providers.push(InstanceOAuth2Provider {
+                provider: "microsoft".to_string(),
+                redirect_path: settings
+                    .microsoft
+                    .as_ref()
+                    .and_then(|cfg| cfg.redirect_path.clone()),
+            });
+        }
+        Self {
+            login_path: settings.login_path.clone(),
+            callback_path: settings.callback_path.clone(),
+            providers,
+            auto_create_users: settings.auto_create_users,
+            group_role_mappings: settings.group_role_mappings.clone(),
         }
     }
 }
@@ -146,6 +196,8 @@ pub struct NitroRepoInner {
     pub repositories: RwLock<HashMap<Uuid, DynRepository>>,
     pub name_lookup_table: Mutex<HashMap<RepositoryStorageName, Uuid>>,
     pub general_security_settings: RwLock<SecuritySettings>,
+    pub oauth2_service: RwLock<Option<Arc<OAuth2Service>>>,
+    pub oauth2_rbac: RwLock<Option<Arc<OAuth2Rbac>>>,
     #[cfg(feature = "frontend")]
     pub frontend: frontend::HostedFrontend,
     pub staging_config: StagingConfig,
@@ -273,13 +325,52 @@ impl NitroRepo {
         let stored_sso = ApplicationSettings::get::<SsoSettings>("security.sso", &database)
             .await
             .context("Failed to load stored SSO settings")?;
+        let stored_oauth2 =
+            ApplicationSettings::get::<OAuth2Settings>("security.oauth2", &database)
+                .await
+                .context("Failed to load stored OAuth2 settings")?;
         let mut security = security;
         if let Some(stored_sso) = stored_sso {
             security.sso = Some(stored_sso);
         }
+        if let Some(stored_oauth2) = stored_oauth2 {
+            security.oauth2 = Some(stored_oauth2);
+        }
+
+        let oauth2_service = match security.oauth2.clone() {
+            Some(cfg) if cfg.enabled => match OAuth2Service::new(cfg.clone()) {
+                Ok(Some(service)) => Some(Arc::new(service)),
+                Ok(None) => None,
+                Err(err) => {
+                    warn!(%err, "Failed to initialize OAuth2 service");
+                    None
+                }
+            },
+            _ => None,
+        };
+
+        let oauth2_rbac = if let Some(cfg) = security.oauth2.clone() {
+            if cfg.enabled {
+                if let Some(casbin_cfg) = cfg.casbin.as_ref() {
+                    match OAuth2Rbac::from_config(casbin_cfg).await {
+                        Ok(rbac) => Some(Arc::new(rbac)),
+                        Err(err) => {
+                            warn!(%err, "Failed to initialize OAuth2 RBAC");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let is_installed = user_utils::does_user_exist(&database).await?;
-        let instance = Instance {
+        let mut instance = Instance {
             mode,
             version: current_semver!(),
             app_url: site.app_url.unwrap_or_default(),
@@ -293,7 +384,15 @@ impl NitroRepo {
                 .as_ref()
                 .filter(|cfg| cfg.enabled)
                 .map(InstanceSsoSettings::from),
+            oauth2: security
+                .oauth2
+                .as_ref()
+                .filter(|cfg| cfg.enabled)
+                .map(InstanceOAuth2Settings::from),
         };
+        if oauth2_service.is_none() {
+            instance.oauth2 = None;
+        }
         let mut services = InternalServices::default();
 
         let (email_access, service) = EmailService::start(email_settings).await?;
@@ -309,6 +408,8 @@ impl NitroRepo {
             repositories: RwLock::new(HashMap::new()),
             name_lookup_table: Mutex::new(HashMap::new()),
             general_security_settings: RwLock::new(security),
+            oauth2_service: RwLock::new(oauth2_service),
+            oauth2_rbac: RwLock::new(oauth2_rbac),
             staging_config,
             services: Mutex::new(services),
             #[cfg(feature = "frontend")]
@@ -446,6 +547,102 @@ impl NitroRepo {
 
     pub fn sso_settings_raw(&self) -> Option<SsoSettings> {
         self.inner.general_security_settings.read().sso.clone()
+    }
+
+    pub fn oauth2_settings(&self) -> Option<OAuth2Settings> {
+        self.inner
+            .general_security_settings
+            .read()
+            .oauth2
+            .clone()
+            .filter(|cfg| cfg.enabled)
+    }
+
+    pub fn oauth2_settings_raw(&self) -> Option<OAuth2Settings> {
+        self.inner.general_security_settings.read().oauth2.clone()
+    }
+
+    pub fn oauth2_service(&self) -> Option<Arc<OAuth2Service>> {
+        self.inner.oauth2_service.read().clone()
+    }
+
+    pub fn oauth2_rbac(&self) -> Option<Arc<OAuth2Rbac>> {
+        self.inner.oauth2_rbac.read().clone()
+    }
+
+    pub async fn apply_oauth_roles(&self, subject: &str, roles: &[String]) -> anyhow::Result<()> {
+        if let Some(rbac) = self.oauth2_rbac() {
+            rbac.set_roles_for_user(subject, roles).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn check_oauth_permission(
+        &self,
+        subject: &str,
+        object: &str,
+        action: &str,
+    ) -> anyhow::Result<Option<bool>> {
+        if let Some(rbac) = self.oauth2_rbac() {
+            let decision = rbac.enforce(subject, object, action).await?;
+            Ok(Some(decision))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn update_oauth2_settings(
+        &self,
+        settings: Option<OAuth2Settings>,
+    ) -> anyhow::Result<()> {
+        let mut new_service: Option<Arc<OAuth2Service>> = None;
+        let mut new_rbac: Option<Arc<OAuth2Rbac>> = None;
+
+        if let Some(cfg) = settings.clone() {
+            if cfg.enabled {
+                let service = OAuth2Service::new(cfg.clone())
+                    .map_err(|err| anyhow!("Failed to initialize OAuth2 service: {err}"))?
+                    .ok_or_else(|| {
+                        anyhow!("OAuth2 configuration is missing provider credentials")
+                    })?;
+                new_service = Some(Arc::new(service));
+
+                if let Some(casbin_cfg) = cfg.casbin.as_ref() {
+                    let rbac = OAuth2Rbac::from_config(casbin_cfg)
+                        .await
+                        .map_err(|err| anyhow!("Failed to initialize OAuth2 RBAC: {err}"))?;
+                    new_rbac = Some(Arc::new(rbac));
+                }
+            }
+        }
+
+        {
+            let mut security = self.inner.general_security_settings.write();
+            security.oauth2 = settings.clone();
+        }
+        {
+            let mut instance = self.inner.instance.lock();
+            instance.oauth2 = settings
+                .as_ref()
+                .filter(|cfg| cfg.enabled)
+                .map(InstanceOAuth2Settings::from);
+        }
+        {
+            let mut service_lock = self.inner.oauth2_service.write();
+            *service_lock = new_service;
+        }
+        {
+            let mut rbac_lock = self.inner.oauth2_rbac.write();
+            *rbac_lock = new_rbac;
+        }
+
+        if let Some(settings) = settings {
+            ApplicationSettings::upsert("security.oauth2", &settings, &self.database).await?;
+        } else {
+            ApplicationSettings::delete("security.oauth2", &self.database).await?;
+        }
+
+        Ok(())
     }
     pub fn get_repository(&self, id: Uuid) -> Option<DynRepository> {
         let repository = self.repositories.read();

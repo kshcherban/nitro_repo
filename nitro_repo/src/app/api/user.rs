@@ -27,6 +27,7 @@ use nr_core::{
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::{OpenApi, ToSchema};
+mod oauth;
 mod password_reset;
 mod sso;
 mod tokens;
@@ -49,6 +50,9 @@ use crate::{
         whoami,
         login,
         sso::login,
+        oauth::list_providers,
+        oauth::authorize,
+        oauth::callback,
         get_sessions,
         logout,
         change_password,
@@ -81,6 +85,15 @@ pub fn user_routes() -> axum::Router<NitroRepo> {
         .route("/whoami", axum::routing::get(whoami))
         .route("/login", axum::routing::post(login))
         .route("/sso/login", axum::routing::get(sso::login))
+        .route(
+            "/oauth2/providers",
+            axum::routing::get(oauth::list_providers),
+        )
+        .route(
+            "/oauth2/login/{provider}",
+            axum::routing::get(oauth::authorize),
+        )
+        .route("/oauth2/callback", axum::routing::get(oauth::callback))
         .route("/sessions", axum::routing::get(get_sessions))
         .route("/logout", axum::routing::post(logout))
         .nest("/password-reset", password_reset::password_reset_routes())

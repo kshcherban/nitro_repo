@@ -12,7 +12,7 @@
       v-if="haveClearButton"
       class="input-container">
       <input
-        type="text"
+        :type="type"
         :id="haveClearButton ? id : undefined"
         v-model="value"
         v-bind="$attrs" />
@@ -25,7 +25,7 @@
     </div>
     <input
       v-else
-      type="text"
+      :type="type"
       :id="haveClearButton ? undefined : id"
       v-model="value"
       v-bind="$attrs" />
@@ -43,6 +43,10 @@ defineProps({
   error: {
     type: String,
     required: false,
+  },
+  type: {
+    type: String,
+    default: "text",
   },
 });
 const value = defineModel<string | undefined>({

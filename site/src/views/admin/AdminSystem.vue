@@ -5,7 +5,13 @@ import SubmitButton from "@/components/form/SubmitButton.vue";
 import SpinnerElement from "@/components/spinner/SpinnerElement.vue";
 import http from "@/http";
 import { siteStore } from "@/stores/site";
-import type { SsoConfiguration } from "@/types/base";
+import type {
+  OAuth2CasbinConfig,
+  OAuth2Configuration,
+  OAuth2GroupRoleMapping,
+  OAuth2ProviderKind,
+  SsoConfiguration,
+} from "@/types/base";
 import { notify } from "@kyvg/vue3-notification";
 import { computed, onMounted, ref } from "vue";
 
@@ -21,25 +27,95 @@ interface EditableSsoConfiguration {
   auto_create_users: boolean;
 }
 
-const loading = ref(true);
-const saving = ref(false);
-const form = ref<EditableSsoConfiguration>(defaultForm());
-const initialSignature = ref<string>(JSON.stringify(toPayload(form.value)));
+interface EditableOAuthProvider {
+  enabled: boolean;
+  client_id: string;
+  client_secret: string;
+  secretConfigured: boolean;
+  scopes: string;
+  redirect_path: string;
+  tenant_id?: string;
+}
+
+interface EditableGroupRoleMapping {
+  id: string;
+  provider: OAuth2ProviderKind;
+  group: string;
+  rolesText: string;
+}
+
+interface EditableOAuthConfiguration {
+  enabled: boolean;
+  login_path: string;
+  callback_path: string;
+  redirect_base_url: string;
+  auto_create_users: boolean;
+  google: EditableOAuthProvider;
+  microsoft: EditableOAuthProvider;
+  casbin_model: string;
+  casbin_policy: string;
+  group_role_mappings: EditableGroupRoleMapping[];
+}
+
+interface OAuth2ProviderUpdatePayload {
+  client_id: string;
+  client_secret: string | null;
+  scopes: string[];
+  redirect_path: string | null;
+  tenant_id?: string | null;
+}
+
+interface OAuth2UpdatePayload {
+  enabled: boolean;
+  login_path: string;
+  callback_path: string;
+  redirect_base_url: string | null;
+  auto_create_users: boolean;
+  google: OAuth2ProviderUpdatePayload | null;
+  microsoft: OAuth2ProviderUpdatePayload | null;
+  casbin: OAuth2CasbinConfig | null;
+  group_role_mappings: OAuth2GroupRoleMapping[];
+}
+
 const site = siteStore();
 
-const providerConfigured = computed(() => form.value.provider_login_url.trim().length > 0);
-const hasChanges = computed(() => initialSignature.value !== JSON.stringify(toPayload(form.value)));
+const ssoLoading = ref(true);
+const ssoSaving = ref(false);
+const ssoForm = ref<EditableSsoConfiguration>(defaultSsoForm());
+const ssoInitialSignature = ref(JSON.stringify(toSsoPayload(ssoForm.value)));
+
+const oauthLoading = ref(true);
+const oauthSaving = ref(false);
+const oauthForm = ref<EditableOAuthConfiguration>(defaultOAuthForm());
+const oauthInitialSignature = ref(JSON.stringify(oauthForm.value));
+const availableRoles = ref<string[]>([]);
+const roleOptionsId = "nitro-role-options";
+
+const providerConfigured = computed(() => ssoForm.value.provider_login_url.trim().length > 0);
+const hasSsoChanges = computed(
+  () => ssoInitialSignature.value !== JSON.stringify(toSsoPayload(ssoForm.value)),
+);
+const hasOAuthChanges = computed(
+  () => oauthInitialSignature.value !== JSON.stringify(oauthForm.value),
+);
 
 onMounted(async () => {
-  await fetchSsoSettings();
+  await Promise.all([fetchSsoSettings(), fetchOAuthSettings()]);
 });
 
+function generateId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2);
+}
+
 async function fetchSsoSettings() {
-  loading.value = true;
+  ssoLoading.value = true;
   try {
     const response = await http.get<SsoConfiguration>("/api/security/sso");
-    form.value = toEditable(response.data);
-    initialSignature.value = JSON.stringify(toPayload(form.value));
+    ssoForm.value = toSsoEditable(response.data);
+    ssoInitialSignature.value = JSON.stringify(toSsoPayload(ssoForm.value));
   } catch (error) {
     console.error("Failed to load SSO configuration", error);
     notify({
@@ -48,16 +124,34 @@ async function fetchSsoSettings() {
       text: "Check the server logs for more information.",
     });
   } finally {
-    loading.value = false;
+    ssoLoading.value = false;
   }
 }
 
-async function save() {
-  if (saving.value) {
+async function fetchOAuthSettings() {
+  oauthLoading.value = true;
+  try {
+    const response = await http.get<OAuth2Configuration>("/api/security/oauth2");
+    oauthForm.value = toOAuthEditable(response.data);
+    oauthInitialSignature.value = JSON.stringify(oauthForm.value);
+    availableRoles.value = response.data.available_roles ?? [];
+  } catch (error) {
+    console.error("Failed to load OAuth2 configuration", error);
+    notify({
+      type: "error",
+      title: "Unable to load OAuth2 settings",
+      text: "Check the server logs for more information.",
+    });
+  } finally {
+    oauthLoading.value = false;
+  }
+}
+
+async function saveSsoSettings() {
+  if (ssoSaving.value) {
     return;
   }
-
-  if (!form.value.username_header.trim()) {
+  if (!ssoForm.value.username_header.trim()) {
     notify({
       type: "error",
       title: "Missing username header",
@@ -66,8 +160,8 @@ async function save() {
     return;
   }
 
-  saving.value = true;
-  const payload = toPayload(form.value);
+  ssoSaving.value = true;
+  const payload = toSsoPayload(ssoForm.value);
 
   try {
     await http.put("/api/security/sso", payload);
@@ -75,8 +169,8 @@ async function save() {
       type: "success",
       title: "SSO settings updated",
     });
-    form.value = toEditable(payload);
-    initialSignature.value = JSON.stringify(toPayload(form.value));
+    ssoForm.value = toSsoEditable(payload);
+    ssoInitialSignature.value = JSON.stringify(toSsoPayload(ssoForm.value));
     await site.getInfo();
   } catch (error: any) {
     console.error("Failed to update SSO configuration", error);
@@ -86,19 +180,98 @@ async function save() {
       text: error?.response?.data ?? "Check the server logs for more details.",
     });
   } finally {
-    saving.value = false;
+    ssoSaving.value = false;
   }
 }
 
-function reset() {
-  if (saving.value) {
+async function saveOAuthSettings() {
+  if (oauthSaving.value) {
     return;
   }
-  const latest = JSON.parse(initialSignature.value) as SsoConfiguration;
-  form.value = toEditable(latest);
+
+  if (oauthForm.value.enabled) {
+    if (oauthForm.value.google.enabled && !oauthForm.value.google.client_id.trim()) {
+      notify({
+        type: "error",
+        title: "Google client ID required",
+        text: "Enter a Google client ID or disable the provider.",
+      });
+      return;
+    }
+    if (
+      oauthForm.value.google.enabled &&
+      !oauthForm.value.google.secretConfigured &&
+      !oauthForm.value.google.client_secret.trim()
+    ) {
+      notify({
+        type: "error",
+        title: "Google client secret required",
+        text: "Provide the Google client secret.",
+      });
+      return;
+    }
+    if (oauthForm.value.microsoft.enabled && !oauthForm.value.microsoft.client_id.trim()) {
+      notify({
+        type: "error",
+        title: "Microsoft client ID required",
+        text: "Enter a Microsoft client ID or disable the provider.",
+      });
+      return;
+    }
+    if (
+      oauthForm.value.microsoft.enabled &&
+      !oauthForm.value.microsoft.secretConfigured &&
+      !oauthForm.value.microsoft.client_secret.trim()
+    ) {
+      notify({
+        type: "error",
+        title: "Microsoft client secret required",
+        text: "Provide the Microsoft client secret.",
+      });
+      return;
+    }
+  }
+
+  oauthSaving.value = true;
+  const payload = toOAuthPayload(oauthForm.value);
+
+  try {
+    await http.put("/api/security/oauth2", payload);
+    notify({
+      type: "success",
+      title: "OAuth2 settings updated",
+    });
+    await fetchOAuthSettings();
+    await site.getInfo();
+  } catch (error: any) {
+    console.error("Failed to update OAuth2 configuration", error);
+    notify({
+      type: "error",
+      title: "Unable to save OAuth2 settings",
+      text: error?.response?.data ?? "Check the server logs for more details.",
+    });
+  } finally {
+    oauthSaving.value = false;
+  }
 }
 
-function defaultForm(): EditableSsoConfiguration {
+function resetSsoSettings() {
+  if (ssoSaving.value) {
+    return;
+  }
+  const latest = JSON.parse(ssoInitialSignature.value) as SsoConfiguration;
+  ssoForm.value = toSsoEditable(latest);
+}
+
+function resetOAuthSettings() {
+  if (oauthSaving.value) {
+    return;
+  }
+  const latest = JSON.parse(oauthInitialSignature.value) as EditableOAuthConfiguration;
+  oauthForm.value = latest;
+}
+
+function defaultSsoForm(): EditableSsoConfiguration {
   return {
     enabled: false,
     login_path: "/api/user/sso/login",
@@ -112,7 +285,34 @@ function defaultForm(): EditableSsoConfiguration {
   };
 }
 
-function toEditable(settings: SsoConfiguration): EditableSsoConfiguration {
+function defaultProvider(): EditableOAuthProvider {
+  return {
+    enabled: false,
+    client_id: "",
+    client_secret: "",
+    secretConfigured: false,
+    scopes: "openid profile email",
+    redirect_path: "",
+    tenant_id: "",
+  };
+}
+
+function defaultOAuthForm(): EditableOAuthConfiguration {
+  return {
+    enabled: false,
+    login_path: "/api/user/oauth2/login",
+    callback_path: "/api/user/oauth2/callback",
+    redirect_base_url: "",
+    auto_create_users: false,
+    google: defaultProvider(),
+    microsoft: defaultProvider(),
+    casbin_model: "",
+    casbin_policy: "",
+    group_role_mappings: [],
+  };
+}
+
+function toSsoEditable(settings: SsoConfiguration): EditableSsoConfiguration {
   return {
     enabled: settings.enabled,
     login_path: settings.login_path,
@@ -126,7 +326,7 @@ function toEditable(settings: SsoConfiguration): EditableSsoConfiguration {
   };
 }
 
-function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
+function toSsoPayload(settings: EditableSsoConfiguration): SsoConfiguration {
   const sanitizeOptional = (value: string) => {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
@@ -144,27 +344,158 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
     auto_create_users: settings.auto_create_users,
   };
 }
+
+function toOAuthEditable(settings: OAuth2Configuration): EditableOAuthConfiguration {
+  const form = defaultOAuthForm();
+  form.enabled = settings.enabled;
+  form.login_path = settings.login_path;
+  form.callback_path = settings.callback_path;
+  form.redirect_base_url = settings.redirect_base_url ?? "";
+  form.auto_create_users = settings.auto_create_users;
+
+  if (settings.google) {
+    form.google.enabled = true;
+    form.google.client_id = settings.google.client_id;
+    form.google.secretConfigured = settings.google.client_secret_configured;
+    form.google.scopes = settings.google.scopes.join(" ");
+    form.google.redirect_path = settings.google.redirect_path ?? "";
+  }
+
+  if (settings.microsoft) {
+    form.microsoft.enabled = true;
+    form.microsoft.client_id = settings.microsoft.client_id;
+    form.microsoft.secretConfigured = settings.microsoft.client_secret_configured;
+    form.microsoft.scopes = settings.microsoft.scopes.join(" ");
+    form.microsoft.redirect_path = settings.microsoft.redirect_path ?? "";
+    form.microsoft.tenant_id = settings.microsoft.tenant_id ?? "";
+  }
+
+  form.casbin_model = settings.casbin?.model ?? "";
+  form.casbin_policy = settings.casbin?.policy ?? "";
+
+  availableRoles.value = settings.available_roles ?? [];
+
+  form.group_role_mappings = settings.group_role_mappings.map((mapping) => ({
+    id: generateId(),
+    provider: mapping.provider,
+    group: mapping.group,
+    rolesText: mapping.roles.join(", "),
+  }));
+
+  return form;
+}
+
+function toOAuthPayload(settings: EditableOAuthConfiguration): OAuth2UpdatePayload {
+  const sanitizeOptional = (value: string) => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  const sanitizeScopes = (value: string) => {
+    const tokens = value.split(/[\s,]+/).map((scope) => scope.trim()).filter((scope) => scope);
+    return tokens.length > 0 ? tokens : ["openid", "profile", "email"];
+  };
+
+  const google = settings.google.enabled
+    ? {
+        client_id: settings.google.client_id.trim(),
+        client_secret: settings.google.client_secret.trim()
+          ? settings.google.client_secret.trim()
+          : settings.google.secretConfigured
+            ? null
+            : null,
+        scopes: sanitizeScopes(settings.google.scopes),
+        redirect_path: sanitizeOptional(settings.google.redirect_path),
+      }
+    : null;
+
+  const microsoft = settings.microsoft.enabled
+    ? {
+        client_id: settings.microsoft.client_id.trim(),
+        client_secret: settings.microsoft.client_secret.trim()
+          ? settings.microsoft.client_secret.trim()
+          : settings.microsoft.secretConfigured
+            ? null
+            : null,
+        scopes: sanitizeScopes(settings.microsoft.scopes),
+        redirect_path: sanitizeOptional(settings.microsoft.redirect_path),
+        tenant_id: sanitizeOptional(settings.microsoft.tenant_id ?? ""),
+      }
+    : null;
+
+  const filteredMappings: OAuth2GroupRoleMapping[] = settings.group_role_mappings
+    .map((mapping) => {
+      const roles = mapping.rolesText
+        .split(/[\s,]+/)
+        .map((role) => role.trim())
+        .filter((role) => role);
+      return {
+        provider: mapping.provider,
+        group: mapping.group.trim(),
+        roles,
+      };
+    })
+    .filter((mapping) => mapping.group.length > 0 && mapping.roles.length > 0)
+    .map((mapping) => ({
+      ...mapping,
+      roles: Array.from(new Set(mapping.roles)),
+    }));
+
+  return {
+    enabled: settings.enabled,
+    login_path: settings.login_path.trim() || "/api/user/oauth2/login",
+    callback_path: settings.callback_path.trim() || "/api/user/oauth2/callback",
+    redirect_base_url: sanitizeOptional(settings.redirect_base_url),
+    auto_create_users: settings.auto_create_users,
+    google,
+    microsoft,
+    casbin:
+      settings.casbin_model.trim() || settings.casbin_policy.trim()
+        ? {
+            model: settings.casbin_model.trim(),
+            policy: settings.casbin_policy.trim(),
+          }
+        : null,
+    group_role_mappings: filteredMappings,
+  };
+}
+
+function addGroupMapping() {
+  oauthForm.value.group_role_mappings.push({
+    id: generateId(),
+    provider: "microsoft",
+    group: "",
+    rolesText: "",
+  });
+}
+
+function removeGroupMapping(id: string) {
+  oauthForm.value.group_role_mappings = oauthForm.value.group_role_mappings.filter(
+    (mapping) => mapping.id !== id,
+  );
+}
 </script>
 
 <template>
   <main class="systemSettings">
     <h1>System Settings</h1>
+
     <section class="card">
       <header>
         <h2>Single Sign-On</h2>
         <p>
-          Configure how Nitro Repo integrates with your identity provider. Changes apply immediately
+          Configure how Nitro Repo integrates with an upstream SSO proxy. Changes apply immediately
           and will affect the login screen.
         </p>
       </header>
-      <SpinnerElement v-if="loading" />
+      <SpinnerElement v-if="ssoLoading" />
       <form
         v-else
         class="ssoForm"
-        @submit.prevent="save">
+        @submit.prevent="saveSsoSettings">
         <SwitchInput
           id="sso-enabled"
-          v-model="form.enabled">
+          v-model="ssoForm.enabled">
           Enable SSO
           <template #comment>
             When disabled, Nitro Repo hides the SSO button but keeps your saved configuration.
@@ -174,7 +505,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
         <div class="grid">
           <TextInput
             id="sso-login-path"
-            v-model="form.login_path"
+            v-model="ssoForm.login_path"
             autocomplete="off"
             required>
             Nitro Repo SSO endpoint
@@ -182,7 +513,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
           <TextInput
             id="sso-button-text"
-            v-model="form.login_button_text"
+            v-model="ssoForm.login_button_text"
             autocomplete="off"
             required>
             Login button text
@@ -190,7 +521,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
           <TextInput
             id="sso-provider-url"
-            v-model="form.provider_login_url"
+            v-model="ssoForm.provider_login_url"
             autocomplete="off"
             placeholder="https://example.com/login">
             Identity provider login URL
@@ -198,7 +529,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
           <TextInput
             id="sso-provider-param"
-            v-model="form.provider_redirect_param"
+            v-model="ssoForm.provider_redirect_param"
             :disabled="!providerConfigured"
             autocomplete="off"
             placeholder="redirect_url">
@@ -207,7 +538,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
           <TextInput
             id="sso-username-header"
-            v-model="form.username_header"
+            v-model="ssoForm.username_header"
             autocomplete="off"
             required>
             Username header
@@ -215,7 +546,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
           <TextInput
             id="sso-email-header"
-            v-model="form.email_header"
+            v-model="ssoForm.email_header"
             autocomplete="off"
             placeholder="CF-Access-Authenticated-User-Email">
             Email header (optional)
@@ -223,7 +554,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
           <TextInput
             id="sso-display-header"
-            v-model="form.display_name_header"
+            v-model="ssoForm.display_name_header"
             autocomplete="off"
             placeholder="CF-Access-Authenticated-User-Name">
             Display name header (optional)
@@ -232,7 +563,7 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
         <SwitchInput
           id="sso-auto-create"
-          v-model="form.auto_create_users">
+          v-model="ssoForm.auto_create_users">
           Auto-create users
           <template #comment>
             Create new Nitro Repo accounts automatically when someone signs in for the first time.
@@ -241,19 +572,286 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 
         <footer class="actions">
           <SubmitButton
-            :disabled="!hasChanges || saving"
-            :loading="saving"
+            :disabled="!hasSsoChanges || ssoSaving"
+            :loading="ssoSaving"
             title="Save SSO configuration">
             Save Changes
           </SubmitButton>
           <button
             class="secondary"
             type="button"
-            :disabled="saving"
-            @click="reset">
+            :disabled="ssoSaving"
+            @click="resetSsoSettings">
             Reset to Defaults
           </button>
         </footer>
+      </form>
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>OAuth2 Providers</h2>
+        <p>
+          Configure direct Google or Microsoft sign-in and map external groups to Nitro Repo roles.
+        </p>
+      </header>
+      <SpinnerElement v-if="oauthLoading" />
+      <form
+        v-else
+        class="oauthForm"
+        @submit.prevent="saveOAuthSettings">
+        <SwitchInput
+          id="oauth-enabled"
+          v-model="oauthForm.enabled">
+          Enable OAuth2
+          <template #comment>
+            When disabled, provider-specific buttons are hidden from the login screen.
+          </template>
+        </SwitchInput>
+
+        <div class="grid">
+          <TextInput
+            id="oauth-login-path"
+            v-model="oauthForm.login_path"
+            autocomplete="off"
+            required>
+            OAuth2 login endpoint
+          </TextInput>
+
+          <TextInput
+            id="oauth-callback-path"
+            v-model="oauthForm.callback_path"
+            autocomplete="off"
+            required>
+            OAuth2 callback endpoint
+          </TextInput>
+
+          <TextInput
+            id="oauth-base-url"
+            v-model="oauthForm.redirect_base_url"
+            autocomplete="off"
+            placeholder="https://repo.example.com">
+            Redirect base URL (optional)
+          </TextInput>
+        </div>
+
+        <SwitchInput
+          id="oauth-auto-create"
+          v-model="oauthForm.auto_create_users">
+          Auto-create users
+          <template #comment>
+            Provision Nitro Repo accounts the first time someone signs in via OAuth2.
+          </template>
+        </SwitchInput>
+
+        <div class="casbinEditors">
+          <label
+            class="textareaLabel"
+            for="casbin-model">
+            Casbin model
+            <textarea
+              id="casbin-model"
+              v-model="oauthForm.casbin_model"
+              :disabled="!oauthForm.enabled"
+              rows="8" />
+          </label>
+          <label
+            class="textareaLabel"
+            for="casbin-policy">
+            Casbin policy
+            <textarea
+              id="casbin-policy"
+              v-model="oauthForm.casbin_policy"
+              :disabled="!oauthForm.enabled"
+              rows="8" />
+          </label>
+        </div>
+
+        <div class="providerSection">
+          <header>
+            <h3>Google</h3>
+            <SwitchInput
+              id="google-enabled"
+              v-model="oauthForm.google.enabled"
+              :disabled="!oauthForm.enabled">
+              Enable Google login
+            </SwitchInput>
+          </header>
+          <div class="grid">
+            <TextInput
+              id="google-client-id"
+              v-model="oauthForm.google.client_id"
+              :disabled="!oauthForm.enabled || !oauthForm.google.enabled"
+              autocomplete="off">
+              Client ID
+            </TextInput>
+            <TextInput
+              id="google-client-secret"
+              v-model="oauthForm.google.client_secret"
+              :disabled="!oauthForm.enabled || !oauthForm.google.enabled"
+              type="password"
+              autocomplete="off"
+              placeholder="Leave blank to keep existing"
+            >
+              Client secret
+            </TextInput>
+            <TextInput
+              id="google-scopes"
+              v-model="oauthForm.google.scopes"
+              :disabled="!oauthForm.enabled || !oauthForm.google.enabled"
+              autocomplete="off">
+              Scopes (space or comma separated)
+            </TextInput>
+            <TextInput
+              id="google-redirect"
+              v-model="oauthForm.google.redirect_path"
+              :disabled="!oauthForm.enabled || !oauthForm.google.enabled"
+              autocomplete="off"
+              placeholder="/api/user/oauth2/callback">
+              Redirect path override (optional)
+            </TextInput>
+          </div>
+          <p
+            v-if="oauthForm.google.secretConfigured && oauthForm.enabled"
+            class="hint">
+            Secret stored on server. Provide a new value to rotate it.
+          </p>
+        </div>
+
+        <div class="providerSection">
+          <header>
+            <h3>Microsoft Entra ID</h3>
+            <SwitchInput
+              id="microsoft-enabled"
+              v-model="oauthForm.microsoft.enabled"
+              :disabled="!oauthForm.enabled">
+              Enable Microsoft login
+            </SwitchInput>
+          </header>
+          <div class="grid">
+            <TextInput
+              id="microsoft-client-id"
+              v-model="oauthForm.microsoft.client_id"
+              :disabled="!oauthForm.enabled || !oauthForm.microsoft.enabled"
+              autocomplete="off">
+              Client ID
+            </TextInput>
+            <TextInput
+              id="microsoft-client-secret"
+              v-model="oauthForm.microsoft.client_secret"
+              :disabled="!oauthForm.enabled || !oauthForm.microsoft.enabled"
+              type="password"
+              autocomplete="off"
+              placeholder="Leave blank to keep existing"
+            >
+              Client secret
+            </TextInput>
+            <TextInput
+              id="microsoft-tenant-id"
+              v-model="oauthForm.microsoft.tenant_id"
+              :disabled="!oauthForm.enabled || !oauthForm.microsoft.enabled"
+              autocomplete="off"
+              placeholder="common">
+              Tenant ID (optional)
+            </TextInput>
+            <TextInput
+              id="microsoft-scopes"
+              v-model="oauthForm.microsoft.scopes"
+              :disabled="!oauthForm.enabled || !oauthForm.microsoft.enabled"
+              autocomplete="off">
+              Scopes (space or comma separated)
+            </TextInput>
+            <TextInput
+              id="microsoft-redirect"
+              v-model="oauthForm.microsoft.redirect_path"
+              :disabled="!oauthForm.enabled || !oauthForm.microsoft.enabled"
+              autocomplete="off"
+              placeholder="/api/user/oauth2/callback">
+              Redirect path override (optional)
+            </TextInput>
+          </div>
+          <p
+            v-if="oauthForm.microsoft.secretConfigured && oauthForm.enabled"
+            class="hint">
+            Secret stored on server. Provide a new value to rotate it.
+          </p>
+        </div>
+
+        <div class="roleMappings">
+          <header class="roleMappings__header">
+            <h3>Group to role mappings</h3>
+            <p>
+              Map provider group or role claims to Nitro Repo Casbin roles. Roles are comma
+              separated.
+            </p>
+          </header>
+          <div
+            v-if="oauthForm.group_role_mappings.length === 0"
+            class="emptyState">
+            No mappings configured yet.
+          </div>
+          <div
+            v-for="mapping in oauthForm.group_role_mappings"
+            :key="mapping.id"
+            class="mappingRow">
+            <label>
+              Provider
+              <select v-model="mapping.provider">
+                <option value="google">Google</option>
+                <option value="microsoft">Microsoft</option>
+              </select>
+            </label>
+            <TextInput
+              :id="`mapping-group-${mapping.id}`"
+              v-model="mapping.group"
+              autocomplete="off"
+              required>
+              Group or role ID
+            </TextInput>
+            <TextInput
+              :id="`mapping-roles-${mapping.id}`"
+              v-model="mapping.rolesText"
+              :list="roleOptionsId"
+              autocomplete="off"
+              placeholder="read/write, admin">
+              Nitro roles (comma separated)
+            </TextInput>
+            <button
+              type="button"
+              class="secondary"
+              @click="removeGroupMapping(mapping.id)">
+              Remove
+            </button>
+          </div>
+          <button
+            type="button"
+            class="secondary"
+            @click="addGroupMapping">
+            Add mapping
+          </button>
+        </div>
+
+        <footer class="actions">
+          <SubmitButton
+            :disabled="!hasOAuthChanges || oauthSaving"
+            :loading="oauthSaving"
+            title="Save OAuth2 configuration">
+            Save Changes
+          </SubmitButton>
+          <button
+            class="secondary"
+            type="button"
+            :disabled="oauthSaving"
+            @click="resetOAuthSettings">
+            Reset to Saved Values
+          </button>
+        </footer>
+        <datalist :id="roleOptionsId">
+          <option
+            v-for="role in availableRoles"
+            :key="role"
+            :value="role" />
+        </datalist>
       </form>
     </section>
   </main>
@@ -286,6 +884,12 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
   gap: 1.5rem;
 }
 
+.oauthForm {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -310,6 +914,95 @@ function toPayload(settings: EditableSsoConfiguration): SsoConfiguration {
 .actions .secondary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.providerSection {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: $background-70;
+}
+
+.casbinEditors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem 1.5rem;
+}
+
+.textareaLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.textareaLabel textarea {
+  width: 100%;
+  min-height: 200px;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: $background-70;
+  color: $text;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.providerSection header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.providerSection h3 {
+  margin: 0;
+}
+
+.hint {
+  color: $text-50;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.roleMappings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.roleMappings__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.roleMappings__header h3 {
+  margin: 0;
+}
+
+.mappingRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  align-items: end;
+}
+
+.mappingRow select {
+  width: 100%;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: $background-70;
+  color: $text;
+}
+
+.emptyState {
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: $text-50;
 }
 
 .actions .secondary:not(:disabled):hover {

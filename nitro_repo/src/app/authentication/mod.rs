@@ -33,6 +33,7 @@ use super::NitroRepo;
 use crate::utils::{IntoErrorResponse, ResponseBuilder, api_error_response::APIErrorResponse};
 
 pub mod layer;
+pub mod oauth;
 pub mod session;
 pub mod ws;
 

@@ -42,10 +42,10 @@ pub struct SsoLoginQuery {
 }
 
 #[derive(Debug)]
-struct SsoPrincipal {
-    username: String,
-    email: Option<String>,
-    display_name: String,
+pub(super) struct SsoPrincipal {
+    pub(super) username: String,
+    pub(super) email: Option<String>,
+    pub(super) display_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +125,7 @@ pub async fn login(
 
     let cookie = Cookie::build(("session", session.session_id.clone()))
         .secure(true)
+        .same_site(axum_extra::extract::cookie::SameSite::None)
         .path("/")
         .expires(Expiration::Session)
         .build();
@@ -301,7 +302,7 @@ fn header_value(headers: &HeaderMap, name: &str) -> Result<Option<String>, Respo
         .filter(|value| !value.is_empty()))
 }
 
-async fn resolve_or_create_user(
+pub(super) async fn resolve_or_create_user(
     site: &NitroRepo,
     config: &SsoSettings,
     principal: &SsoPrincipal,
@@ -342,7 +343,10 @@ async fn resolve_or_create_user(
     create_user(site, principal).await
 }
 
-async fn create_user(site: &NitroRepo, principal: &SsoPrincipal) -> Result<UserSafeData, Response> {
+pub(super) async fn create_user(
+    site: &NitroRepo,
+    principal: &SsoPrincipal,
+) -> Result<UserSafeData, Response> {
     debug!(username = %principal.username, "Auto-provisioning SSO user");
     let base_username = principal.username.clone();
 
@@ -414,7 +418,7 @@ async fn create_user(site: &NitroRepo, principal: &SsoPrincipal) -> Result<UserS
     Err(ResponseBuilder::conflict().json(&api_error))
 }
 
-fn build_user_email(raw_email: Option<&str>, username: &str) -> Result<Email, Response> {
+pub(super) fn build_user_email(raw_email: Option<&str>, username: &str) -> Result<Email, Response> {
     if let Some(raw) = raw_email {
         match Email::from_str(raw) {
             Ok(email) => return Ok(email),
@@ -451,7 +455,7 @@ fn build_user_email(raw_email: Option<&str>, username: &str) -> Result<Email, Re
     })
 }
 
-fn normalize_username(raw: &str) -> String {
+pub(super) fn normalize_username(raw: &str) -> String {
     let mut normalized = raw.trim().to_lowercase();
     if normalized.is_empty() {
         normalized = format!("user{}", &Uuid::new_v4().simple().to_string()[..6]);
@@ -492,7 +496,7 @@ fn normalize_username(raw: &str) -> String {
     cleaned
 }
 
-fn generate_username_candidate(base: &str, attempt: usize) -> String {
+pub(super) fn generate_username_candidate(base: &str, attempt: usize) -> String {
     if attempt == 0 {
         return base.chars().take(32).collect();
     }
@@ -507,7 +511,7 @@ fn generate_username_candidate(base: &str, attempt: usize) -> String {
     trimmed
 }
 
-fn sanitize_redirect(target: Option<&str>) -> HeaderValue {
+pub(super) fn sanitize_redirect(target: Option<&str>) -> HeaderValue {
     let default = HeaderValue::from_static("/");
     let Some(target) = target.filter(|value| !value.is_empty()) else {
         return default;

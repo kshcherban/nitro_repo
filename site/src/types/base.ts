@@ -53,6 +53,7 @@ export interface SiteInfo {
   version: string;
   password_rules?: PasswordRules;
   sso?: SsoInfo;
+  oauth2?: InstanceOAuth2Settings;
 }
 export interface PasswordRules {
   min_length: number;
@@ -76,6 +77,53 @@ export interface SsoConfiguration extends SsoInfo {
   username_header: string;
   email_header?: string | null;
   display_name_header?: string | null;
+}
+
+export type OAuth2ProviderKind = "google" | "microsoft";
+
+export interface OAuth2ProviderSummary {
+  client_id: string;
+  redirect_path?: string | null;
+  tenant_id?: string | null;
+  scopes: string[];
+  client_secret_configured: boolean;
+}
+
+export interface OAuth2CasbinConfig {
+  model: string;
+  policy: string;
+}
+
+export interface OAuth2GroupRoleMapping {
+  provider: OAuth2ProviderKind;
+  group: string;
+  roles: string[];
+}
+
+export interface InstanceOAuth2Provider {
+  provider: string;
+  redirect_path?: string | null;
+}
+
+export interface InstanceOAuth2Settings {
+  login_path: string;
+  callback_path: string;
+  providers: InstanceOAuth2Provider[];
+  auto_create_users: boolean;
+  group_role_mappings: OAuth2GroupRoleMapping[];
+}
+
+export interface OAuth2Configuration {
+  enabled: boolean;
+  login_path: string;
+  callback_path: string;
+  redirect_base_url?: string | null;
+  auto_create_users: boolean;
+  google?: OAuth2ProviderSummary | null;
+  microsoft?: OAuth2ProviderSummary | null;
+  casbin?: OAuth2CasbinConfig | null;
+  group_role_mappings: OAuth2GroupRoleMapping[];
+  available_roles: string[];
 }
 
 export enum RepositoryActions {

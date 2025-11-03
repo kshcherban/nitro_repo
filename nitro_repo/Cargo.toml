@@ -64,6 +64,9 @@ reqwest.workspace = true
 bytes.workspace = true
 ahash.workspace = true
 parking_lot.workspace = true
+oauth2 = { version = "5", features = ["reqwest"] }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+casbin = { version = "2.15", default-features = false, features = ["runtime-tokio"] }
 # Rust Internal
 strum.workspace = true
 thiserror.workspace = true

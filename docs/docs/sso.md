@@ -54,6 +54,59 @@ When SSO is enabled, the login page shows a "Sign in with SSO" button above the 
 
 With these pieces in place, Nitro Repo delegates authentication to your enterprise IdP while retaining its existing session and authorization model.
 
+## OAuth2 / OIDC Login (Google & Microsoft)
+
+In addition to trusting upstream SSO headers, Nitro Repo can act as an OAuth2 client and talk directly to Google or Microsoft Entra ID (Azure AD). The backend handles the full authorization code flow with PKCE, validates ID tokens, and optionally maps IdP groups/roles into Casbin RBAC policies.
+
+### Enabling OAuth2 in the Admin UI
+
+1. Sign in as an administrator and open **Admin → System**. The page now has a dedicated
+   *OAuth2 Providers* card beneath the legacy header-based SSO settings.
+2. Populate the provider credentials (client ID/secret) and set the callback URL to `https://<your-domain>/api/user/oauth2/callback`.
+3. (Optional) Provide paths to a Casbin `model.conf` and `policy.csv`. Nitro Repo reloads these files whenever you save, allowing you to map IdP roles to application permissions.
+4. Click **Save**. The server validates the configuration, writes it to the database, and updates the in-memory OAuth2 client. No restart is required.
+
+### Google Cloud Console Setup
+
+1. Create an OAuth client inside **APIs & Services → Credentials**.
+2. Choose **Web application** and add the Nitro Repo callback URL (`https://<your-domain>/api/user/oauth2/callback`) under **Authorized redirect URIs**.
+3. Copy the **Client ID** and **Client Secret** into the Nitro Repo OAuth2 settings.
+4. Enable the scopes you want to request. Nitro Repo defaults to `openid profile email`, which is sufficient to retrieve the user’s identity.
+5. (Optional) If you need Google Workspace group claims, enable the *Admin SDK* API and configure domain-wide delegation or use the Groups API in a webhook that populates Casbin policies.
+
+### Microsoft Entra ID Setup
+
+1. Open the Azure Portal and register an application under **Entra ID → App registrations**.
+2. Record the **Application (client) ID** and create a **Client secret**.
+3. Set a **Redirect URI** of type Web: `https://<your-domain>/api/user/oauth2/callback`.
+4. Decide which tenant scope to use. Nitro Repo accepts a specific tenant ID or `common` for multi-tenant sign-in.
+5. Grant the `openid`, `profile`, and `email` API permissions for the Microsoft Graph. Add the `GroupMember.Read.All` permission if you want group claims in the ID token.
+6. Paste the client information into the Nitro Repo OAuth2 configuration and, if desired, provide the tenant ID and additional scopes.
+
+### Mapping Provider Roles to Casbin Policies
+
+- The OAuth2 callback inspects the `roles` and `groups` claims in the ID token.
+- Microsoft Entra can emit security groups or application roles. Google typically requires an external process to supply group membership; Nitro Repo falls back to `group:<email>` when none are present.
+- Any roles discovered are synchronized with the configured Casbin model/policy. Nitro Repo assigns the authenticated email address as the Casbin subject and rewrites its group membership before each session.
+- In the UI you can add *Group to role mappings* that translate provider group IDs into Nitro roles (for example mapping `Employee.ReadWrite.All` to the `read/write` Casbin role). Mappings are applied in addition to the raw roles in the token, so you can keep both coarse and fine-grained assignments.
+- Nitro Repo exposes every role it finds in the current Casbin policy as auto-complete suggestions when you edit the mapping list. That list is generated directly from the policy stored in the database.
+
+### Casbin Model & Policy Editor
+
+OAuth2 RBAC definitions now live alongside other application settings in PostgreSQL. The Admin → System screen exposes a pair of editors where you can update the Casbin model (INI syntax) and policy (CSV syntax). Saving the form writes the values back to the database, reloads the in-memory Enforcer, and updates the auto-complete suggestions immediately—no more copying files into containers.
+
+If you prefer to start from the built-in defaults, the editor pre-populates them using the same templates that previously shipped as `resources/rbac/model.conf` and `resources/rbac/policy.csv`. Leave either textarea blank to revert to those defaults.
+- In the UI you can add *Group to role mappings* that translate provider group IDs into Nitro roles (for example mapping `Employee.ReadWrite.All` to the `read/write` Casbin role). Mappings are applied in addition to the raw roles in the token, so you can keep both coarse and fine-grained assignments.
+
+### Frontend Experience
+
+Once configured, the login page displays provider-specific buttons that hit:
+
+- `GET /api/user/oauth2/login/google`
+- `GET /api/user/oauth2/login/microsoft`
+
+Nitro Repo redirects the user to the provider’s consent screen, exchanges the authorization code on callback, issues a Nitro Repo session cookie, and finally forwards the user to the original `redirect` query parameter.
+
 ## Example: Cloudflare One (One-Time PIN)
 
 When Nitro Repo runs behind a Cloudflare Access application, Cloudflare authenticates users and adds identity headers to the proxied request. For the One-Time PIN IdP:

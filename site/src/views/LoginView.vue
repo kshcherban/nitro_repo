@@ -2,20 +2,34 @@
   <main>
     <h1>Login Page</h1>
     <section
-      v-if="hasSso"
+      v-if="primaryFederated"
       class="ssoLogin">
       <button
         type="button"
         class="ssoButton"
-        @click="startSso">
-        {{ ssoButtonText }}
+        @click="federatedHandler(primaryFederated)">
+        {{ primaryFederated.label }}
       </button>
-      <p class="ssoHelp" v-if="site.siteInfo?.sso?.auto_create_users">
+      <p
+        class="ssoHelp"
+        v-if="showAutoProvisionMessage">
         Your account will be created automatically on first login.
       </p>
     </section>
+    <section
+      v-if="secondaryProviders.length > 0"
+      class="oauthLogin">
+      <button
+        v-for="provider in secondaryProviders"
+        :key="provider.provider"
+        type="button"
+        class="oauthButton"
+        @click="startOAuth(provider.provider)">
+        Sign in with {{ providerLabel(provider.provider) }}
+      </button>
+    </section>
     <div
-      v-if="hasSso"
+      v-if="hasFederatedLogin"
       class="separator">
       <span>or</span>
     </div>
@@ -53,7 +67,8 @@ import router from "@/router";
 import { sessionStore } from "@/stores/session";
 import { siteStore } from "@/stores/site";
 import { notify } from "@kyvg/vue3-notification";
-import { computed, ref } from "vue";
+import type { InstanceOAuth2Provider } from "@/types/base";
+import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 const failedLogin = ref(false);
 const input = ref({
@@ -70,10 +85,45 @@ const redirectTarget = computed(() => {
   }
   return "/";
 });
-const hasSso = computed(() => site.siteInfo?.sso !== undefined);
+const oauthProviders = computed<InstanceOAuth2Provider[]>(() => {
+  const providers = site.siteInfo?.oauth2?.providers;
+  return Array.isArray(providers) ? providers : [];
+});
+const ssoEnabled = computed(() => Boolean(site.siteInfo?.sso));
+const hasFederatedLogin = computed(
+  () => ssoEnabled.value || oauthProviders.value.length > 0,
+);
 const ssoButtonText = computed(
   () => site.siteInfo?.sso?.login_button_text ?? "Sign in with SSO",
 );
+type FederatedTarget =
+  | { kind: "sso"; label: string }
+  | { kind: "oauth"; label: string; provider: InstanceOAuth2Provider };
+
+const primaryFederated = computed<FederatedTarget | null>(() => {
+  if (ssoEnabled.value) {
+    return { kind: "sso" as const, label: ssoButtonText.value };
+  }
+  return oauthProviders.value[0]
+    ? {
+        kind: "oauth" as const,
+        label: `Sign in with ${providerLabel(oauthProviders.value[0]!.provider)}`,
+        provider: oauthProviders.value[0]!,
+      }
+    : null;
+});
+const secondaryProviders = computed<InstanceOAuth2Provider[]>(() => {
+  if (ssoEnabled.value) {
+    return oauthProviders.value;
+  }
+  return oauthProviders.value.slice(1);
+});
+const showAutoProvisionMessage = computed(() => {
+  if (ssoEnabled.value) {
+    return site.siteInfo?.sso?.auto_create_users ?? false;
+  }
+  return site.siteInfo?.oauth2?.auto_create_users ?? false;
+});
 async function login() {
   http
     .post("/api/user/login", input.value)
@@ -128,6 +178,41 @@ function resolveUrl(target: string): URL {
   const normalized = target.startsWith("/") ? target : `/${target}`;
   return new URL(normalized, window.location.origin);
 }
+
+function sanitizeBase(path: string): string {
+  return path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
+function startOAuth(provider: string) {
+  const basePath = site.siteInfo?.oauth2?.login_path ?? "/api/user/oauth2/login";
+  const targetPath = `${sanitizeBase(basePath)}/${provider}`;
+  const oauthUrl = resolveUrl(targetPath);
+  oauthUrl.searchParams.set("redirect", redirectTarget.value);
+  window.location.href = oauthUrl.toString();
+}
+
+function providerLabel(provider: string): string {
+  switch (provider.toLowerCase()) {
+    case "google":
+      return "Google";
+    case "microsoft":
+      return "Microsoft";
+    default:
+      return provider.charAt(0).toUpperCase() + provider.slice(1);
+  }
+}
+
+function federatedHandler(target: FederatedTarget) {
+  if (target.kind === "sso") {
+    startSso();
+  } else {
+    startOAuth(target.provider.provider);
+  }
+}
+
+onMounted(async () => {
+  await site.getInfo();
+});
 </script>
 <style scoped lang="scss">
 @import "@/assets/styles/theme.scss";
@@ -160,6 +245,25 @@ form {
 }
 .ssoButton:hover {
   background-color: $primary-90;
+}
+.oauthLogin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+.oauthButton {
+  background-color: $secondary;
+  color: $text;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 0.5rem;
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+.oauthButton:hover {
+  background-color: $secondary-70;
 }
 .ssoHelp {
   margin-top: 0.5rem;

@@ -32,7 +32,7 @@ services:
     environment:
       RUST_LOG: info
     labels:
-      - "traefik.frontend.rule=Host:tv.sudoers.dev"
+      - "traefik.frontend.rule=Host:repo.sudoers.dev"
       - "traefik.enable=true"
       - "traefik.port=6742"
     volumes:
