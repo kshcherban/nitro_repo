@@ -40,6 +40,7 @@ export interface RepositoryWithStorageName {
   created_at: string;
   auth_enabled: boolean;
   storage_usage_bytes: number | null;
+  storage_usage_updated_at: string | null;
 }
 export interface ConfigDescription {
   name: string;

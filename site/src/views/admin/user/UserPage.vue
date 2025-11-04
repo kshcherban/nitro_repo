@@ -1,6 +1,9 @@
 <template>
   <main v-if="user">
-    <AdminUserPage :user="user" />
+    <AdminUserPage
+      :user="user"
+      @refresh="fetchUser"
+      @deleted="handleDeleted" />
   </main>
   <ErrorOnRequest
     v-else-if="error"
@@ -32,4 +35,8 @@ async function fetchUser() {
     });
 }
 fetchUser();
+
+function handleDeleted() {
+  router.replace({ name: "UsersList" });
+}
 </script>

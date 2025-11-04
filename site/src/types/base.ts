@@ -12,6 +12,8 @@ export interface UserResponseType {
   name: string;
   username: string;
   email: string;
+  active: boolean;
+  require_password_change: boolean;
   admin: boolean;
   user_manager: boolean;
   system_manager: boolean;

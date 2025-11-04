@@ -384,6 +384,9 @@ pub async fn verify_login(
         return Err(AuthenticationError::Unauthorized);
     };
     password::verify_password(password.as_ref(), user.password.as_deref())?;
+    if !user.active {
+        return Err(AuthenticationError::Unauthorized);
+    }
     Ok(user.into())
 }
 
@@ -398,6 +401,9 @@ pub async fn get_user_and_auth_token(
     let user = UserSafeData::get_by_id(auth_token.user_id, database)
         .await?
         .ok_or(AuthenticationError::Unauthorized)?;
+    if !user.active {
+        return Err(AuthenticationError::Unauthorized);
+    }
     Ok((user, auth_token))
 }
 pub mod password {

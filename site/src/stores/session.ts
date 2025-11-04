@@ -20,7 +20,7 @@ export const sessionStore = defineStore(
 
     async function logout() {
       await http
-        .get("/api/user/logout")
+        .post("/api/user/logout")
         .then(() => {})
         .catch(() => {});
       session.value = undefined;
@@ -28,23 +28,16 @@ export const sessionStore = defineStore(
       console.log(`User ${user.value} logged out successfully`);
     }
     async function updateUser(): Promise<UserResponseType | undefined> {
-      if (session.value == undefined) {
-        console.log("No session found");
-        return undefined;
-      }
-      // Check if the session is still valid
-      if (session.value.expires < new Date()) {
-        session.value = undefined;
-        user.value = undefined;
-        return undefined;
-      }
-
       return await http
         .get<Me>("/api/user/me")
         .then((response) => {
-          console.log(`The user is still logged in: ${JSON.stringify(response.data)}`);
+          const fetchedSession = response.data.session;
+          session.value = {
+            ...fetchedSession,
+            expires: new Date(fetchedSession.expires),
+            created: new Date(fetchedSession.created),
+          };
           user.value = response.data.user;
-          session.value = response.data.session;
           return response.data.user;
         })
         .catch(() => {

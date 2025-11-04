@@ -15,6 +15,7 @@ use nr_core::{
     },
 };
 use serde::Deserialize;
+use sqlx::{query, query_scalar};
 use tracing::instrument;
 use utoipa::{OpenApi, ToSchema};
 
@@ -36,7 +37,9 @@ use crate::{
         create_user,
         is_taken,
         update_permissions,
-        update_password
+        update_password,
+        update_user_status,
+        delete_user
     ),
     components(schemas(IsTaken, UpdatePermissions))
 )]
@@ -59,6 +62,11 @@ pub fn user_management_routes() -> axum::Router<NitroRepo> {
             "/update/{user_id}/password",
             axum::routing::put(update_password),
         )
+        .route(
+            "/update/{user_id}/status",
+            axum::routing::put(update_user_status),
+        )
+        .route("/delete/{user_id}", axum::routing::delete(delete_user))
 }
 #[utoipa::path(
     get,
@@ -269,6 +277,118 @@ pub async fn update_password(
         .await?;
     Ok(ResponseBuilder::no_content().empty())
 }
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateUserStatus {
+    pub active: bool,
+}
+
+#[utoipa::path(
+    put,
+    request_body = UpdateUserStatus,
+    path = "/update/{user_id}/status",
+    responses(
+        (status = 200, description = "User status updated", body = UserSafeData),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "Cannot deactivate the last active administrator")
+    )
+)]
+pub async fn update_user_status(
+    auth: Authentication,
+    State(site): State<NitroRepo>,
+    Path(user_id): Path<i32>,
+    JsonBody(status): JsonBody<UpdateUserStatus>,
+) -> Result<Response, InternalError> {
+    if !auth.is_admin_or_user_manager() {
+        return Ok(MissingPermission::UserManager.into_response());
+    }
+    let Some(mut user) = UserSafeData::get_by_id(user_id, &site.database).await? else {
+        return Ok(ResponseBuilder::not_found()
+            .error_reason("User not found")
+            .empty());
+    };
+
+    if !status.active && user.admin {
+        let remaining_admins: i64 = query_scalar(
+            "SELECT COUNT(*) FROM users WHERE admin = TRUE AND active = TRUE AND id <> $1",
+        )
+        .bind(user.id)
+        .fetch_one(&site.database)
+        .await?;
+        if remaining_admins == 0 {
+            return Ok(
+                ResponseBuilder::conflict().body("Cannot deactivate the last active administrator")
+            );
+        }
+    }
+
+    query("UPDATE users SET active = $1 WHERE id = $2")
+        .bind(status.active)
+        .bind(user.id)
+        .execute(&site.database)
+        .await?;
+
+    if !status.active {
+        site.session_manager
+            .delete_sessions_for_user(user.id)
+            .map_err(InternalError::from)?;
+    }
+
+    user.active = status.active;
+
+    Ok(ResponseBuilder::ok().json(&user))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/delete/{user_id}",
+    responses(
+        (status = 204, description = "User deleted"),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "Cannot delete the last active administrator")
+    )
+)]
+pub async fn delete_user(
+    auth: Authentication,
+    State(site): State<NitroRepo>,
+    Path(user_id): Path<i32>,
+) -> Result<Response, InternalError> {
+    if !auth.is_admin_or_user_manager() {
+        return Ok(MissingPermission::UserManager.into_response());
+    }
+
+    let Some(user) = UserSafeData::get_by_id(user_id, &site.database).await? else {
+        return Ok(ResponseBuilder::not_found()
+            .error_reason("User not found")
+            .empty());
+    };
+
+    if user.admin {
+        let remaining_admins: i64 = query_scalar(
+            "SELECT COUNT(*) FROM users WHERE admin = TRUE AND active = TRUE AND id <> $1",
+        )
+        .bind(user.id)
+        .fetch_one(&site.database)
+        .await?;
+        if remaining_admins == 0 {
+            return Ok(
+                ResponseBuilder::conflict().body("Cannot delete the last active administrator")
+            );
+        }
+    }
+
+    site.session_manager
+        .delete_sessions_for_user(user.id)
+        .map_err(InternalError::from)?;
+
+    query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&site.database)
+        .await?;
+
+    Ok(ResponseBuilder::no_content().empty())
+}
+
 pub struct AdminUpdateUserRequest {
     pub username: Option<String>,
     pub email: Option<String>,

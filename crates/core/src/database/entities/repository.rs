@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{PgPool, postgres::PgRow, prelude::FromRow, types::Json};
+use sqlx::{PgPool, Row, postgres::PgRow, prelude::FromRow, types::Json};
 use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -41,11 +41,26 @@ pub struct DBRepositoryWithStorageName {
     pub active: bool,
     pub updated_at: chrono::DateTime<chrono::FixedOffset>,
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_usage_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_usage_updated_at: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 impl DBRepositoryWithStorageName {
     pub async fn get_all(database: &PgPool) -> Result<Vec<Self>, sqlx::Error> {
         let repositories = sqlx::query_as(
-            r#"SELECT r.id, r.storage_id, s.name AS storage_name, r.name, r.repository_type, r.visibility, r.active, r.created_at, r.updated_at
+            r#"SELECT
+                    r.id,
+                    r.storage_id,
+                    s.name AS storage_name,
+                    r.name,
+                    r.repository_type,
+                    r.visibility,
+                    r.active,
+                    r.updated_at,
+                    r.created_at,
+                    r.storage_usage_bytes,
+                    r.storage_usage_updated_at
                 FROM repositories r INNER JOIN storages s ON s.id = r.storage_id"#,
         )
         .fetch_all(database)
@@ -54,7 +69,18 @@ impl DBRepositoryWithStorageName {
     }
     pub async fn get_by_id(id: Uuid, database: &PgPool) -> Result<Option<Self>, sqlx::Error> {
         let repository = sqlx::query_as(
-            r#"SELECT r.id, r.storage_id, s.name AS storage_name, r.name, r.repository_type, r.visibility, r.active, r.created_at, r.updated_at
+            r#"SELECT
+                    r.id,
+                    r.storage_id,
+                    s.name AS storage_name,
+                    r.name,
+                    r.repository_type,
+                    r.visibility,
+                    r.active,
+                    r.updated_at,
+                    r.created_at,
+                    r.storage_usage_bytes,
+                    r.storage_usage_updated_at
                 FROM repositories r INNER JOIN storages s ON s.id = r.storage_id WHERE r.id = $1"#,
         )
         .bind(id)
@@ -68,7 +94,18 @@ impl DBRepositoryWithStorageName {
         database: &PgPool,
     ) -> Result<Vec<Self>, sqlx::Error> {
         let repositories = sqlx::query_as(
-            r#"SELECT r.id, r.storage_id, s.name AS storage_name, r.name, r.repository_type, r.visibility, r.active, r.created_at, r.updated_at
+            r#"SELECT
+                    r.id,
+                    r.storage_id,
+                    s.name AS storage_name,
+                    r.name,
+                    r.repository_type,
+                    r.visibility,
+                    r.active,
+                    r.updated_at,
+                    r.created_at,
+                    r.storage_usage_bytes,
+                    r.storage_usage_updated_at
                 FROM repositories r INNER JOIN storages s ON s.id = r.storage_id WHERE r.name = $1"#,
         )
         .bind(name.as_ref())
@@ -89,6 +126,8 @@ pub struct DBRepository {
     pub active: bool,
     pub updated_at: DateTime<FixedOffset>,
     pub created_at: DateTime<FixedOffset>,
+    pub storage_usage_bytes: Option<i64>,
+    pub storage_usage_updated_at: Option<DateTime<FixedOffset>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct RepositoryLookup {
@@ -173,6 +212,28 @@ impl DBRepository {
             .execute(database)
             .await?;
         Ok(())
+    }
+
+    pub async fn update_storage_usage(
+        repository_id: Uuid,
+        usage: Option<u64>,
+        database: &PgPool,
+    ) -> Result<chrono::DateTime<chrono::FixedOffset>, sqlx::Error> {
+        let row = sqlx::query(
+            r#"
+            UPDATE repositories
+            SET storage_usage_bytes = $1,
+                storage_usage_updated_at = NOW()
+            WHERE id = $2
+            RETURNING storage_usage_updated_at
+            "#,
+        )
+        .bind(usage.map(|value| value as i64))
+        .bind(repository_id)
+        .fetch_one(database)
+        .await?;
+
+        row.try_get("storage_usage_updated_at")
     }
 }
 

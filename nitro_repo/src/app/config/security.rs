@@ -159,7 +159,6 @@ pub struct OAuth2GoogleConfig {
     /// OAuth2 client identifier issued by Google.
     pub client_id: String,
     /// OAuth2 client secret issued by Google.
-    #[serde(skip_serializing)]
     pub client_secret: String,
     /// Additional scopes requested during authorization.
     pub scopes: Vec<String>,
@@ -188,7 +187,6 @@ pub struct OAuth2MicrosoftConfig {
     /// OAuth2 client identifier for the Entra ID application.
     pub client_id: String,
     /// OAuth2 client secret for the Entra ID application.
-    #[serde(skip_serializing)]
     pub client_secret: String,
     /// Tenant identifier (defaults to `common` when omitted).
     pub tenant_id: Option<String>,

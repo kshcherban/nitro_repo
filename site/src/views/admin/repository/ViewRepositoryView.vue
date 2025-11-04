@@ -101,9 +101,13 @@ const configComponents = computed(() => {
 });
 
 async function getRepository() {
-  await http.get(`/api/repository/${repositoryId}`).then((response) => {
-    repository.value = response.data;
-  });
+  await http
+    .get(`/api/repository/${repositoryId}`, {
+      params: { include_usage: true },
+    })
+    .then((response) => {
+      repository.value = response.data;
+    });
   await http.get(`/api/repository/${repositoryId}/configs`).then((response) => {
     configTypes.value = response.data;
   });

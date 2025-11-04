@@ -7,7 +7,7 @@
         id="nameSearch"
         v-model="searchValue"
         autofocus
-        placeholder="Search by Name, Username, or Primary Email Address" />
+        placeholder="Search repositories or storage" />
     </div>
     <div
       id="repositories"
@@ -37,6 +37,7 @@
         <div :class="['col']">Auth</div>
         <div :class="['col']">Storage</div>
         <div :class="['col']">Active</div>
+        <div :class="['col']">Usage Updated</div>
       </div>
       <div
         class="row item"
@@ -63,6 +64,7 @@
         <div class="col">{{ repository.auth_enabled ? 'On' : 'Off' }}</div>
         <div class="col">{{ formatBytes(repository.storage_usage_bytes) }}</div>
         <div class="col">{{ repository.active }}</div>
+        <div class="col">{{ formatUpdatedAt(repository.storage_usage_updated_at) }}</div>
       </div>
     </div>
   </div>
@@ -90,6 +92,17 @@ function formatBytes(bytes?: number | null): string {
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / Math.pow(1024, exponent);
   return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+}
+
+function formatUpdatedAt(timestamp?: string | null): string {
+  if (!timestamp) {
+    return "—";
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+  return date.toLocaleString();
 }
 
 function sortList(a: RepositoryWithStorageName, b: RepositoryWithStorageName) {
@@ -154,7 +167,7 @@ const filteredTable = computed(() => {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 0.5fr 0.5fr 0.5fr 0.4fr 0.5fr 0.4fr;
+  grid-template-columns: 1fr 0.6fr 0.6fr 0.5fr 0.4fr 0.5fr 0.3fr 0.7fr;
   grid-template-rows: auto;
   .col {
     padding: 1rem;

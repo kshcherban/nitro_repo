@@ -3,6 +3,7 @@ import HomeView from "../views/HomeView.vue";
 import BrowseView from "@/views/BrowseView.vue";
 import LoginView from "@/views/LoginView.vue";
 import LogoutView from "@/views/LogoutView.vue";
+import OAuthDeniedView from "@/views/OAuthDeniedView.vue";
 
 import RepositoriesView from "@/views/RepositoriesView.vue";
 import type { Component } from "vue";
@@ -47,6 +48,14 @@ const routes = [
     path: "/logout",
     name: "logout",
     component: LogoutView,
+  },
+  {
+    path: "/oauth/denied",
+    name: "oauth-denied",
+    component: OAuthDeniedView,
+    meta: {
+      skipRoutesJson: true,
+    },
   },
   {
     path: "/page/repositories",

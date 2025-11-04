@@ -33,6 +33,9 @@
           title="Sort by Username">
           Username
         </div>
+        <div class="col statusCol">
+          Status
+        </div>
       </div>
       <div
         class="row item"
@@ -49,6 +52,13 @@
           class="col"
           :title="account.username">
           {{ account.username }}
+        </div>
+        <div class="col">
+          <span
+            class="statusPill"
+            :data-active="account.active">
+            {{ account.active ? "Active" : "Inactive" }}
+          </span>
         </div>
       </div>
     </div>
@@ -80,11 +90,21 @@ function sortList(a: UserResponseType, b: UserResponseType) {
   }
 }
 const filteredTable = computed(() => {
-  if (props.users == undefined) {
+  if (!props.users) {
     return [];
   }
-  const users = props.users.map((user) => user);
-  return users.sort(sortList);
+  const term = searchValue.value.trim().toLowerCase();
+  const users = props.users.filter((user) => {
+    if (!term) {
+      return true;
+    }
+    return (
+      user.name.toLowerCase().includes(term) ||
+      user.username.toLowerCase().includes(term) ||
+      user.email.toLowerCase().includes(term)
+    );
+  });
+  return users.slice().sort(sortList);
 });
 </script>
 <style scoped lang="scss">
@@ -130,7 +150,7 @@ const filteredTable = computed(() => {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 0.6fr 1.2fr 1fr 1fr;
   grid-template-rows: auto;
   .col {
     padding: 1rem;
@@ -146,6 +166,19 @@ const filteredTable = computed(() => {
       color: $accent;
       transition: all 0.3s ease;
     }
+  }
+}
+.statusPill {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background-color: $primary-30;
+  color: $text;
+  &[data-active="false"] {
+    background-color: $secondary-70;
+    color: $text;
   }
 }
 </style>

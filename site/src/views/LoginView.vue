@@ -102,15 +102,17 @@ type FederatedTarget =
 
 const primaryFederated = computed<FederatedTarget | null>(() => {
   if (ssoEnabled.value) {
-    return { kind: "sso" as const, label: ssoButtonText.value };
+    return { kind: "sso", label: ssoButtonText.value };
   }
-  return oauthProviders.value[0]
-    ? {
-        kind: "oauth" as const,
-        label: `Sign in with ${providerLabel(oauthProviders.value[0]!.provider)}`,
-        provider: oauthProviders.value[0]!,
-      }
-    : null;
+  const firstProvider = oauthProviders.value[0];
+  if (!firstProvider) {
+    return null;
+  }
+  return {
+    kind: "oauth",
+    label: `Sign in with ${providerLabel(firstProvider.provider)}`,
+    provider: firstProvider,
+  };
 });
 const secondaryProviders = computed<InstanceOAuth2Provider[]>(() => {
   if (ssoEnabled.value) {

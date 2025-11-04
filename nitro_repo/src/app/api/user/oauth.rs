@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{io, net::SocketAddr, str::FromStr};
 
 use axum::{
     body::Body,
@@ -14,21 +14,24 @@ use axum_extra::{
     extract::cookie::{Cookie, Expiration},
     headers::UserAgent,
 };
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::dangerous::insecure_decode;
 use nr_core::database::entities::user::{UserSafeData, UserType};
+use nr_core::user::permissions::UpdatePermissions;
 use oauth2::AuthorizationCode;
 use serde::{Deserialize, Serialize};
-use tracing::{error, instrument, warn};
+use sqlx::Row;
+use tokio::sync::OnceCell;
+use tracing::{error, info, instrument, warn};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     app::{
         NitroRepo,
-        authentication::oauth::OAuth2ServiceError,
+        authentication::oauth::{OAuth2ServiceError, OAuthStateExport},
         config::{OAuth2GroupRoleMapping, OAuth2ProviderKind, OAuth2Settings},
     },
-    error::InternalError,
+    error::{InternalError, OtherInternalError},
     utils::{ResponseBuilder, api_error_response::APIErrorResponse},
 };
 
@@ -81,6 +84,64 @@ struct IdTokenClaims {
     groups: Option<Vec<String>>,
 }
 
+const OAUTH_STATE_TTL_SECONDS: i64 = 300;
+static OAUTH_STATE_TABLE_INIT: OnceCell<()> = OnceCell::const_new();
+
+struct PersistedOAuthState {
+    provider: String,
+    pkce_verifier: String,
+    redirect: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl PersistedOAuthState {
+    fn is_expired(&self) -> bool {
+        let cutoff = Utc::now() - Duration::seconds(OAUTH_STATE_TTL_SECONDS);
+        self.created_at < cutoff
+    }
+
+    fn into_export(self) -> Result<OAuthStateExport, OAuth2ServiceError> {
+        let provider = OAuth2ProviderKind::from_str(&self.provider)
+            .map_err(|_| OAuth2ServiceError::InvalidState)?;
+        Ok(OAuthStateExport {
+            provider,
+            pkce_verifier: self.pkce_verifier,
+            redirect: self.redirect,
+        })
+    }
+}
+
+async fn ensure_oauth_state_storage(site: &NitroRepo) -> Result<(), InternalError> {
+    let pool = site.database.clone();
+    OAUTH_STATE_TABLE_INIT
+        .get_or_try_init(|| async move {
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS oauth2_states (
+                    state TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    pkce_verifier TEXT NOT NULL,
+                    redirect TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                "#,
+            )
+            .execute(&pool)
+            .await?;
+
+            sqlx::query(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_oauth2_states_created_at
+                    ON oauth2_states (created_at)
+                "#,
+            )
+            .execute(&pool)
+            .await?;
+            Ok::<(), InternalError>(())
+        })
+        .await?;
+    Ok(())
+}
 #[utoipa::path(
     get,
     path = "/oauth2/providers",
@@ -162,6 +223,14 @@ pub async fn authorize(
         }
     };
 
+    let snapshot = service.export_state(&auth_redirect.state).ok_or_else(|| {
+        InternalError::from(OtherInternalError::new(io::Error::new(
+            io::ErrorKind::Other,
+            "OAuth2 state initialization failed",
+        )))
+    })?;
+    persist_oauth_state(&site, &auth_redirect.state, &snapshot).await?;
+
     let response = Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(LOCATION, auth_redirect.authorization_url.as_str())
@@ -229,16 +298,81 @@ pub async fn callback(
         return Ok(ResponseBuilder::not_found().body("OAuth2 login is not enabled"));
     };
     let base_url = resolve_base_url(&site);
+    let code_value = code.clone();
+    let state_value = state.clone();
 
     let exchange = match service
         .exchange_code(
             base_url.as_deref(),
-            AuthorizationCode::new(code.clone()),
+            AuthorizationCode::new(code_value.clone()),
             state,
         )
         .await
     {
-        Ok(exchange) => exchange,
+        Ok(exchange) => {
+            if let Err(err) = delete_persisted_oauth_state(&site, state).await {
+                warn!(%err, "Failed to delete persisted OAuth2 state after successful exchange");
+            }
+            exchange
+        }
+        Err(OAuth2ServiceError::InvalidState) => {
+            match load_persisted_oauth_state(&site, state).await? {
+                Some(persisted) => {
+                    if persisted.is_expired() {
+                        if let Err(err) = delete_persisted_oauth_state(&site, state).await {
+                            warn!(%err, "Failed to delete expired OAuth2 state");
+                        }
+                        return Ok(oauth_service_error_response(
+                            OAuth2ServiceError::InvalidState,
+                        ));
+                    }
+                    let export = match persisted.into_export() {
+                        Ok(export) => export,
+                        Err(err) => {
+                            if let Err(cleanup_err) =
+                                delete_persisted_oauth_state(&site, state).await
+                            {
+                                warn!(%cleanup_err, "Failed to delete invalid OAuth2 state");
+                            }
+                            return Ok(oauth_service_error_response(err));
+                        }
+                    };
+                    match service
+                        .exchange_code_with_export(
+                            base_url.as_deref(),
+                            AuthorizationCode::new(code_value.clone()),
+                            export,
+                        )
+                        .await
+                    {
+                        Ok(exchange) => {
+                            if let Err(err) = delete_persisted_oauth_state(&site, state).await {
+                                warn!(
+                                    %err,
+                                    "Failed to delete persisted OAuth2 state after fallback exchange"
+                                );
+                            }
+                            exchange
+                        }
+                        Err(err) => {
+                            if let Err(cleanup_err) =
+                                delete_persisted_oauth_state(&site, state).await
+                            {
+                                warn!(%cleanup_err, "Failed to delete persisted OAuth2 state after fallback failure");
+                            }
+                            warn!(%err, "OAuth2 code exchange failed using persisted state");
+                            return Ok(oauth_service_error_response(err));
+                        }
+                    }
+                }
+                None => {
+                    warn!(state = %state_value, "OAuth2 state not found in persistent store");
+                    return Ok(oauth_service_error_response(
+                        OAuth2ServiceError::InvalidState,
+                    ));
+                }
+            }
+        }
         Err(err) => {
             warn!(%err, "OAuth2 code exchange failed");
             return Ok(oauth_service_error_response(err));
@@ -275,36 +409,113 @@ pub async fn callback(
         return Ok(ResponseBuilder::not_found().body("OAuth2 configuration missing"));
     };
 
+    let claim_groups = extract_roles(exchange.provider, &claims);
+    let mapped_roles = map_roles_from_claims(
+        exchange.provider,
+        &claim_groups,
+        &oauth_settings.group_role_mappings,
+    );
+    let has_mapped_roles = !mapped_roles.is_empty();
     let principal = build_principal(&claims);
-    let user = match resolve_oauth_user(&site, &oauth_settings, &principal).await {
+    let subject_identifier = principal.email.as_deref().unwrap_or(&principal.username);
+
+    let rbac = site.oauth2_rbac();
+    let mut existing_roles: Vec<String> = Vec::new();
+    if let Some(ref rbac_engine) = rbac {
+        match rbac_engine.roles_for_user(subject_identifier).await {
+            Ok(roles) => existing_roles = roles,
+            Err(err) => {
+                warn!(
+                    %err,
+                    provider = %exchange.provider,
+                    subject = subject_identifier,
+                    "Failed to load existing OAuth2 RBAC roles"
+                );
+            }
+        }
+    }
+    let has_existing_roles = !existing_roles.is_empty();
+
+    if rbac.is_some() && !has_mapped_roles && !has_existing_roles {
+        warn!(
+            provider = %exchange.provider,
+            subject = subject_identifier,
+            "OAuth2 login denied: no roles mapped for subject"
+        );
+        return Ok(oauth_denied_redirect("no_roles"));
+    }
+
+    let rbac_enabled = rbac.is_some();
+
+    let mut user = match resolve_oauth_user(&site, &oauth_settings, &principal).await {
         Ok(user) => user,
         Err(response) => return Ok(response),
     };
 
     if !user.active {
         warn!(user_id = user.id, "Inactive user attempted OAuth2 login");
-        let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
-            message: "User account is disabled".into(),
-            details: None,
-            error: None,
-        };
-        return Ok(ResponseBuilder::forbidden().json(&api_error));
+        return Ok(oauth_denied_redirect("inactive"));
     }
 
-    let mut roles = extract_roles(exchange.provider, &claims);
-    let mapped_roles = map_roles_from_claims(
-        exchange.provider,
-        &roles,
-        &oauth_settings.group_role_mappings,
-    );
-    roles.extend(mapped_roles);
-    roles.retain(|role| !role.trim().is_empty());
-    roles.sort();
-    roles.dedup();
-
     let email = user.email.to_string();
-    if let Err(err) = site.apply_oauth_roles(&email, &roles).await {
-        warn!(%err, user_id = user.id, "Failed to apply OAuth2 RBAC roles");
+    if existing_roles.is_empty() && subject_identifier != email {
+        if let Some(ref rbac_engine) = rbac {
+            match rbac_engine.roles_for_user(&email).await {
+                Ok(roles) => existing_roles = roles,
+                Err(err) => {
+                    warn!(
+                        %err,
+                        provider = %exchange.provider,
+                        subject = %email,
+                        "Failed to load existing OAuth2 RBAC roles for resolved email"
+                    );
+                }
+            }
+        }
+    }
+
+    if has_mapped_roles {
+        if let Err(err) = site.apply_oauth_roles(&email, &mapped_roles).await {
+            warn!(%err, user_id = user.id, "Failed to apply OAuth2 RBAC roles");
+        }
+    }
+
+    let effective_roles = if has_mapped_roles {
+        mapped_roles.clone()
+    } else {
+        existing_roles.clone()
+    };
+
+    let admin_role = effective_roles
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case("admin"));
+    let user_manager_role = effective_roles
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case("user_manager"));
+    let system_manager_role = effective_roles
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case("system_manager"));
+
+    if rbac_enabled
+        && (!effective_roles.is_empty())
+        && (admin_role != user.admin
+            || user_manager_role != user.user_manager
+            || system_manager_role != user.system_manager)
+    {
+        let update = UpdatePermissions {
+            admin: Some(admin_role),
+            user_manager: Some(user_manager_role),
+            system_manager: Some(system_manager_role),
+            default_repository_actions: None,
+            repository_permissions: Default::default(),
+        };
+        if let Err(err) = update.update_permissions(user.id, &site.database).await {
+            warn!(%err, user_id = user.id, "Failed to synchronize OAuth2 user flags");
+        } else {
+            user.admin = admin_role;
+            user.user_manager = user_manager_role;
+            user.system_manager = system_manager_role;
+        }
     }
 
     let user_agent = user_agent
@@ -333,6 +544,15 @@ pub async fn callback(
 
     let redirect_header =
         sanitize_redirect(exchange.redirect.as_deref().or(query.redirect.as_deref()));
+
+    let redirect_str = redirect_header.to_str().unwrap_or("/").to_string();
+    info!(
+        user_id = user.id,
+        email = %user.email,
+        provider = %exchange.provider,
+        redirect = %redirect_str,
+        "OAuth2 login succeeded"
+    );
 
     let response = Response::builder()
         .status(StatusCode::SEE_OTHER)
@@ -386,15 +606,88 @@ async fn resolve_oauth_user(
     }
 
     if !settings.auto_create_users {
-        let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
-            message: "Account not found".into(),
-            details: None,
-            error: None,
-        };
-        return Err(ResponseBuilder::forbidden().json(&api_error));
+        return Err(oauth_denied_redirect("no_account"));
     }
 
     create_user(site, principal).await
+}
+
+async fn persist_oauth_state(
+    site: &NitroRepo,
+    state: &str,
+    snapshot: &OAuthStateExport,
+) -> Result<(), InternalError> {
+    ensure_oauth_state_storage(site).await?;
+    prune_persisted_oauth_states(site).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO oauth2_states (state, provider, pkce_verifier, redirect)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (state) DO UPDATE
+        SET provider = EXCLUDED.provider,
+            pkce_verifier = EXCLUDED.pkce_verifier,
+            redirect = EXCLUDED.redirect,
+            created_at = NOW()
+        "#,
+    )
+    .bind(state)
+    .bind(snapshot.provider.to_string())
+    .bind(snapshot.pkce_verifier.as_str())
+    .bind(snapshot.redirect.as_deref())
+    .execute(&site.database)
+    .await?;
+    Ok(())
+}
+
+async fn load_persisted_oauth_state(
+    site: &NitroRepo,
+    state: &str,
+) -> Result<Option<PersistedOAuthState>, InternalError> {
+    ensure_oauth_state_storage(site).await?;
+    let row = sqlx::query(
+        r#"
+        SELECT provider, pkce_verifier, redirect, created_at
+        FROM oauth2_states
+        WHERE state = $1
+        "#,
+    )
+    .bind(state)
+    .fetch_optional(&site.database)
+    .await?;
+
+    Ok(row.map(|record| PersistedOAuthState {
+        provider: record.get::<String, _>("provider"),
+        pkce_verifier: record.get::<String, _>("pkce_verifier"),
+        redirect: record.get::<Option<String>, _>("redirect"),
+        created_at: record.get::<DateTime<Utc>, _>("created_at"),
+    }))
+}
+
+async fn delete_persisted_oauth_state(site: &NitroRepo, state: &str) -> Result<(), InternalError> {
+    ensure_oauth_state_storage(site).await?;
+    sqlx::query(
+        r#"
+        DELETE FROM oauth2_states
+        WHERE state = $1
+        "#,
+    )
+    .bind(state)
+    .execute(&site.database)
+    .await?;
+    Ok(())
+}
+
+async fn prune_persisted_oauth_states(site: &NitroRepo) -> Result<(), InternalError> {
+    ensure_oauth_state_storage(site).await?;
+    sqlx::query(
+        r#"
+        DELETE FROM oauth2_states
+        WHERE created_at < NOW() - INTERVAL '15 minutes'
+        "#,
+    )
+    .execute(&site.database)
+    .await?;
+    Ok(())
 }
 
 fn build_principal(claims: &IdTokenClaims) -> SsoPrincipal {
@@ -447,6 +740,15 @@ fn oauth_service_error_response(err: OAuth2ServiceError) -> Response {
             ResponseBuilder::internal_server_error().json(&api_error)
         }
     }
+}
+
+fn oauth_denied_redirect(reason: &str) -> Response {
+    let location = format!("/oauth/denied?reason={reason}");
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(LOCATION, location)
+        .body(Body::empty())
+        .expect("Failed to build OAuth2 denial redirect response")
 }
 
 fn internal_login_error() -> Response {

@@ -128,6 +128,10 @@ impl OAuth2Service {
         self.providers.keys().copied()
     }
 
+    pub fn export_state(&self, state: &str) -> Option<OAuthStateExport> {
+        self.state_store.export(state)
+    }
+
     fn provider_config(
         &self,
         provider: OAuth2ProviderKind,
@@ -223,6 +227,49 @@ impl OAuth2Service {
         })
     }
 
+    pub async fn exchange_code_with_export(
+        &self,
+        base_url: Option<&str>,
+        code: AuthorizationCode,
+        export: OAuthStateExport,
+    ) -> Result<OAuth2Exchange, OAuth2ServiceError> {
+        let OAuthStateExport {
+            provider,
+            pkce_verifier,
+            redirect,
+        } = export;
+        let runtime = self.provider_config(provider)?;
+        let redirect_url = self
+            .build_redirect_url(runtime, base_url)
+            .map_err(OAuth2ServiceError::InvalidRedirectUrl)?;
+
+        let client = runtime.client.clone().set_redirect_uri(
+            RedirectUrl::new(redirect_url.to_string())
+                .map_err(|err| OAuth2ServiceError::InvalidRedirectUrl(err.to_string()))?,
+        );
+
+        trace!(
+            provider = %runtime.provider,
+            redirect = %redirect_url,
+            "Exchanging OAuth2 authorization code via restored state"
+        );
+
+        let pkce_verifier = PkceCodeVerifier::new(pkce_verifier);
+
+        let token_response = client
+            .exchange_code(code)
+            .set_pkce_verifier(pkce_verifier)
+            .request_async(&self.http_client)
+            .await
+            .map_err(|err| OAuth2ServiceError::TokenRequestFailed(err.to_string()))?;
+
+        Ok(OAuth2Exchange {
+            provider,
+            token_response,
+            redirect,
+        })
+    }
+
     fn build_redirect_url(
         &self,
         runtime: &OAuth2ProviderRuntime,
@@ -272,6 +319,13 @@ pub struct OAuth2Exchange {
     pub redirect: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct OAuthStateExport {
+    pub provider: OAuth2ProviderKind,
+    pub pkce_verifier: String,
+    pub redirect: Option<String>,
+}
+
 #[derive(Default)]
 struct OAuthStateStore {
     entries: Mutex<HashMap<String, OAuthStateValue>>,
@@ -288,6 +342,16 @@ impl OAuthStateStore {
         let mut entries = self.entries.lock();
         purge_expired_locked(&mut entries);
         entries.remove(state)
+    }
+
+    fn export(&self, state: &str) -> Option<OAuthStateExport> {
+        let mut entries = self.entries.lock();
+        purge_expired_locked(&mut entries);
+        entries.get(state).map(|value| OAuthStateExport {
+            provider: value.provider,
+            pkce_verifier: value.pkce_verifier.secret().to_string(),
+            redirect: value.redirect.clone(),
+        })
     }
 }
 

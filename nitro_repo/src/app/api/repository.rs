@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, convert::TryFrom};
 
 use axum::{
     extract::{Path, Query, State},
@@ -113,11 +113,27 @@ pub struct RepositoryListEntry {
     pub updated_at: chrono::DateTime<chrono::FixedOffset>,
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
     pub auth_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_usage_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_usage_updated_at: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RepositoryIdResponse {
     pub repository_id: Uuid,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RepositoryUsageQuery {
+    /// Include cached storage usage metadata in the response
+    #[serde(default)]
+    #[param(default = false)]
+    pub include_usage: bool,
+    /// Force recalculation of repository storage usage (admin only)
+    #[serde(default)]
+    #[param(default = false)]
+    pub refresh_usage: bool,
 }
 
 #[utoipa::path(
@@ -159,6 +175,7 @@ pub async fn find_repository_id(
     path = "/{repository_id}",
     params(
         ("repository_id" = Uuid,Path, description = "The Repository ID"),
+        RepositoryUsageQuery
     ),
     responses(
         (status = 200, description = "Repository Types", body = DBRepositoryWithStorageName),
@@ -169,6 +186,7 @@ pub async fn get_repository(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,
     Path(repository): Path<Uuid>,
+    Query(query): Query<RepositoryUsageQuery>,
 ) -> Result<Response, InternalError> {
     let Some(config) = DBRepositoryWithStorageName::get_by_id(repository, site.as_ref()).await?
     else {
@@ -181,8 +199,21 @@ pub async fn get_repository(
     {
         return Ok(MissingPermission::ReadRepository(repository).into_response());
     }
-
-    let storage_usage = compute_repository_storage_usage(&site, config.id).await;
+    let include_usage = query.refresh_usage || query.include_usage;
+    let mut storage_usage = normalize_cached_usage(config.storage_usage_bytes);
+    let mut storage_usage_updated_at = config.storage_usage_updated_at;
+    if include_usage && (query.refresh_usage || storage_usage.is_none()) {
+        match refresh_repository_storage_usage(&site, config.id).await {
+            Ok(Some((usage, updated_at))) => {
+                storage_usage = Some(usage);
+                storage_usage_updated_at = Some(updated_at);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(repository = %config.id, %err, "Failed to refresh repository storage usage");
+            }
+        }
+    }
     let auth_config = site.get_repository_auth_config(config.id).await?;
     let response = RepositoryListEntry {
         id: config.id,
@@ -196,6 +227,7 @@ pub async fn get_repository(
         created_at: config.created_at,
         auth_enabled: auth_config.enabled,
         storage_usage_bytes: storage_usage,
+        storage_usage_updated_at,
     };
     Ok(ResponseBuilder::ok().json(&response))
 }
@@ -203,6 +235,7 @@ pub async fn get_repository(
 #[utoipa::path(
     get,
     path = "/list",
+    params(RepositoryUsageQuery),
     responses(
         (status = 200, description = "List Repositories", body = [RepositoryListEntry]),
     )
@@ -211,6 +244,7 @@ pub async fn get_repository(
 pub async fn list_repositories(
     auth: Option<Authentication>,
     State(site): State<NitroRepo>,
+    Query(query): Query<RepositoryUsageQuery>,
 ) -> Result<Response, InternalError> {
     let repositories = DBRepositoryWithStorageName::get_all(site.as_ref()).await?;
     let mut entries = Vec::with_capacity(repositories.len());
@@ -224,7 +258,21 @@ pub async fn list_repositories(
         {
             continue;
         }
-        let storage_usage_bytes = compute_repository_storage_usage(&site, repository.id).await;
+        let include_usage = query.refresh_usage || query.include_usage;
+        let mut storage_usage_bytes = normalize_cached_usage(repository.storage_usage_bytes);
+        let mut storage_usage_updated_at = repository.storage_usage_updated_at;
+        if include_usage && (query.refresh_usage || storage_usage_bytes.is_none()) {
+            match refresh_repository_storage_usage(&site, repository.id).await {
+                Ok(Some((usage, updated_at))) => {
+                    storage_usage_bytes = Some(usage);
+                    storage_usage_updated_at = Some(updated_at);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(repository = %repository.id, %err, "Failed to refresh repository storage usage");
+                }
+            }
+        }
         let auth_config = site.get_repository_auth_config(repository.id).await?;
         entries.push(RepositoryListEntry {
             id: repository.id,
@@ -238,6 +286,7 @@ pub async fn list_repositories(
             created_at: repository.created_at,
             auth_enabled: auth_config.enabled,
             storage_usage_bytes,
+            storage_usage_updated_at,
         });
     }
     Ok(ResponseBuilder::ok().json(&entries))
@@ -294,6 +343,25 @@ async fn calculate_repository_storage_usage(
     }
 
     Ok(total)
+}
+
+fn normalize_cached_usage(value: Option<i64>) -> Option<u64> {
+    value.and_then(|raw| u64::try_from(raw).ok())
+}
+
+async fn refresh_repository_storage_usage(
+    site: &NitroRepo,
+    repository_id: Uuid,
+) -> Result<Option<(u64, chrono::DateTime<chrono::FixedOffset>)>, InternalError> {
+    let Some(usage) = compute_repository_storage_usage(site, repository_id).await else {
+        return Ok(None);
+    };
+
+    let updated_at = DBRepository::update_storage_usage(repository_id, Some(usage), &site.database)
+        .await
+        .map_err(InternalError::from)?;
+
+    Ok(Some((usage, updated_at)))
 }
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]

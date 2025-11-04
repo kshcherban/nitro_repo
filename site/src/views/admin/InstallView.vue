@@ -43,7 +43,7 @@
         >
       </TwoByFormBox>
       <SubmitButton
-        :disabled="formValid != ''"
+        :disabled="installing || formValid !== ''"
         :title="installButtonTitle()"
         >Install</SubmitButton
       >
@@ -57,6 +57,8 @@ import PasswordInput from "@/components/form/text/PasswordInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import TwoByFormBox from "@/components/form/TwoByFormBox.vue";
 import http from "@/http";
+import router from "@/router";
+import { siteStore } from "@/stores/site";
 import { notify } from "@kyvg/vue3-notification";
 import { computed, ref } from "vue";
 const input = ref({
@@ -66,7 +68,12 @@ const input = ref({
   password: "",
   confirmPassword: "",
 });
+const installing = ref(false);
+const site = siteStore();
 function installButtonTitle() {
+  if (installing.value) {
+    return "Installing...";
+  }
   return formValid.value === "" ? "Install" : formValid.value;
 }
 const formValid = computed(() => {
@@ -88,6 +95,9 @@ const formValid = computed(() => {
   return "";
 });
 async function install() {
+  if (installing.value || formValid.value !== "") {
+    return;
+  }
   const newUser = {
     username: input.value.username,
     email: input.value.email,
@@ -97,21 +107,37 @@ async function install() {
   const install = {
     user: newUser,
   };
-  await http
-    .post("/api/install", install)
-    .then((response) => {
-      if (response.status === 204) {
-        // Refresh and redirect to login
-      }
-    })
-    .catch((error) => {
-      console.error(error);
+  installing.value = true;
+  try {
+    const response = await http.post("/api/install", install);
+    if (response.status === 204) {
       notify({
-        type: "error",
-        title: "Error",
-        text: "An error occurred while installing the application.",
+        type: "success",
+        title: "Nitro Repo installed",
+        text: "Redirecting to login…",
       });
+      await site.getInfo();
+      await router.replace({ name: "login" });
+    }
+  } catch (error: any) {
+    console.error("Install failed", error);
+    if (error?.response?.status === 404) {
+      notify({
+        type: "warn",
+        title: "Nitro Repo already installed",
+        text: "Redirecting to login…",
+      });
+      await router.replace({ name: "login" });
+      return;
+    }
+    notify({
+      type: "error",
+      title: "Error",
+      text: "An error occurred while installing the application.",
     });
+  } finally {
+    installing.value = false;
+  }
 }
 </script>
 <style lang="scss" scoped>

@@ -33,6 +33,29 @@
         class="tab-content"
         :data-active="currentTab === 'main'">
         <div id="userMain">
+          <div class="userStatus">
+            <span
+              class="statusBadge"
+              :data-active="user.active">
+              {{ user.active ? "Active" : "Inactive" }}
+            </span>
+            <div class="statusActions">
+              <button
+                type="button"
+                class="secondaryButton"
+                :disabled="statusUpdating"
+                @click="setActive(!user.active)">
+                {{ user.active ? "Deactivate" : "Reactivate" }}
+              </button>
+              <button
+                type="button"
+                class="dangerButton"
+                :disabled="deletingUser || isCurrentUser"
+                @click="deleteUser">
+                Delete User
+              </button>
+            </div>
+          </div>
           <form>
             <TextInput
               id="name"
@@ -63,6 +86,9 @@
             <KeyAndValue
               :label="'ID #'"
               :value="user.id.toLocaleString()" />
+            <KeyAndValue
+              :label="'Status'"
+              :value="user.active ? 'Active' : 'Inactive'" />
             <KeyAndValue
               :label="'Created At'"
               :value="new Date(user.created_at).toLocaleString()" />
@@ -115,8 +141,9 @@ import SubmitButton from "@/components/form/SubmitButton.vue";
 import NewPasswordInput from "@/components/form/text/NewPasswordInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import { siteStore } from "@/stores/site";
+import { sessionStore } from "@/stores/session";
 import type { UserResponseType } from "@/types/base";
-import { ref, type PropType } from "vue";
+import { computed, ref, type PropType, watch } from "vue";
 import UserPermissions from "./UserPermissions.vue";
 import RepositoryPermissions from "./RepositoryPermissions.vue";
 import http from "@/http";
@@ -129,15 +156,38 @@ const props = defineProps({
     required: true,
   },
 });
+const emit = defineEmits<{
+  (e: "refresh"): void;
+  (e: "deleted"): void;
+}>();
 const currentTab = ref("main");
 const changeUser = ref({
-  name: props.user.name,
-  email: props.user.email,
-  username: props.user.username,
+  name: "",
+  email: "",
+  username: "",
 });
 const newPassword = ref("");
 
 const passwordRules = siteStore().siteInfo?.password_rules;
+const session = sessionStore();
+const isCurrentUser = computed(() => session.user?.id === props.user.id);
+const statusUpdating = ref(false);
+const deletingUser = ref(false);
+
+watch(
+  () => props.user,
+  (newUser) => {
+    if (!newUser) {
+      return;
+    }
+    changeUser.value = {
+      name: newUser.name,
+      email: newUser.email,
+      username: newUser.username,
+    };
+  },
+  { immediate: true },
+);
 async function changePassword() {
   console.log("Changing Password");
 
@@ -164,6 +214,65 @@ async function changePassword() {
     .catch((error) => {
       console.error(error);
     });
+}
+
+async function setActive(active: boolean) {
+  if (statusUpdating.value || props.user.active === active) {
+    return;
+  }
+  statusUpdating.value = true;
+  try {
+    await http.put(`/api/user-management/update/${props.user.id}/status`, {
+      active,
+    });
+    notify({
+      type: "success",
+      title: active ? "User reactivated" : "User deactivated",
+    });
+    emit("refresh");
+  } catch (error: any) {
+    console.error(error);
+    const message = error?.response?.data ?? "Failed to update user status.";
+    notify({
+      type: "error",
+      title: "Unable to update status",
+      text: message,
+    });
+  } finally {
+    statusUpdating.value = false;
+  }
+}
+
+async function deleteUser() {
+  if (deletingUser.value) {
+    return;
+  }
+  if (
+    !window.confirm(
+      `Are you sure you want to delete user "${props.user.username}"? This action cannot be undone.`,
+    )
+  ) {
+    return;
+  }
+  deletingUser.value = true;
+  try {
+    await http.delete(`/api/user-management/delete/${props.user.id}`);
+    notify({
+      type: "success",
+      title: "User deleted",
+    });
+    emit("deleted");
+  } catch (error: any) {
+    console.error(error);
+    const message = error?.response?.data ?? "Failed to delete user.";
+    notify({
+      type: "error",
+      title: "Unable to delete user",
+      text: message,
+    });
+  } finally {
+    deletingUser.value = false;
+  }
 }
 </script>
 
@@ -225,7 +334,69 @@ async function changePassword() {
 #userMain {
   width: 100%;
   display: flex;
-  flex-direction: row;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+.userStatus {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.statusBadge {
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  background-color: $primary-30;
+  color: $text;
+  &[data-active="true"] {
+    background-color: $primary-70;
+    color: $background;
+  }
+  &[data-active="false"] {
+    background-color: $secondary-70;
+    color: $text;
+  }
+}
+.statusActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.secondaryButton,
+.dangerButton {
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+.secondaryButton {
+  background-color: $primary-70;
+  color: $text;
+  &:hover {
+    background-color: $primary-90;
+  }
+  &:disabled {
+    background-color: $primary-30;
+    cursor: not-allowed;
+  }
+}
+.dangerButton {
+  background-color: $accent;
+  color: $background;
+  &:hover {
+    background-color: $accent-70;
+  }
+  &:disabled {
+    background-color: $accent-30;
+    cursor: not-allowed;
+  }
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 </style>

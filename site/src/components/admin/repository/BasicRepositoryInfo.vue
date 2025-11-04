@@ -32,6 +32,10 @@
             <label>Storage Usage</label>
             <span class="value">{{ formatBytes(repository.storage_usage_bytes) }}</span>
           </div>
+          <div class="keyValue">
+            <label>Usage Updated</label>
+            <span class="value">{{ formatUpdatedAt(repository.storage_usage_updated_at) }}</span>
+          </div>
         </div>
       </div>
       <div id="enableDisable">
@@ -86,6 +90,17 @@ function formatBytes(bytes?: number | null): string {
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / Math.pow(1024, exponent);
   return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+}
+
+function formatUpdatedAt(timestamp?: string | null): string {
+  if (!timestamp) {
+    return "Unknown";
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  return date.toLocaleString();
 }
 async function deleteRepository() {
   http.delete(`/api/repository/${props.repository.id}`).then(() => {

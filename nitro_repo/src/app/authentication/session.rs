@@ -361,6 +361,27 @@ impl SessionManager {
         sessions.commit()?;
         Ok(session)
     }
+
+    #[instrument]
+    pub fn delete_sessions_for_user(&self, user_id: i32) -> Result<u32, SessionError> {
+        let sessions = self.filter_table(true, |session| session.user_id == user_id)?;
+        if sessions.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.sessions.begin_write()?;
+        let mut removed = 0u32;
+        {
+            let mut table = tx.open_table(TABLE)?;
+            for session in sessions {
+                if table.remove(&*session.session_id)?.is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::Relaxed);
     }
