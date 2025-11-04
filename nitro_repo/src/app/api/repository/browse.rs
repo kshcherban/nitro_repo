@@ -26,7 +26,11 @@ use crate::{
         responses::{MissingPermission, RepositoryNotFound},
     },
     error::InternalError,
-    repository::{Repository, utils::can_read_repository_with_auth},
+    repository::{
+        DynRepository, Repository,
+        docker::metadata::resolve_browse_path,
+        utils::can_read_repository_with_auth,
+    },
     utils::{ResponseBuilder, request_logging::request_id::RequestId},
 };
 pub fn browse_routes() -> axum::Router<NitroRepo> {
@@ -98,7 +102,16 @@ async fn browse(
     }
     let repository_storage = repository.get_storage();
     let path = browse_path.path.unwrap_or_default();
-    let Some(file) = repository_storage.open_file(repository.id(), &path).await? else {
+    let storage_path = match &repository {
+        DynRepository::Docker(_) => resolve_browse_path(&repository_storage, repository.id(), &path)
+            .await
+            .map_err(InternalError::from)?,
+        _ => path.clone(),
+    };
+    let Some(file) = repository_storage
+        .open_file(repository.id(), &storage_path)
+        .await?
+    else {
         return Ok(ResponseBuilder::not_found().empty());
     };
     let files = match file {

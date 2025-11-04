@@ -52,11 +52,11 @@
               @change="toggleSelectAll"
               :disabled="isDeleting" />
           </th>
-          <th>Package</th>
-          <th>Name</th>
+          <th>{{ packageColumnTitle }}</th>
+          <th>{{ nameColumnTitle }}</th>
           <th>Size</th>
           <th>{{ pathColumnTitle }}</th>
-          <th>Cached At</th>
+          <th>{{ timestampColumnTitle }}</th>
         </tr>
       </thead>
       <tbody>
@@ -207,9 +207,17 @@ const derivedHostedFromPackages = computed(() => {
   return !packages.value.some((pkg) => pkg.cachePath.startsWith("packages/"));
 });
 
+const isDockerRepository = computed(() => {
+  const type = props.repositoryType?.toLowerCase();
+  return type === "docker";
+});
+
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
     return props.repositoryKind.toLowerCase() === "hosted";
+  }
+  if (isDockerRepository.value) {
+    return true;
   }
   if (props.repositoryType === "python") {
     return derivedHostedFromPackages.value;
@@ -217,14 +225,32 @@ const isHostedRepository = computed(() => {
   return false;
 });
 
-const headerTitle = computed(() => (isHostedRepository.value ? "Packages" : "Cached Packages"));
-const pathColumnTitle = computed(() => (isHostedRepository.value ? "Path" : "Cached Path"));
-
-const emptyRepositoryMessage = computed(() =>
-  isHostedRepository.value
-    ? "No packages yet. Upload a package to populate this list."
-    : "No cached packages yet. Trigger a download to populate this list.",
+const headerTitle = computed(() => {
+  if (isDockerRepository.value) {
+    return "Images";
+  }
+  return isHostedRepository.value ? "Packages" : "Cached Packages";
+});
+const packageColumnTitle = computed(() => (isDockerRepository.value ? "Repository" : "Package"));
+const nameColumnTitle = computed(() => (isDockerRepository.value ? "Tag" : "Name"));
+const pathColumnTitle = computed(() => {
+  if (isDockerRepository.value) {
+    return "Manifest Path";
+  }
+  return isHostedRepository.value ? "Path" : "Cached Path";
+});
+const timestampColumnTitle = computed(() =>
+  isDockerRepository.value ? "Uploaded At" : "Cached At",
 );
+
+const emptyRepositoryMessage = computed(() => {
+  if (isDockerRepository.value) {
+    return "No images yet. Push an image to populate this list.";
+  }
+  return isHostedRepository.value
+    ? "No packages yet. Upload a package to populate this list."
+    : "No cached packages yet. Trigger a download to populate this list.";
+});
 
 async function loadPackages() {
   if (!props.repositoryId) {
@@ -260,11 +286,12 @@ async function deleteSelected() {
     return;
   }
   const count = selected.value.length;
-  const confirmed = window.confirm(
-    isHostedRepository.value
-      ? `Delete ${count} package(s)? This removes files from the repository.`
-      : `Delete ${count} cached package(s)? This removes cached files but not upstream artifacts.`,
-  );
+  const confirmationMessage = isDockerRepository.value
+    ? `Delete ${count} image tag(s)? This removes their manifests from the registry.`
+    : isHostedRepository.value
+        ? `Delete ${count} package(s)? This removes files from the repository.`
+        : `Delete ${count} cached package(s)? This removes cached files but not upstream artifacts.`;
+  const confirmed = window.confirm(confirmationMessage);
   if (!confirmed) {
     return;
   }
@@ -273,12 +300,16 @@ async function deleteSelected() {
     await http.delete(`/api/repository/${props.repositoryId}/packages`, {
       data: { paths: selected.value },
     });
+    const successTitle = isDockerRepository.value ? "Images deleted" : "Packages deleted";
+    const successText = isDockerRepository.value
+      ? `${count} manifest(s) removed`
+      : isHostedRepository.value
+        ? `${count} package(s) removed`
+        : `${count} cached package(s) removed`;
     notify({
       type: "success",
-      title: "Packages deleted",
-      text: isHostedRepository.value
-        ? `${count} package(s) removed`
-        : `${count} cached package(s) removed`,
+      title: successTitle,
+      text: successText,
     });
     selected.value = [];
     await loadPackages();

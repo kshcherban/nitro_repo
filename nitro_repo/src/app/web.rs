@@ -72,9 +72,25 @@ pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 
     let cloned_site = site.clone();
     let auth_layer = AuthenticationLayer::from(site.clone());
+
+    // Docker V2 API compatibility routes added directly (not nested) to handle trailing slashes properly
+    info!("Docker V2 routes will be added at /v2");
+
     let mut app = Router::new()
+        // Docker Registry V2 API compatibility route
+        // Handle both /v2 and /v2/ explicitly to work around Axum nesting trailing slash behavior
+        .route("/v2", axum::routing::any(crate::repository::handle_docker_v2_base_public))
+        .route("/v2/", axum::routing::any(crate::repository::handle_docker_v2_base_public))
+        .route(
+            "/v2/token",
+            axum::routing::get(crate::repository::docker::auth::handle_docker_token),
+        )
+        // Nest the full Docker router for all other V2 paths
+        .route("/v2/{*path}", axum::routing::any(crate::repository::handle_docker_v2_any_path))
         .nest("/repositories", crate::repository::repository_router())
         .nest("/storages", crate::repository::repository_router())
+        // Serve the SPA root explicitly before falling back for other routes
+        .route("/", axum::routing::any(super::frontend::frontend_request))
         .nest("/api", api::api_routes())
         .nest("/badge", super::badge::badge_routes())
         .fallback(super::frontend::frontend_request)

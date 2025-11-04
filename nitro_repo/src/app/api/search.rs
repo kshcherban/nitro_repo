@@ -15,7 +15,15 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use uuid::Uuid;
 
-use crate::{app::NitroRepo, error::InternalError, repository::Repository, utils::ResponseBuilder};
+use crate::{
+    app::NitroRepo,
+    error::InternalError,
+    repository::{
+        Repository,
+        docker::metadata::collect_manifest_entries,
+    },
+    utils::ResponseBuilder,
+};
 
 #[derive(OpenApi)]
 #[openapi(paths(search_packages), components(schemas(PackageSearchResult)))]
@@ -32,6 +40,12 @@ struct PackageSearchQuery {
     pub q: String,
     #[serde(default = "default_limit")]
     pub limit: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SearchStrategy {
+    PackagesDirectory,
+    Docker,
 }
 
 const fn default_limit() -> usize {
@@ -82,10 +96,11 @@ async fn search_packages(
         }
 
         let repo_type = repository.get_type();
-        let supported = matches!(repo_type, "python" | "npm");
-        if !supported {
-            continue;
-        }
+        let strategy = match repo_type {
+            "python" | "npm" => SearchStrategy::PackagesDirectory,
+            "docker" => SearchStrategy::Docker,
+            _ => continue,
+        };
 
         let Some(info) =
             DBRepositoryWithStorageName::get_by_id(repository_id, site.as_ref()).await?
@@ -108,6 +123,7 @@ async fn search_packages(
         let repo_results = search_repository_storage(
             &storage,
             &summary,
+            strategy,
             &query,
             min(limit.saturating_sub(results.len()), limit),
         )
@@ -119,6 +135,21 @@ async fn search_packages(
 }
 
 async fn search_repository_storage(
+    storage: &DynStorage,
+    summary: &RepositorySummary,
+    strategy: SearchStrategy,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<PackageSearchResult>, InternalError> {
+    match strategy {
+        SearchStrategy::PackagesDirectory => {
+            search_packages_directory(storage, summary, query, limit).await
+        }
+        SearchStrategy::Docker => search_docker_manifests(storage, summary, query, limit).await,
+    }
+}
+
+async fn search_packages_directory(
     storage: &DynStorage,
     summary: &RepositorySummary,
     query: &str,
@@ -182,6 +213,54 @@ async fn search_repository_storage(
     Ok(matches)
 }
 
+async fn search_docker_manifests(
+    storage: &DynStorage,
+    summary: &RepositorySummary,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<PackageSearchResult>, InternalError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let manifests = collect_manifest_entries(storage, summary.repository_id)
+        .await
+        .map_err(InternalError::from)?;
+
+    let mut matches = Vec::new();
+
+    for entry in manifests {
+        if matches.len() >= limit {
+            break;
+        }
+
+        let repo_lower = entry.repository.to_lowercase();
+        let reference_lower = entry.reference.to_lowercase();
+        if !repo_lower.contains(query) && !reference_lower.contains(query) {
+            continue;
+        }
+
+        let file_name = if entry.repository.is_empty() {
+            entry.reference.clone()
+        } else {
+            format!("{}:{}", entry.repository, entry.reference)
+        };
+
+        matches.push(PackageSearchResult {
+            repository_id: summary.repository_id,
+            repository_name: summary.repository_name.clone(),
+            storage_name: summary.storage_name.clone(),
+            repository_type: summary.repository_type.clone(),
+            file_name,
+            cache_path: entry.cache_path,
+            size: entry.size,
+            modified: entry.modified,
+        });
+    }
+
+    Ok(matches)
+}
+
 fn join_dir_path(parent: &str, child: &str) -> String {
     let base = parent.trim_end_matches('/');
     if base.is_empty() {
@@ -234,9 +313,15 @@ mod tests {
             repository_type: "python".into(),
         };
 
-        let results = super::search_repository_storage(&storage, &summary, "parallel", 10)
-            .await
-            .unwrap();
+        let results = super::search_repository_storage(
+            &storage,
+            &summary,
+            SearchStrategy::PackagesDirectory,
+            "parallel",
+            10,
+        )
+        .await
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_name, "parallel_ssh-2.12.0-py3-none-any.whl");
     }
@@ -271,9 +356,15 @@ mod tests {
             repository_type: "python".into(),
         };
 
-        let results = super::search_repository_storage(&storage, &summary, "artifact", 10)
-            .await
-            .unwrap();
+        let results = super::search_repository_storage(
+            &storage,
+            &summary,
+            SearchStrategy::PackagesDirectory,
+            "artifact",
+            10,
+        )
+        .await
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_name, "artifact-1.0.0.whl");
     }
@@ -300,9 +391,70 @@ mod tests {
             repository_type: "python".into(),
         };
 
-        let results = super::search_repository_storage(&storage, &summary, "package", 2)
+        let results = super::search_repository_storage(
+            &storage,
+            &summary,
+            SearchStrategy::PackagesDirectory,
+            "package",
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_repository_storage_finds_docker_images() {
+        let storage = test_storage().await;
+        let repo_id = Uuid::new_v4();
+        let manifest_path = StoragePath::from("v2/library/nginx/manifests/latest");
+        let manifest = r#"
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "size": 7023,
+                "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                    "size": 32654,
+                    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+            ]
+        }
+        "#;
+        storage
+            .save_file(
+                repo_id,
+                FileContent::Bytes(Bytes::from(manifest)),
+                &manifest_path,
+            )
             .await
             .unwrap();
-        assert_eq!(results.len(), 2);
+
+        let summary = RepositorySummary {
+            repository_id: repo_id,
+            repository_name: "docker-hosted".into(),
+            storage_name: "test".into(),
+            repository_type: "docker".into(),
+        };
+
+        let results = super::search_repository_storage(
+            &storage,
+            &summary,
+            SearchStrategy::Docker,
+            "nginx",
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_name, "library/nginx:latest");
+        assert_eq!(results[0].cache_path, "v2/library/nginx/manifests/latest");
+        assert_eq!(results[0].size, 7023 + 32654);
     }
 }

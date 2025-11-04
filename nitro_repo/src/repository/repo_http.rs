@@ -14,7 +14,10 @@ use crate::{
         responses::RepositoryNotFound,
     },
     error::IllegalStateError,
-    repository::{Repository, RepositoryAuthConfig},
+    repository::{
+        Repository, RepositoryAuthConfig,
+        docker::auth::{build_docker_bearer_challenge, build_registry_bearer_challenge, docker_repository_scope, docker_unauthorized_body},
+    },
     utils::{
         bad_request::BadRequestErrors, header::date_time::date_time_for_header,
         request_logging::request_span::RequestSpan,
@@ -34,17 +37,208 @@ use http_body_util::BodyExt;
 use nr_core::storage::{InvalidStoragePath, StoragePath};
 use nr_storage::{FileFileType, FileType, StorageFile, StorageFileMeta, StorageFileReader};
 use serde::Deserialize;
-use tracing::{Level, Span, debug, debug_span, error, event, instrument};
+use tracing::{Level, Span, debug, debug_span, error, event, info, instrument};
 mod header;
 mod repo_auth;
 pub use header::*;
 pub use repo_auth::*;
 
 use super::{DynRepository, RepositoryHandlerError, repo_tracing::RepositoryRequestTracing};
+
 pub fn repository_router() -> axum::Router<NitroRepo> {
     Router::new()
         .route("/{storage}/{repository}/{*path}", any(handle_repo_request))
         .route_with_tsr("/{storage}/{repository}", any(handle_repo_request))
+}
+
+/// Handle Docker V2 base endpoint: /v2/ or /v2
+/// This endpoint is used by Docker clients to check if the registry is available
+/// and supports the V2 API. It should return 200 OK without requiring authentication.
+pub async fn handle_docker_v2_base_public(
+    State(site): State<NitroRepo>,
+    authentication: RepositoryAuthentication,
+    request: Request,
+) -> Response {
+    info!("Docker V2 base endpoint handler invoked!");
+    let headers = request.headers().clone();
+    let is_authenticated = matches!(
+        authentication,
+        RepositoryAuthentication::AuthToken(..)
+            | RepositoryAuthentication::Session(..)
+            | RepositoryAuthentication::Basic(..)
+    );
+
+    if is_authenticated {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("Docker-Distribution-API-Version", "registry/2.0")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+    }
+
+    let challenge = build_registry_bearer_challenge(&site, Some(&headers));
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("WWW-Authenticate", challenge)
+        .header("Docker-Distribution-API-Version", "registry/2.0")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}"#,
+        ))
+        .unwrap()
+}
+
+/// Handle Docker V2 catchall - routes to either base endpoint or path rewrite
+/// Handles /v2/ (with trailing slash) and /v2/{storage}/{repository}/{*path}
+#[instrument(skip(site, request))]
+async fn handle_docker_v2_catchall(
+    Path(path): Path<String>,
+    State(site): State<NitroRepo>,
+    parent_span: Option<RequestSpan>,
+    authentication: RepositoryAuthentication,
+    request: Request,
+) -> Result<Response, RepositoryHandlerError> {
+    info!("Docker V2 catchall handler - path: {}", path);
+
+    // If path is just "/" or empty, this is the base V2 endpoint
+    if path.is_empty() || path == "/" {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Docker-Distribution-API-Version", "registry/2.0")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap());
+    }
+
+    // Parse path as {storage}/{repository}/{*rest}
+    let parts: Vec<&str> = path.trim_start_matches('/').splitn(3, '/').collect();
+
+    if parts.len() < 2 {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("Not Found"))
+            .unwrap());
+    }
+
+    let storage = parts[0].to_string();
+    let repository = parts[1].to_string();
+    let rest = parts.get(2).map(|s| s.to_string()).unwrap_or_default();
+
+    debug!(
+        storage = %storage,
+        repository = %repository,
+        rest = %rest,
+        "Docker V2 catchall - parsed path"
+    );
+
+    let docker_scope = docker_repository_scope(&storage, &repository, &rest);
+
+    // Check authentication for write operations BEFORE processing request
+    // This ensures Docker gets a proper 401 challenge on first write attempt
+    let method = request.method().clone();
+    let is_write_operation = matches!(
+        method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    );
+    let is_blob_probe = method == Method::HEAD && rest.contains("/blobs/");
+    let should_challenge_early = is_write_operation || is_blob_probe;
+
+    if should_challenge_early
+        && matches!(
+            authentication,
+            RepositoryAuthentication::NoIdentification | RepositoryAuthentication::Other(_, _)
+        )
+    {
+        info!(
+            method = %method,
+            storage = %storage,
+            repository = %repository,
+            "Docker V2 write operation without authentication - returning 401 challenge"
+        );
+        let challenge =
+            build_docker_bearer_challenge(&site, Some(request.headers()), &docker_scope, &["pull", "push"]);
+        let body = docker_unauthorized_body(&docker_scope, &["pull", "push"]);
+        return Ok(Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("WWW-Authenticate", challenge)
+            .header("Docker-Distribution-API-Version", "registry/2.0")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap());
+    }
+
+    // Build the repo request path with v2/ prefix
+    let trimmed_rest = rest.trim_start_matches('/');
+    let repo_path = if trimmed_rest.is_empty() {
+        format!("v2/{}/{}", storage, repository)
+    } else {
+        format!("v2/{}/{}/{}", storage, repository, trimmed_rest)
+    };
+
+    let request_path = RepoRequestPath {
+        storage: storage.clone(),
+        repository: repository.clone(),
+        path: Some(StoragePath::from(repo_path)),
+        docker_scope: Some(docker_scope.clone()),
+    };
+
+    // Forward to the core handler logic
+    let site_for_challenge = site.clone();
+    let response = handle_repo_request_core(site, request_path, parent_span, authentication, request)
+        .await?;
+
+    // Check if this is a 401 Unauthorized response
+    // If so, ensure it has Docker-specific headers
+    if response.status() == StatusCode::UNAUTHORIZED {
+        let actions: &[&str] = if matches!(method, Method::GET | Method::HEAD) {
+            &["pull"][..]
+        } else {
+            &["pull", "push"][..]
+        };
+        let challenge = build_docker_bearer_challenge(
+            &site_for_challenge,
+            None,
+            &docker_scope,
+            actions,
+        );
+        let body = docker_unauthorized_body(&docker_scope, actions);
+        let mut builder = Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("WWW-Authenticate", challenge)
+            .header("Docker-Distribution-API-Version", "registry/2.0")
+            .header("Content-Type", "application/json");
+
+        let (parts, _) = response.into_parts();
+        for (key, value) in parts.headers.iter() {
+            if key != "www-authenticate" && key != "content-length" && key != "content-type" {
+                builder = builder.header(key, value);
+            }
+        }
+
+        Ok(builder.body(Body::from(body)).unwrap())
+    } else {
+        Ok(response)
+    }
+}
+
+/// Public handler for /v2/{*path} routes (used at app level)
+/// Parses the path and routes to the catchall handler
+pub async fn handle_docker_v2_any_path(
+    Path(path): Path<String>,
+    State(site): State<NitroRepo>,
+    parent_span: Option<RequestSpan>,
+    authentication: RepositoryAuthentication,
+    request: Request,
+) -> Result<Response, RepositoryHandlerError> {
+    handle_docker_v2_catchall(
+        Path(path),
+        State(site),
+        parent_span,
+        authentication,
+        request,
+    )
+    .await
 }
 
 #[derive(Debug, From)]
@@ -366,11 +560,14 @@ pub struct RepoRequestPath {
     repository: String,
     #[serde(default)]
     path: Option<StoragePath>,
+    #[serde(default)]
+    docker_scope: Option<String>,
 }
 
-pub async fn handle_repo_request(
-    State(site): State<NitroRepo>,
-    Path(request_path): Path<RepoRequestPath>,
+/// Core repository request handler logic (extracted for reuse)
+async fn handle_repo_request_core(
+    site: NitroRepo,
+    request_path: RepoRequestPath,
     parent_span: Option<RequestSpan>,
     authentication: RepositoryAuthentication,
     request: Request,
@@ -389,7 +586,9 @@ pub async fn handle_repo_request(
         storage,
         repository,
         path,
+        docker_scope,
     } = request_path;
+    let docker_scope = docker_scope.unwrap_or_else(|| format!("{}/{}", storage, repository));
     let names = RepositoryStorageName::from((storage, repository));
     let Some(repository) = site.get_repository_from_names(&names).await? else {
         let not_found = RepositoryNotFound::from(names);
@@ -421,16 +620,55 @@ pub async fn handle_repo_request(
         trace: trace.clone(),
     };
 
-    if auth_config.enabled {
-        let is_authenticated = matches!(
-            request.authentication,
-            RepositoryAuthentication::AuthToken(..)
-                | RepositoryAuthentication::Session(..)
-                | RepositoryAuthentication::Basic(..)
-        );
-        if !is_authenticated {
-            return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
-                .into_response_default());
+    // Authentication logic:
+    // - If auth is disabled: allow reads (GET/HEAD) without auth, but require auth for writes
+    // - If auth is enabled: require auth for all operations
+    let is_authenticated = matches!(
+        request.authentication,
+        RepositoryAuthentication::AuthToken(..)
+            | RepositoryAuthentication::Session(..)
+            | RepositoryAuthentication::Basic(..)
+    );
+
+    let is_read_operation = matches!(method, Method::GET | Method::HEAD);
+    let requires_auth = if auth_config.enabled {
+        // Auth enabled: all operations require authentication
+        true
+    } else {
+        // Auth disabled: only write operations require authentication
+        !is_read_operation
+    };
+
+    if requires_auth && !is_authenticated {
+        if matches!(repository, DynRepository::Docker(_)) {
+            let actions: &[&str] = if is_read_operation {
+                &["pull"][..]
+            } else {
+                &["pull", "push"][..]
+            };
+            let challenge = build_docker_bearer_challenge(
+                &site,
+                Some(&request.parts.headers),
+                &docker_scope,
+                actions,
+            );
+            let body = docker_unauthorized_body(
+                &docker_scope,
+                actions,
+            );
+            let response = Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("WWW-Authenticate", challenge)
+                .header("Docker-Distribution-API-Version", "registry/2.0")
+                .header("Content-Type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            return Ok(response);
+        } else {
+            return Ok(
+                RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"").into_response_default(
+                ),
+            );
         }
     }
     drop(entered_guard);
@@ -464,4 +702,14 @@ pub async fn handle_repo_request(
             Ok(err.into_response())
         }
     }
+}
+
+pub async fn handle_repo_request(
+    State(site): State<NitroRepo>,
+    Path(request_path): Path<RepoRequestPath>,
+    parent_span: Option<RequestSpan>,
+    authentication: RepositoryAuthentication,
+    request: Request,
+) -> Result<Response, RepositoryHandlerError> {
+    handle_repo_request_core(site, request_path, parent_span, authentication, request).await
 }

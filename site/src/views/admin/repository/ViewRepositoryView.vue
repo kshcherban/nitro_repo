@@ -60,7 +60,7 @@ const configTypes = ref<string[]>([]);
 const repositoryKind = ref<string | null>(null);
 const showPackagesTab = computed(() => {
   const type = repository.value?.repository_type;
-  return type === "python" || type === "npm" || type === "maven";
+  return type === "python" || type === "npm" || type === "maven" || type === "docker";
 });
 function getConfigTitleOrFallback(config: string) {
   return configDescriptions.value.get(config)?.name || config;

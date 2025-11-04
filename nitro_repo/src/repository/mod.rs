@@ -29,6 +29,7 @@ mod repo_http;
 pub use repo_http::*;
 mod auth_config;
 pub mod commands;
+pub mod docker;
 pub mod maven;
 pub mod npm;
 pub mod php;
@@ -159,6 +160,7 @@ pub trait Repository: Send + Sync + Clone + Debug {
 #[derive(Debug, Clone, DynRepositoryHandler)]
 #[repository_handler(error = DynRepositoryHandlerError)]
 pub enum DynRepository {
+    Docker(docker::DockerRegistry),
     Maven(maven::MavenRepository),
     NPM(npm::NPMRegistry),
     Python(python::PythonRepository),
