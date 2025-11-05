@@ -51,6 +51,7 @@ use crate::{
     repository::{
         DynRepository, RepositoryAuthConfig, RepositoryAuthConfigType, RepositoryType,
         StagingConfig,
+        docker::{DockerPushRulesConfigType, DockerRegistryConfigType, DockerRepositoryType},
         maven::{MavenPushRulesConfigType, MavenRepositoryConfigType, MavenRepositoryType},
         npm::{NPMRegistryConfigType, NpmRegistryType},
         php::{PhpRepositoryConfigType, PhpRepositoryType},
@@ -794,6 +795,8 @@ pub type NitroRepoState = State<NitroRepo>;
 pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &ProjectConfigType,
     &RepositoryPageType,
+    &DockerRegistryConfigType,
+    &DockerPushRulesConfigType,
     &MavenRepositoryConfigType,
     &MavenPushRulesConfigType,
     &NPMRegistryConfigType,
@@ -802,6 +805,7 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &RepositoryAuthConfigType,
 ];
 pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
+    &DockerRepositoryType,
     &MavenRepositoryType,
     &NpmRegistryType,
     &PythonRepositoryType,

@@ -4,9 +4,7 @@
       :is="repositoryHelper.component"
       :repository="repository" />
   </div>
-  <div v-else>
-    <p>Repository type not supported</p>
-  </div>
+  <div v-else />
 </template>
 
 <script setup lang="ts">

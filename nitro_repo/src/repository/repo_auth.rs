@@ -151,7 +151,7 @@ impl RepositoryAuthentication {
                 AuthenticationRaw::AuthToken(token.token.clone())
             }
             RepositoryAuthentication::Basic(None, user) => AuthenticationRaw::Basic {
-                username: user.username.as_ref().to_string(),
+                username: user.username.clone().unwrap_or_else(|| "token".to_string()),
                 password: String::new(),
             },
             RepositoryAuthentication::Other(scheme, value) => {

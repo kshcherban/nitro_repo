@@ -76,10 +76,9 @@ impl ProxyURL {
 
         if let (Some(last_base), Some(first_extra)) =
             (base_segments.last(), extra_segments.first_mut())
+            && last_base == first_extra
         {
-            if last_base == first_extra {
-                extra_segments.remove(0);
-            }
+            extra_segments.remove(0);
         }
 
         if !extra_segments.is_empty() {

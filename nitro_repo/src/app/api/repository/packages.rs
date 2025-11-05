@@ -21,7 +21,11 @@ use crate::{
         responses::{MissingPermission, RepositoryNotFound},
     },
     error::InternalError,
-    repository::{DynRepository, Repository, utils::can_read_repository_with_auth},
+    repository::{
+        DynRepository, Repository,
+        docker::metadata::collect_manifest_entries,
+        utils::can_read_repository_with_auth,
+    },
     utils::ResponseBuilder,
 };
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
@@ -66,6 +70,7 @@ enum PackageStrategy {
     PackagesDirectory,
     Maven,
     PythonHosted,
+    Docker,
 }
 
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
@@ -75,6 +80,7 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             crate::repository::python::PythonRepository::Hosted(_) => PackageStrategy::PythonHosted,
             _ => PackageStrategy::PackagesDirectory,
         },
+        DynRepository::Docker(_) => PackageStrategy::Docker,
         _ => PackageStrategy::PackagesDirectory,
     }
 }
@@ -130,6 +136,9 @@ pub async fn list_cached_packages(
         }
         PackageStrategy::PythonHosted => {
             list_directory_packages(repository, query.page, query.per_page, None).await
+        }
+        PackageStrategy::Docker => {
+            list_docker_packages(repository, query.page, query.per_page).await
         }
     }
 }
@@ -335,10 +344,74 @@ async fn list_maven_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+async fn list_docker_packages(
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let storage = repository.get_storage();
+    let mut manifests = collect_manifest_entries(&storage, repository.id())
+        .await
+        .map_err(InternalError::from)?;
+
+    manifests.sort_by(|a, b| {
+        a.repository
+            .cmp(&b.repository)
+            .then(a.reference.cmp(&b.reference))
+    });
+
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let total_packages = manifests.len();
+
+    if total_packages == 0 {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    let start = (current_page - 1) * per_page;
+    if start >= total_packages {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    let end = min(start + per_page, total_packages);
+    let mut items = Vec::with_capacity(end - start);
+
+    for entry in manifests[start..end].iter() {
+        items.push(PackageFileEntry {
+            package: entry.repository.clone(),
+            name: entry.reference.clone(),
+            cache_path: entry.cache_path.clone(),
+            size: entry.size,
+            modified: entry.modified,
+        });
+    }
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages,
+        items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
 fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
     match strategy {
         PackageStrategy::PackagesDirectory => path.starts_with("packages/") && !path.contains(".."),
         PackageStrategy::Maven | PackageStrategy::PythonHosted => is_valid_repository_path(path),
+        PackageStrategy::Docker => is_valid_docker_manifest_path(path),
     }
 }
 
@@ -350,6 +423,13 @@ fn is_valid_repository_path(path: &str) -> bool {
         return false;
     }
     true
+}
+
+fn is_valid_docker_manifest_path(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('/') || path.contains("..") {
+        return false;
+    }
+    path.starts_with("v2/") && path.contains("/manifests/")
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -612,5 +692,25 @@ mod tests {
         assert!(!is_valid_repository_path("../com/example/app.jar"));
         assert!(!is_valid_repository_path("/absolute/path"));
         assert!(!is_valid_repository_path(""));
+    }
+
+    #[test]
+    fn validate_docker_manifest_paths() {
+        assert!(is_valid_cache_path(
+            "v2/library/nginx/manifests/latest",
+            PackageStrategy::Docker,
+        ));
+        assert!(!is_valid_cache_path(
+            "/v2/library/nginx/manifests/latest",
+            PackageStrategy::Docker,
+        ));
+        assert!(!is_valid_cache_path(
+            "v2/library/nginx/blobs/sha256:abc",
+            PackageStrategy::Docker,
+        ));
+        assert!(!is_valid_cache_path(
+            "v2/library/../../etc/passwd",
+            PackageStrategy::Docker,
+        ));
     }
 }

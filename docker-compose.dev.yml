@@ -1,0 +1,4 @@
+services:
+  nitro_repo:
+    volumes:
+      - ./target/debug/nitro_repo:/app/nitro_repo:ro
