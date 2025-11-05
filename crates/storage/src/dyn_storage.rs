@@ -54,6 +54,42 @@ impl Storage for DynStorage {
         }
     }
 
+    async fn append_file(
+        &self,
+        repository: Uuid,
+        file: FileContent,
+        location: &StoragePath,
+    ) -> Result<usize, StorageError> {
+        match self {
+            DynStorage::Local(storage) => storage
+                .append_file(repository, file, location)
+                .await
+                .map_err(Into::into),
+            DynStorage::S3(storage) => storage
+                .append_file(repository, file, location)
+                .await
+                .map_err(Into::into),
+        }
+    }
+
+    async fn move_file(
+        &self,
+        repository: Uuid,
+        from: &StoragePath,
+        to: &StoragePath,
+    ) -> Result<bool, StorageError> {
+        match self {
+            DynStorage::Local(storage) => storage
+                .move_file(repository, from, to)
+                .await
+                .map_err(Into::into),
+            DynStorage::S3(storage) => storage
+                .move_file(repository, from, to)
+                .await
+                .map_err(Into::into),
+        }
+    }
+
     async fn delete_file(
         &self,
         repository: Uuid,

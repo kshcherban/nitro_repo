@@ -17,6 +17,7 @@ use tux_io_s3::{
     client::{BucketClient, S3ClientBuilder},
     command::{
         delete::DeleteObject,
+        get::GetObject,
         list::ListObjectsV2,
         put::{PutHeaders, PutObject},
     },
@@ -394,6 +395,56 @@ impl Storage for S3Storage {
         // TODO: Check if the file was created
         Ok((size, !already_exists))
     }
+    #[instrument(name = "Storage::append_file", fields(storage_type = "s3"))]
+    async fn append_file(
+        &self,
+        repository: uuid::Uuid,
+        file: FileContent,
+        location: &StoragePath,
+    ) -> Result<usize, S3StorageError> {
+        // S3 doesn't support native append operations
+        // We need to read, append, and write back
+        // This is still O(n) for S3 since network I/O dominates
+        let path = self.get_path_for_creation(repository, location).await?;
+
+        let mut existing_data = if self.does_path_exist(&path).await? {
+            let get_object = GetObject {
+                key: &path,
+                ..Default::default()
+            };
+            let response = self.bucket.execute_command(get_object).await?;
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(std::io::Error::other)?;
+            bytes.to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // Append new data
+        let new_data: FileContentBytes = file.try_into()?;
+        existing_data.extend_from_slice(new_data.as_ref());
+
+        // Write back
+        let content_type = if location.is_directory() {
+            "application/x-directory"
+        } else {
+            "application/octet-stream"
+        };
+        let size = existing_data.len();
+        let put_object = PutObject {
+            key: &path,
+            content: existing_data.into(),
+            headers: PutHeaders {
+                content_type: content_type.into(),
+                metadata: Default::default(),
+            },
+            tags: None,
+        };
+        self.bucket.execute_command(put_object).await?;
+        Ok(size)
+    }
     #[instrument(name = "Storage::put_repository_meta", fields(storage_type = "s3"))]
     async fn put_repository_meta(
         &self,
@@ -433,6 +484,58 @@ impl Storage for S3Storage {
                 got: response_data.status().as_u16(),
             });
         }
+        Ok(true)
+    }
+    #[instrument(name = "Storage::move_file", fields(storage_type = "s3"))]
+    async fn move_file(
+        &self,
+        repository: uuid::Uuid,
+        from: &StoragePath,
+        to: &StoragePath,
+    ) -> Result<bool, S3StorageError> {
+        let from_path = self.s3_path(&repository, from);
+        let to_path = self.s3_path(&repository, to);
+
+        // Check if source exists
+        if !self.does_path_exist(&from_path).await? {
+            return Ok(false);
+        }
+
+        // For S3, we need to copy and then delete since there's no native rename
+        // Read the object
+        let get_object = GetObject {
+            key: &from_path,
+            ..Default::default()
+        };
+        let response = self.bucket.execute_command(get_object).await?;
+        let bytes = response.bytes().await.map_err(std::io::Error::other)?;
+
+        // Get content type from original object metadata (if available)
+        let content_type = if to.is_directory() {
+            "application/x-directory"
+        } else {
+            "application/octet-stream"
+        };
+
+        // Write to new location
+        let put_object = PutObject {
+            key: &to_path,
+            content: bytes.to_vec().into(),
+            headers: PutHeaders {
+                content_type: content_type.into(),
+                metadata: Default::default(),
+            },
+            tags: None,
+        };
+        self.bucket.execute_command(put_object).await?;
+
+        // Delete original
+        let delete_object = DeleteObject {
+            key: &from_path,
+            version_id: None,
+        };
+        self.bucket.execute_command(delete_object).await?;
+
         Ok(true)
     }
     #[instrument(name = "Storage::get_file_information", fields(storage_type = "s3"))]

@@ -30,6 +30,7 @@ async fn get_file_bytes(storage_file: StorageFile) -> Result<Vec<u8>, DockerErro
     }
 }
 
+
 /// Helper to create custom response with headers
 fn custom_response(status: StatusCode, headers: Vec<(&str, &str)>, body: Vec<u8>) -> RepoResponse {
     let mut builder = Response::builder().status(status);
@@ -293,10 +294,31 @@ async fn get_manifest(
 
     let content = get_file_bytes(file).await?;
 
-    // Determine content type from manifest content or request
-    let content_type = accept_header
-        .as_deref()
-        .unwrap_or(MediaType::OCI_IMAGE_MANIFEST);
+    // Determine content type from the stored manifest itself
+    let content_type = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&content) {
+        if let Some(media_type) = value.get("mediaType").and_then(|v| v.as_str()) {
+            media_type.to_string()
+        } else {
+            // No mediaType field - likely OCI manifest (mediaType is optional in OCI spec)
+            MediaType::OCI_IMAGE_MANIFEST.to_string()
+        }
+    } else {
+        MediaType::OCI_IMAGE_MANIFEST.to_string()
+    };
+
+    // If client sent Accept header, verify we can serve what they want
+    if let Some(ref accept) = accept_header {
+        // Client may send multiple types separated by comma
+        let acceptable_types: Vec<&str> = accept.split(',').map(|s| s.trim()).collect();
+        if !acceptable_types.is_empty()
+            && !acceptable_types.contains(&"*/*")
+            && !acceptable_types.iter().any(|&t| t == content_type || t.starts_with("application/*")) {
+            debug!(
+                "Client requested {} but manifest is {}",
+                accept, content_type
+            );
+        }
+    }
 
     // Calculate digest
     let digest = format!("sha256:{:x}", Sha256::digest(&content));
@@ -304,7 +326,7 @@ async fn get_manifest(
     Ok(custom_response(
         StatusCode::OK,
         vec![
-            ("Content-Type", content_type),
+            ("Content-Type", &content_type),
             ("Docker-Content-Digest", &digest),
             ("Content-Length", &content.len().to_string()),
         ],
@@ -332,12 +354,23 @@ async fn head_manifest(
     let content = get_file_bytes(file).await?;
     let digest = format!("sha256:{:x}", Sha256::digest(&content));
 
+    // Determine content type from the stored manifest itself
+    let content_type = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&content) {
+        if let Some(media_type) = value.get("mediaType").and_then(|v| v.as_str()) {
+            media_type.to_string()
+        } else {
+            MediaType::OCI_IMAGE_MANIFEST.to_string()
+        }
+    } else {
+        MediaType::OCI_IMAGE_MANIFEST.to_string()
+    };
+
     Ok(custom_response(
         StatusCode::OK,
         vec![
             ("Docker-Content-Digest", &digest),
             ("Content-Length", &content.len().to_string()),
-            ("Content-Type", MediaType::OCI_IMAGE_MANIFEST),
+            ("Content-Type", &content_type),
         ],
         vec![],
     ))
@@ -531,27 +564,25 @@ async fn upload_blob_chunk(
 
     let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
 
-    // Get existing data
-    let existing_file = repo
+    // Check upload session exists
+    if !repo
         .get_storage()
-        .open_file(repo.id(), &upload_path)
-        .await?;
-    let mut existing_data = if let Some(upload_file) = existing_file {
-        get_file_bytes(upload_file).await?
-    } else {
+        .file_exists(repo.id(), &upload_path)
+        .await?
+    {
         return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
-    };
+    }
 
-    // Append new data
+    // Get new chunk data
     let new_data = request.body.body_as_bytes().await?;
-    existing_data.extend_from_slice(&new_data);
 
-    // Save updated data
-    repo.get_storage()
-        .save_file(repo.id(), existing_data.clone().into(), &upload_path)
+    // Append data directly to file (O(1) disk I/O)
+    let total_size = repo
+        .get_storage()
+        .append_file(repo.id(), new_data.into(), &upload_path)
         .await?;
 
-    let range = format!("0-{}", existing_data.len());
+    let range = format!("0-{}", total_size.saturating_sub(1));
     let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
 
     Ok(custom_response(
@@ -596,40 +627,53 @@ async fn complete_blob_upload(
     })?;
 
     let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
+    let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
 
-    // Get uploaded data
+    // Check if there's final data in request body
+    let final_data = request.body.body_as_bytes().await?;
+
+    if !final_data.is_empty() {
+        // Append final chunk before completing
+        repo.get_storage()
+            .append_file(repo.id(), final_data.into(), &upload_path)
+            .await?;
+    }
+
+    // Read the file (async I/O is fine)
     let upload_file = repo
         .get_storage()
         .open_file(repo.id(), &upload_path)
         .await?
         .ok_or_else(|| DockerError::BlobUploadNotFound(upload_id.to_string()))?;
 
-    let mut data = get_file_bytes(upload_file).await?;
+    let data_bytes = get_file_bytes(upload_file).await?;
 
-    // Append any final data from request body
-    let final_data = request.body.body_as_bytes().await?;
-    if !final_data.is_empty() {
-        data.extend_from_slice(&final_data);
-    }
+    // Offload CPU-intensive hashing to blocking thread pool
+    // This prevents blocking the async runtime and allows concurrent blob finalization
+    let calculated_digest = tokio::task::spawn_blocking(move || {
+        let mut hasher = Sha256::new();
+        hasher.update(&data_bytes);
+        format!("sha256:{:x}", hasher.finalize())
+    })
+    .await
+    .map_err(|e| DockerError::InvalidManifest(format!("Hash task failed: {}", e)))?;
 
     // Verify digest
-    let calculated_digest = format!("sha256:{:x}", Sha256::digest(&data));
     if calculated_digest != digest {
+        // Delete invalid upload on digest mismatch
+        repo.get_storage()
+            .delete_file(repo.id(), &upload_path)
+            .await?;
         return Err(DockerError::DigestMismatch {
             expected: digest.to_string(),
             actual: calculated_digest,
         });
     }
 
-    // Save blob
-    let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
+    // Use move_file for O(1) rename operation instead of read-write
+    // This is MUCH faster than save_file which would write 327MB again
     repo.get_storage()
-        .save_file(repo.id(), data.into(), &blob_path)
-        .await?;
-
-    // Clean up upload session
-    repo.get_storage()
-        .delete_file(repo.id(), &upload_path)
+        .move_file(repo.id(), &upload_path, &blob_path)
         .await?;
 
     let location = format!("/v2/{}/blobs/{}", repository_name, digest);

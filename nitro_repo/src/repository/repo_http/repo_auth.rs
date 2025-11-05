@@ -167,7 +167,7 @@ impl RepositoryAuthentication {
     ) -> Result<Self, AuthenticationError> {
         match raw_auth {
             AuthenticationRaw::AuthToken(token) => {
-                let (token, user) = get_by_auth_token(&token, &site.database).await?;
+                let (token, user) = get_by_auth_token_cached(&token, site).await?;
                 Ok(RepositoryAuthentication::AuthToken(token, user))
             }
             AuthenticationRaw::Session(session) => {
@@ -180,8 +180,7 @@ impl RepositoryAuthentication {
                 match verify_login(username, &password, &site.database).await {
                     Ok(user) => Ok(RepositoryAuthentication::Basic(None, user)),
                     Err(AuthenticationError::Unauthorized) => {
-                        let (token, user) =
-                            get_by_auth_token(&password, &site.database).await?;
+                        let (token, user) = get_by_auth_token_cached(&password, site).await?;
                         Ok(RepositoryAuthentication::Basic(Some(token), user))
                     }
                     Err(err) => Err(err),
@@ -231,4 +230,32 @@ async fn get_by_auth_token(
         .await?
         .ok_or(AuthenticationError::Unauthorized)?;
     Ok((token, user))
+}
+
+async fn get_by_auth_token_cached(
+    token: &str,
+    site: &NitroRepo,
+) -> Result<(AuthToken, UserSafeData), AuthenticationError> {
+    // Try cache first
+    if let Some(cached) = site.auth_token_cache.get(token).await {
+        // Verify token hasn't expired
+        if let Some(expires) = cached.0.expires_at {
+            if expires <= Utc::now().fixed_offset() {
+                // Token expired, remove from cache
+                site.auth_token_cache.invalidate(token).await;
+                return Err(AuthenticationError::Unauthorized);
+            }
+        }
+        return Ok(cached);
+    }
+
+    // Cache miss, query database
+    let result = get_by_auth_token(token, &site.database).await?;
+
+    // Store in cache
+    site.auth_token_cache
+        .insert(token.to_string(), result.clone())
+        .await;
+
+    Ok(result)
 }

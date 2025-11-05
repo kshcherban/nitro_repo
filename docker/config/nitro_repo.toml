@@ -5,7 +5,7 @@ suggested_local_storage_path = "/data/storages"
 user = "nitro"
 password = "nitro"
 database = "nitro_repo"
-host = "172.17.0.1"
+host = "postgres"
 port = 5432
 
 [sessions]
@@ -34,14 +34,14 @@ allow_basic_without_tokens = true
 
 [log.levels]
 default = "Debug"
-
-[log.loggers.file]
-type = "RollingFile"
-
-  [log.loggers.file.config]
-  path = "/logs"
-  file_prefix = "nitro_repo"
-  interval = "Never"          # or "Hourly", "Minutely", "Never"
-
-    [log.loggers.file.config.levels]
-    default = "Debug"
+#
+# [log.loggers.file]
+# type = "RollingFile"
+#
+#   [log.loggers.file.config]
+#   path = "/logs"
+#   file_prefix = "nitro_repo"
+#   interval = "Never"          # or "Hourly", "Minutely", "Never"
+#
+#     [log.loggers.file.config.levels]
+#     default = "Debug"

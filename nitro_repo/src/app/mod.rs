@@ -291,6 +291,7 @@ pub struct NitroRepo {
     pub email_access: Arc<EmailAccess>,
     pub metrics: AppMetrics,
     pub repository_metrics: RepositoryMetricsMeter,
+    pub auth_token_cache: Arc<moka::future::Cache<String, (nr_core::database::entities::user::auth_token::AuthToken, nr_core::database::entities::user::UserSafeData)>>,
 }
 static X_FORWARDED_FOR_HEADER: HeaderName = HeaderName::from_static("x-forwarded-for");
 
@@ -420,6 +421,15 @@ impl NitroRepo {
 
         let session_manager = Arc::new(SessionManager::new(session_manager, mode)?);
 
+        // Initialize auth token cache with 5 minute TTL
+        // Tokens expire in 15 minutes, so 5 minute cache is safe
+        let auth_token_cache = Arc::new(
+            moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(std::time::Duration::from_secs(300))
+                .build(),
+        );
+
         let nitro_repo = NitroRepo {
             inner: Arc::new(nitro_repo),
             session_manager,
@@ -427,6 +437,7 @@ impl NitroRepo {
             email_access: Arc::new(email_access),
             metrics: AppMetrics::default(),
             repository_metrics: RepositoryMetricsMeter::default(),
+            auth_token_cache,
         };
         nitro_repo.load_storages().await?;
         nitro_repo.load_repositories().await?;

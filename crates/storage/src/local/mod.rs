@@ -386,6 +386,47 @@ impl Storage for LocalStorage {
     #[instrument(
         fields(
             storage.type = "local",
+            content.length = ?content.content_len_or_none(),
+            storage.id = %self.storage_config.storage_id,
+            storage.config = ?self.config,
+            file.path,
+            repository.id = %repository,
+        ),
+        skip(self,content, repository)
+    )]
+    async fn append_file(
+        &self,
+        repository: Uuid,
+        content: FileContent,
+        location: &StoragePath,
+    ) -> Result<usize, LocalStorageError> {
+        let CreatePath {
+            path,
+            parent_directory,
+            new_directory_start,
+        } = self.0.get_path_for_creation(repository, location)?;
+        if new_directory_start.is_some() {
+            trace!("Creating Parent Directory");
+            fs::create_dir_all(parent_directory)?;
+        }
+        let current_span = Span::current();
+        current_span.record("file.path", debug(&path));
+        debug!(?path, "Appending to File");
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let bytes_written = content.write_to(&mut file)?;
+
+        // Skip metadata updates for append operations entirely
+        // Metadata will be updated when the file is finalized (moved/renamed)
+        // This prevents O(n) metadata updates during chunked uploads
+        Ok(bytes_written)
+    }
+    #[instrument(
+        fields(
+            storage.type = "local",
             storage.id = %self.storage_config.storage_id,
             storage.config = ?self.config,
             repository.id = %repository,
@@ -409,6 +450,56 @@ impl Storage for LocalStorage {
             fs::remove_file(&path)?;
             LocationMeta::delete_local(path)?;
         }
+        Ok(true)
+    }
+    #[instrument(
+        fields(
+            storage.type = "local",
+            storage.id = %self.storage_config.storage_id,
+            storage.config = ?self.config,
+        ),
+        skip(self,repository)
+    )]
+    async fn move_file(
+        &self,
+        repository: Uuid,
+        from: &StoragePath,
+        to: &StoragePath,
+    ) -> Result<bool, LocalStorageError> {
+        let from_path = self.get_path(&repository, from);
+        if !from_path.exists() {
+            debug!(?from_path, "Source file does not exist");
+            return Ok(false);
+        }
+
+        let CreatePath {
+            path: to_path,
+            parent_directory,
+            new_directory_start,
+        } = self.0.get_path_for_creation(repository, to)?;
+
+        // Create destination directory if needed
+        if new_directory_start.is_some() {
+            trace!("Creating Parent Directory");
+            fs::create_dir_all(parent_directory)?;
+        }
+
+        let current_span = Span::current();
+        current_span.record("file.path", debug(&to_path));
+        debug!(?from_path, ?to_path, "Moving file");
+
+        // Use fs::rename which is O(1) on same filesystem
+        fs::rename(&from_path, &to_path)?;
+
+        // Delete old metadata
+        LocationMeta::delete_local(&from_path)?;
+
+        // Update metadata for new location
+        if !is_hidden_file(&to_path) {
+            self.clone()
+                .run_post_save_file(to_path, new_directory_start, current_span)?;
+        }
+
         Ok(true)
     }
     #[instrument(

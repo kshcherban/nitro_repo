@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17
     restart: unless-stopped
     network_mode: "bridge"
     environment:
@@ -9,8 +9,6 @@ services:
       POSTGRES_PASSWORD: nitro
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "172.17.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nitro -d nitro_repo"]
       interval: 5s
@@ -37,12 +35,12 @@ services:
       - "traefik.port=6742"
     volumes:
       - nitro_repo_data:/data
-      - nitro_repo_logs:/logs
+      # - nitro_repo_logs:/logs
       - ./docker/config/nitro_repo.toml:/data/nitro_repo.toml:ro
 
 volumes:
   nitro_repo_data:
-  nitro_repo_logs:
+  # nitro_repo_logs:
   postgres_data:
 
 networks:

@@ -43,6 +43,18 @@ pub trait Storage: Send + Sync {
         file: FileContent,
         location: &StoragePath,
     ) -> impl Future<Output = Result<(usize, bool), Self::Error>> + Send;
+
+    /// Appends data to an existing file
+    /// If the file doesn't exist, creates it
+    ///
+    /// # Result
+    /// Returns the number of bytes appended
+    fn append_file(
+        &self,
+        repository: Uuid,
+        file: FileContent,
+        location: &StoragePath,
+    ) -> impl Future<Output = Result<usize, Self::Error>> + Send;
     /// Repository Meta files are files that are not listed and the repository controls the content. The content is stored as JSON
     fn put_repository_meta(
         &self,
@@ -65,6 +77,16 @@ pub trait Storage: Send + Sync {
         &self,
         repository: Uuid,
         location: &StoragePath,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// Moves/renames a file from one location to another within the same repository
+    /// This is an O(1) operation on most filesystems (rename)
+    /// Returns true if successful, false if source doesn't exist
+    fn move_file(
+        &self,
+        repository: Uuid,
+        from: &StoragePath,
+        to: &StoragePath,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Returns Information about the file
