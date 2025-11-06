@@ -1,31 +1,28 @@
 use std::{collections::HashMap, fmt};
 
 use axum::{
+    Json,
     extract::{Extension, Query, State},
     response::{IntoResponse, Response},
-    Json,
 };
 use chrono::{Duration, FixedOffset, Utc};
 use http::{HeaderMap, StatusCode};
 use nr_core::{
-    database::{
-        entities::user::auth_token::NewRepositoryToken,
-        DateTime,
-    },
+    database::{DateTime, entities::user::auth_token::NewRepositoryToken},
     user::permissions::RepositoryActions,
 };
 use serde::{
     Deserialize, Serialize,
-    de::{Deserializer, SeqAccess, Visitor, Error as DeError},
+    de::{Deserializer, Error as DeError, SeqAccess, Visitor},
 };
 use tracing::{debug, error, instrument, warn};
 use uuid::Uuid;
 
+use crate::repository::repo_http::RepositoryAuthentication;
 use crate::{
     app::{NitroRepo, RepositoryStorageName, authentication::AuthenticationRaw},
     repository::{DynRepository, Repository},
 };
-use crate::repository::repo_http::RepositoryAuthentication;
 
 const DEFAULT_TOKEN_LIFETIME: i64 = 15 * 60;
 
@@ -233,8 +230,10 @@ pub async fn handle_docker_token(
         return Err(DockerTokenError::Authentication);
     };
 
-    if matches!(authentication, RepositoryAuthentication::NoIdentification | RepositoryAuthentication::Other(_, _))
-    {
+    if matches!(
+        authentication,
+        RepositoryAuthentication::NoIdentification | RepositoryAuthentication::Other(_, _)
+    ) {
         return Err(DockerTokenError::Authentication);
     }
 
@@ -244,10 +243,8 @@ pub async fn handle_docker_token(
     let mut repository_requests: HashMap<Uuid, Vec<RepositoryActions>> = HashMap::new();
 
     for scope in scopes.iter() {
-        let repo_name = RepositoryStorageName::from((
-            scope.storage.clone(),
-            scope.repository.clone(),
-        ));
+        let repo_name =
+            RepositoryStorageName::from((scope.storage.clone(), scope.repository.clone()));
 
         let Some(repository) = site
             .get_repository_from_names(&repo_name)
@@ -302,8 +299,7 @@ pub async fn handle_docker_token(
 
     let issued_at = Utc::now();
     let expires_at = issued_at + Duration::seconds(DEFAULT_TOKEN_LIFETIME);
-    let expires_at_fixed: DateTime = expires_at
-        .with_timezone(&FixedOffset::east_opt(0).unwrap());
+    let expires_at_fixed: DateTime = expires_at.with_timezone(&FixedOffset::east_opt(0).unwrap());
 
     let repositories = repository_requests.into_iter().collect::<Vec<_>>();
 
@@ -416,9 +412,7 @@ pub fn build_docker_bearer_challenge(
     let (base_url, service) = resolve_registry_location(site, headers);
     let scope_actions = actions.join(",");
     let scope = format!("repository:{repository_scope}:{scope_actions}");
-    format!(
-        "Bearer realm=\"{base_url}/v2/token\",service=\"{service}\",scope=\"{scope}\""
-    )
+    format!("Bearer realm=\"{base_url}/v2/token\",service=\"{service}\",scope=\"{scope}\"")
 }
 
 pub fn build_registry_bearer_challenge(site: &NitroRepo, headers: Option<&HeaderMap>) -> String {
@@ -449,7 +443,10 @@ pub fn docker_unauthorized_body(repository_scope: &str, actions: &[&str]) -> Str
     .to_string()
 }
 
-pub fn resolve_registry_location(site: &NitroRepo, headers: Option<&HeaderMap>) -> (String, String) {
+pub fn resolve_registry_location(
+    site: &NitroRepo,
+    headers: Option<&HeaderMap>,
+) -> (String, String) {
     let forwarded_proto = headers
         .and_then(|h| h.get("x-forwarded-proto"))
         .and_then(|value| value.to_str().ok())
@@ -468,8 +465,12 @@ pub fn resolve_registry_location(site: &NitroRepo, headers: Option<&HeaderMap>) 
     let is_https = instance.is_https;
     drop(instance);
 
-    let configured_scheme = (!configured_url.is_empty()).then(|| extract_scheme(&configured_url)).flatten();
-    let configured_authority = (!configured_url.is_empty()).then(|| extract_authority(&configured_url)).flatten();
+    let configured_scheme = (!configured_url.is_empty())
+        .then(|| extract_scheme(&configured_url))
+        .flatten();
+    let configured_authority = (!configured_url.is_empty())
+        .then(|| extract_authority(&configured_url))
+        .flatten();
 
     let service = forwarded_host
         .clone()

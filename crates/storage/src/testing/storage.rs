@@ -107,6 +107,17 @@ impl<ST: Storage> Storage for TestingStorage<ST> {
         Ok(result)
     }
 
+    async fn append_file(
+        &self,
+        repository: Uuid,
+        file: crate::FileContent,
+        location: &StoragePath,
+    ) -> Result<usize, Self::Error> {
+        let written = self.storage.append_file(repository, file, location).await?;
+        self.add_created_file(repository, location.clone()).await;
+        Ok(written)
+    }
+
     async fn put_repository_meta(
         &self,
         _repository: Uuid,
@@ -136,6 +147,20 @@ impl<ST: Storage> Storage for TestingStorage<ST> {
             "Internal Storage did not return the correct value"
         );
         Ok(result)
+    }
+
+    async fn move_file(
+        &self,
+        repository: Uuid,
+        from: &StoragePath,
+        to: &StoragePath,
+    ) -> Result<bool, Self::Error> {
+        let moved = self.storage.move_file(repository, from, to).await?;
+        if moved {
+            self.remove_created_file(repository, from.clone()).await;
+            self.add_created_file(repository, to.clone()).await;
+        }
+        Ok(moved)
     }
 
     async fn get_file_information(

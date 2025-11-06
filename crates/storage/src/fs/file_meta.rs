@@ -98,10 +98,14 @@ pub enum LocationTypedMeta {
     File(FileMeta),
 }
 impl LocationTypedMeta {
-    pub fn update(&mut self, path: impl AsRef<Path>) -> Result<(), LocalStorageError> {
+    pub fn update(
+        &mut self,
+        path: impl AsRef<Path>,
+        hashes: Option<&FileHashes>,
+    ) -> Result<(), LocalStorageError> {
         match self {
             LocationTypedMeta::Directory(meta) => meta.recount_files(path),
-            LocationTypedMeta::File(meta) => meta.update_hashes(path),
+            LocationTypedMeta::File(meta) => meta.update_hashes(path, hashes),
         }
     }
 }
@@ -141,7 +145,18 @@ impl FileMeta {
             hashes: generate_hashes_from_path(path)?,
         })
     }
-    pub fn update_hashes(&mut self, path: impl AsRef<Path>) -> Result<(), LocalStorageError> {
+    pub fn from_hashes(hashes: FileHashes) -> Self {
+        Self { hashes }
+    }
+    pub fn update_hashes(
+        &mut self,
+        path: impl AsRef<Path>,
+        hashes: Option<&FileHashes>,
+    ) -> Result<(), LocalStorageError> {
+        if let Some(hash) = hashes {
+            self.hashes = hash.clone();
+            return Ok(());
+        }
         self.hashes = generate_hashes_from_path(path)?;
 
         Ok(())
@@ -169,13 +184,17 @@ impl LocationMeta {
             path = ?path.as_ref(),
         )
     )]
-    pub(crate) fn create_meta_or_update(path: impl AsRef<Path>) -> Result<(), LocalStorageError> {
-        let (mut meta, was_created) = Self::get_or_default_local(&path)?;
+    pub(crate) fn create_meta_or_update(
+        path: impl AsRef<Path>,
+        hashes: Option<&FileHashes>,
+    ) -> Result<(), LocalStorageError> {
+        let path_ref = path.as_ref();
+        let (mut meta, was_created) = Self::get_or_default_local(path_ref, hashes)?;
         if !was_created {
-            event!(Level::DEBUG, path = ?path.as_ref(), "Updating Meta File");
-            meta.location_typed_meta.update(&path)?;
+            event!(Level::DEBUG, path = ?path_ref, "Updating Meta File");
+            meta.location_typed_meta.update(path_ref, hashes)?;
             meta.modified = Local::now().into();
-            meta.save_meta(path)?;
+            meta.save_meta(path_ref)?;
         }
 
         Ok(())
@@ -191,6 +210,7 @@ impl LocationMeta {
     )]
     pub(crate) fn get_or_default_local(
         path: impl AsRef<Path>,
+        hashes: Option<&FileHashes>,
     ) -> Result<(LocationMeta, bool), LocalStorageError> {
         let span = Span::current();
         let meta_path = meta_path(&path)?;
@@ -218,17 +238,23 @@ impl LocationMeta {
             debug!(?meta_path, "Meta File does not exist. Generating");
         }
         span.record("created", true);
+        let path_ref = path.as_ref();
         let (created, modified) = {
-            let file = File::open(&path)?;
+            let file = File::open(path_ref)?;
             let metadata = file.metadata()?;
             let modified = metadata.modified_as_chrono_or_now()?;
             let created = metadata.created_as_chrono_or_now()?;
             (created, modified)
         };
-        let location_meta = if path.as_ref().is_dir() {
-            LocationTypedMeta::Directory(DirectoryMeta::new(&path)?)
+        let location_meta = if path_ref.is_dir() {
+            LocationTypedMeta::Directory(DirectoryMeta::new(path_ref)?)
         } else {
-            LocationTypedMeta::File(FileMeta::new(&path)?)
+            let file_meta = if let Some(hash) = hashes {
+                FileMeta::from_hashes(hash.clone())
+            } else {
+                FileMeta::new(path_ref)?
+            };
+            LocationTypedMeta::File(file_meta)
         };
         let meta = LocationMeta {
             created,
@@ -236,7 +262,7 @@ impl LocationMeta {
             repository_meta: RepositoryMeta::default(),
             location_typed_meta: location_meta,
         };
-        meta.save_meta(&path)?;
+        meta.save_meta(path_ref)?;
 
         Ok((meta, true))
     }
@@ -308,7 +334,7 @@ impl LocationMeta {
         path: impl AsRef<Path>,
         repository_meta: RepositoryMeta,
     ) -> Result<(), LocalStorageError> {
-        let (mut meta, _) = Self::get_or_default_local(&path)?;
+        let (mut meta, _) = Self::get_or_default_local(&path, None)?;
         meta.repository_meta = repository_meta;
         meta.save_meta(path)
     }

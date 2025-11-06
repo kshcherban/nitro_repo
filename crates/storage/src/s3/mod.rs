@@ -413,10 +413,7 @@ impl Storage for S3Storage {
                 ..Default::default()
             };
             let response = self.bucket.execute_command(get_object).await?;
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(std::io::Error::other)?;
+            let bytes = response.bytes().await.map_err(std::io::Error::other)?;
             bytes.to_vec()
         } else {
             Vec::new()

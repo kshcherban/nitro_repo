@@ -28,6 +28,7 @@ use nr_core::{
         RepositoryConfigType, project::ProjectConfigType, repository_page::RepositoryPageType,
     },
 };
+use nr_core::{storage::FileHashes, utils::base64_utils};
 use nr_storage::{DynStorage, STORAGE_FACTORIES, Storage, StorageConfig, StorageFactory};
 use opentelemetry::{
     InstrumentationScope, global,
@@ -41,6 +42,11 @@ pub mod email;
 pub mod email_service;
 pub mod request_logging;
 use current_semver::current_semver;
+use digest::Digest;
+use md5::Md5;
+use sha1::Sha1;
+use sha2::Sha256;
+use sha3::Sha3_256;
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument, warn};
@@ -147,6 +153,67 @@ impl From<&OAuth2Settings> for InstanceOAuth2Settings {
         }
     }
 }
+
+#[derive(Debug)]
+struct UploadState {
+    md5: Md5,
+    sha1: Sha1,
+    sha2: Sha256,
+    sha3: Sha3_256,
+    length: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalizedUpload {
+    pub digest: String,
+    pub hashes: FileHashes,
+    pub length: u64,
+}
+
+impl UploadState {
+    fn new() -> Self {
+        Self {
+            md5: Md5::new(),
+            sha1: Sha1::new(),
+            sha2: Sha256::new(),
+            sha3: Sha3_256::new(),
+            length: 0,
+        }
+    }
+
+    fn update(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+
+        self.md5.update(chunk);
+        self.sha1.update(chunk);
+        self.sha2.update(chunk);
+        self.sha3.update(chunk);
+        self.length += chunk.len() as u64;
+    }
+
+    fn finalize(self) -> FinalizedUpload {
+        let md5 = base64_utils::encode(self.md5.finalize());
+        let sha1 = base64_utils::encode(self.sha1.finalize());
+        let sha2_bytes = self.sha2.finalize();
+        let sha2_b64 = base64_utils::encode(&sha2_bytes);
+        let sha3 = base64_utils::encode(self.sha3.finalize());
+        let digest = format!("sha256:{:x}", sha2_bytes);
+        let hashes = FileHashes {
+            md5: Some(md5),
+            sha1: Some(sha1),
+            sha2_256: Some(sha2_b64),
+            sha3_256: Some(sha3),
+        };
+
+        FinalizedUpload {
+            digest,
+            hashes,
+            length: self.length,
+        }
+    }
+}
 #[derive(Debug, Clone, Hash, PartialEq, Eq, IntoParams, Deserialize)]
 #[into_params(parameter_in = Path)]
 pub struct RepositoryStorageName {
@@ -203,6 +270,7 @@ pub struct NitroRepoInner {
     pub frontend: frontend::HostedFrontend,
     pub staging_config: StagingConfig,
     services: Mutex<InternalServices>,
+    blob_upload_states: Mutex<HashMap<(Uuid, String), UploadState>>,
     pub suggested_local_storage_path: PathBuf,
 }
 macro_rules! take_service {
@@ -291,7 +359,15 @@ pub struct NitroRepo {
     pub email_access: Arc<EmailAccess>,
     pub metrics: AppMetrics,
     pub repository_metrics: RepositoryMetricsMeter,
-    pub auth_token_cache: Arc<moka::future::Cache<String, (nr_core::database::entities::user::auth_token::AuthToken, nr_core::database::entities::user::UserSafeData)>>,
+    pub auth_token_cache: Arc<
+        moka::future::Cache<
+            String,
+            (
+                nr_core::database::entities::user::auth_token::AuthToken,
+                nr_core::database::entities::user::UserSafeData,
+            ),
+        >,
+    >,
 }
 static X_FORWARDED_FOR_HEADER: HeaderName = HeaderName::from_static("x-forwarded-for");
 
@@ -414,6 +490,7 @@ impl NitroRepo {
             oauth2_rbac: RwLock::new(oauth2_rbac),
             staging_config,
             services: Mutex::new(services),
+            blob_upload_states: Mutex::new(HashMap::new()),
             #[cfg(feature = "frontend")]
             frontend: frontend::HostedFrontend::new(site.frontend_path)?,
             suggested_local_storage_path,
@@ -690,6 +767,45 @@ impl NitroRepo {
         Ok(config.map(|cfg| cfg.value.0).unwrap_or_default())
     }
 
+    pub fn begin_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
+        let mut states = self.inner.blob_upload_states.lock();
+        states
+            .entry((repository, upload_id.to_owned()))
+            .or_insert_with(UploadState::new);
+    }
+
+    pub fn update_blob_upload_state(&self, repository: Uuid, upload_id: &str, chunk: &[u8]) -> u64 {
+        let mut states = self.inner.blob_upload_states.lock();
+        let state = states
+            .entry((repository, upload_id.to_owned()))
+            .or_insert_with(UploadState::new);
+        state.update(chunk);
+        state.length
+    }
+
+    pub fn current_blob_upload_length(&self, repository: Uuid, upload_id: &str) -> Option<u64> {
+        let states = self.inner.blob_upload_states.lock();
+        states
+            .get(&(repository, upload_id.to_owned()))
+            .map(|state| state.length)
+    }
+
+    pub fn finalize_blob_upload_state(
+        &self,
+        repository: Uuid,
+        upload_id: &str,
+    ) -> Option<FinalizedUpload> {
+        let mut states = self.inner.blob_upload_states.lock();
+        states
+            .remove(&(repository, upload_id.to_owned()))
+            .map(UploadState::finalize)
+    }
+
+    pub fn abandon_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
+        let mut states = self.inner.blob_upload_states.lock();
+        states.remove(&(repository, upload_id.to_owned()));
+    }
+
     pub fn update_app_url(&self, app_url: &Uri) {
         info!(?app_url, "Updating app url");
         // TODO:
@@ -822,3 +938,48 @@ pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
     &PythonRepositoryType,
     &PhpRepositoryType,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+
+    #[test]
+    fn upload_state_streaming_hashes_match_reference() {
+        let chunks: &[&[u8]] = &[b"streamed ", b"payload ", b"verification"];
+        let mut state = UploadState::new();
+        for chunk in chunks {
+            state.update(chunk);
+        }
+
+        let finalized = state.finalize();
+        let combined = b"streamed payload verification";
+
+        assert_eq!(finalized.length, combined.len() as u64);
+
+        let expected_digest = format!("sha256:{:x}", Sha256::digest(combined));
+        assert_eq!(finalized.digest, expected_digest);
+
+        let expected_md5 = BASE64_STANDARD.encode(md5::Md5::digest(combined).as_slice());
+        assert_eq!(finalized.hashes.md5.as_deref(), Some(expected_md5.as_str()));
+
+        let expected_sha1 = BASE64_STANDARD.encode(sha1::Sha1::digest(combined).as_slice());
+        assert_eq!(
+            finalized.hashes.sha1.as_deref(),
+            Some(expected_sha1.as_str())
+        );
+
+        let expected_sha2 = BASE64_STANDARD.encode(sha2::Sha256::digest(combined).as_slice());
+        assert_eq!(
+            finalized.hashes.sha2_256.as_deref(),
+            Some(expected_sha2.as_str())
+        );
+
+        let expected_sha3 = BASE64_STANDARD.encode(sha3::Sha3_256::digest(combined).as_slice());
+        assert_eq!(
+            finalized.hashes.sha3_256.as_deref(),
+            Some(expected_sha3.as_str())
+        );
+    }
+}

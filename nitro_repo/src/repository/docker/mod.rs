@@ -21,13 +21,13 @@ use nr_core::{
 use nr_macros::DynRepositoryHandler;
 use nr_storage::DynStorage;
 
-pub mod configs;
 pub mod auth;
+pub mod configs;
 pub mod handlers;
 pub mod hosted;
+pub mod metadata;
 pub mod proxy;
 pub mod types;
-pub mod metadata;
 
 pub use super::prelude::*;
 pub use configs::*;

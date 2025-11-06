@@ -18,10 +18,7 @@ use uuid::Uuid;
 use crate::{
     app::NitroRepo,
     error::InternalError,
-    repository::{
-        Repository,
-        docker::metadata::collect_manifest_entries,
-    },
+    repository::{Repository, docker::metadata::collect_manifest_entries},
     utils::ResponseBuilder,
 };
 

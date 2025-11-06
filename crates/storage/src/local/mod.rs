@@ -12,7 +12,10 @@ mod stream;
 use error::LocalStorageError;
 use nr_core::storage::StoragePath;
 use serde::{Deserialize, Serialize};
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{
+    sync::Mutex,
+    task::{JoinSet, spawn_blocking},
+};
 use tracing::{
     Level, Span, debug, debug_span, error, event,
     field::{Empty, debug},
@@ -21,6 +24,11 @@ use tracing::{
 use utils::new_type_arc_type;
 
 use crate::*;
+
+use ahash::{HashMap, HashMapExt};
+use nr_core::storage::FileHashes;
+use parking_lot::Mutex as ParkingMutex;
+use std::sync::OnceLock;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalConfig {
     pub path: PathBuf,
@@ -80,14 +88,30 @@ fn meta_update_task(
                         warn!("Path does not exist");
                         continue;
                     }
-                    match  LocationMeta::create_meta_or_update(&path){
-                        Ok(ok) => {
+                    let precomputed = take_precomputed_hash(&path);
+                    let result = spawn_blocking({
+                        let span = span.clone();
+                        let path = path.clone();
+                        move || {
+                            span.in_scope(|| {
+                                LocationMeta::create_meta_or_update(&path, precomputed.as_ref())
+                            })
+                        }
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(ok)) => {
                             info!(?ok, "Updated Meta");
                             span.record("otel.status_code", "OK");
                         }
-                        Err(err) => {
+                        Ok(Err(err)) => {
                             span.record("otel.status_code", "ERROR");
                             event!(Level::ERROR, ?err, "Error Updating Meta");
+                        }
+                        Err(err) => {
+                            span.record("otel.status_code", "ERROR");
+                            event!(Level::ERROR, ?err, "Metadata update task panicked");
                         }
                   }
                 }
@@ -105,9 +129,69 @@ pub struct LocalStorageInner {
     pub meta_update_sender: tokio::sync::mpsc::Sender<PathBuf>,
 }
 impl LocalStorageInner {}
+
+fn precomputed_hashes() -> &'static ParkingMutex<HashMap<PathBuf, FileHashes>> {
+    static PRECOMPUTED: OnceLock<ParkingMutex<HashMap<PathBuf, FileHashes>>> = OnceLock::new();
+    PRECOMPUTED.get_or_init(|| ParkingMutex::new(HashMap::new()))
+}
+
+fn store_precomputed_hash(path: PathBuf, hashes: FileHashes) {
+    precomputed_hashes().lock().insert(path, hashes);
+}
+
+fn take_precomputed_hash(path: &Path) -> Option<FileHashes> {
+    precomputed_hashes().lock().remove(path)
+}
 #[derive(Debug, Clone)]
 pub struct LocalStorage(Arc<LocalStorageInner>);
 new_type_arc_type!(LocalStorage(LocalStorageInner));
+
+impl LocalStorage {
+    pub fn register_precomputed_hash(
+        &self,
+        repository: Uuid,
+        location: &StoragePath,
+        hashes: FileHashes,
+    ) {
+        let path = self.get_path(&repository, location);
+        store_precomputed_hash(path, hashes);
+    }
+
+    pub async fn open_append_handle(
+        &self,
+        repository: Uuid,
+        location: &StoragePath,
+    ) -> Result<(tokio::fs::File, PathBuf), LocalStorageError> {
+        let storage = self.clone();
+        let location_clone = location.clone();
+        let (std_file, path) = tokio::task::spawn_blocking(move || {
+            let CreatePath {
+                path,
+                parent_directory,
+                new_directory_start,
+            } = storage
+                .0
+                .get_path_for_creation(repository, &location_clone)?;
+
+            if new_directory_start.is_some() {
+                std::fs::create_dir_all(parent_directory)?;
+            }
+
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+
+            Ok::<_, LocalStorageError>((file, path))
+        })
+        .await
+        .map_err(|err| {
+            LocalStorageError::IOError(std::io::Error::new(std::io::ErrorKind::Other, err))
+        })??;
+
+        Ok((tokio::fs::File::from_std(std_file), path))
+    }
+}
 struct CreatePath {
     path: PathBuf,
     parent_directory: PathBuf,
@@ -424,6 +508,7 @@ impl Storage for LocalStorage {
         // This prevents O(n) metadata updates during chunked uploads
         Ok(bytes_written)
     }
+
     #[instrument(
         fields(
             storage.type = "local",
@@ -602,7 +687,7 @@ impl Storage for LocalStorage {
         if !path.exists() {
             return Ok(None);
         }
-        let meta = LocationMeta::get_or_default_local(&path).map(|(meta, _)| meta)?;
+        let meta = LocationMeta::get_or_default_local(&path, None).map(|(meta, _)| meta)?;
         Ok(Some(meta.repository_meta))
     }
     #[instrument(

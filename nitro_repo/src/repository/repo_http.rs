@@ -16,7 +16,10 @@ use crate::{
     error::IllegalStateError,
     repository::{
         Repository, RepositoryAuthConfig,
-        docker::auth::{build_docker_bearer_challenge, build_registry_bearer_challenge, docker_repository_scope, docker_unauthorized_body},
+        docker::auth::{
+            build_docker_bearer_challenge, build_registry_bearer_challenge,
+            docker_repository_scope, docker_unauthorized_body,
+        },
     },
     utils::{
         bad_request::BadRequestErrors, header::date_time::date_time_for_header,
@@ -28,6 +31,7 @@ pub mod repo_tracing;
 use axum_extra::routing::RouterExt;
 use bytes::Bytes;
 use derive_more::From;
+use futures::StreamExt;
 use http::{
     HeaderValue, Method, StatusCode,
     header::{CONTENT_LENGTH, CONTENT_LOCATION, CONTENT_TYPE, ETAG, LAST_MODIFIED, USER_AGENT},
@@ -156,8 +160,12 @@ async fn handle_docker_v2_catchall(
             repository = %repository,
             "Docker V2 write operation without authentication - returning 401 challenge"
         );
-        let challenge =
-            build_docker_bearer_challenge(&site, Some(request.headers()), &docker_scope, &["pull", "push"]);
+        let challenge = build_docker_bearer_challenge(
+            &site,
+            Some(request.headers()),
+            &docker_scope,
+            &["pull", "push"],
+        );
         let body = docker_unauthorized_body(&docker_scope, &["pull", "push"]);
         return Ok(Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -185,8 +193,8 @@ async fn handle_docker_v2_catchall(
 
     // Forward to the core handler logic
     let site_for_challenge = site.clone();
-    let response = handle_repo_request_core(site, request_path, parent_span, authentication, request)
-        .await?;
+    let response =
+        handle_repo_request_core(site, request_path, parent_span, authentication, request).await?;
 
     // Check if this is a 401 Unauthorized response
     // If so, ensure it has Docker-specific headers
@@ -196,12 +204,8 @@ async fn handle_docker_v2_catchall(
         } else {
             &["pull", "push"][..]
         };
-        let challenge = build_docker_bearer_challenge(
-            &site_for_challenge,
-            None,
-            &docker_scope,
-            actions,
-        );
+        let challenge =
+            build_docker_bearer_challenge(&site_for_challenge, None, &docker_scope, actions);
         let body = docker_unauthorized_body(&docker_scope, actions);
         let mut builder = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -274,6 +278,16 @@ impl RepositoryRequestBody {
         let body = self.body_as_bytes().await?;
         let body = String::from_utf8(body.to_vec()).map_err(BadRequestErrors::from)?;
         Ok(body)
+    }
+
+    pub fn into_byte_stream(
+        self,
+    ) -> impl futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> {
+        self.0.into_data_stream().map(|result| {
+            result
+                .map_err(BadRequestErrors::from)
+                .map_err(RepositoryHandlerError::from)
+        })
     }
 }
 
@@ -652,10 +666,7 @@ async fn handle_repo_request_core(
                 &docker_scope,
                 actions,
             );
-            let body = docker_unauthorized_body(
-                &docker_scope,
-                actions,
-            );
+            let body = docker_unauthorized_body(&docker_scope, actions);
             let response = Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header("WWW-Authenticate", challenge)
@@ -665,10 +676,8 @@ async fn handle_repo_request_core(
                 .unwrap();
             return Ok(response);
         } else {
-            return Ok(
-                RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"").into_response_default(
-                ),
-            );
+            return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
+                .into_response_default());
         }
     }
     drop(entered_guard);

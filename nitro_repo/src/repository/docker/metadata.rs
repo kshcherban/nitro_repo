@@ -2,9 +2,7 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, FixedOffset};
 use nr_core::storage::StoragePath;
-use nr_storage::{
-    DynStorage, FileType, Storage, StorageError, StorageFile,
-};
+use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile};
 use uuid::Uuid;
 
 use super::types::{Manifest, MediaType};
@@ -33,7 +31,10 @@ pub async fn resolve_browse_path(
     let mut physical = StoragePath::from("v2");
 
     let logical_string = logical_path.to_string();
-    for segment in logical_string.split('/').filter(|segment| !segment.is_empty()) {
+    for segment in logical_string
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+    {
         physical.push_mut(segment);
     }
 
@@ -133,7 +134,11 @@ pub async fn collect_manifest_entries(
     Ok(manifests)
 }
 
-async fn read_manifest_bytes(storage: &DynStorage, repository_id: Uuid, path: &StoragePath) -> Vec<u8> {
+async fn read_manifest_bytes(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    path: &StoragePath,
+) -> Vec<u8> {
     let manifest_file = match storage.open_file(repository_id, path).await {
         Ok(Some(file)) => file,
         Ok(None) => return Vec::new(),
@@ -188,10 +193,9 @@ fn calculate_manifest_size(bytes: &[u8]) -> Option<u64> {
             }
             total
         }
-        Manifest::OciIndex(index) => index
-            .manifests
-            .into_iter()
-            .fold(0u64, |acc, descriptor| acc + normalize_size(descriptor.size)),
+        Manifest::OciIndex(index) => index.manifests.into_iter().fold(0u64, |acc, descriptor| {
+            acc + normalize_size(descriptor.size)
+        }),
     })
 }
 

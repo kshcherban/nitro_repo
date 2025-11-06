@@ -4,17 +4,28 @@
 //! Reference: https://docs.docker.com/registry/spec/api/
 
 use axum::{body::Body, response::Response};
+use bytes::Bytes;
+use futures::StreamExt;
 use http::StatusCode;
-use nr_core::storage::StoragePath;
-use nr_storage::{Storage, StorageFile};
+use md5::Md5;
+use nr_core::{
+    storage::{FileHashes, StoragePath},
+    utils::base64_utils,
+};
+use nr_storage::{Storage, StorageError, StorageFile, local::LocalStorage};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use sha3::Sha3_256;
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio_util::io::ReaderStream;
 use tracing::{debug, info, instrument};
 
 use super::{
-    DockerError, DockerHosted, RepoResponse, Repository, RepositoryRequest,
+    DockerError, DockerHosted, RepoResponse, Repository, RepositoryHandlerError, RepositoryRequest,
     types::{Manifest, MediaType},
 };
+use crate::app::{FinalizedUpload, NitroRepo};
+use uuid::Uuid;
 
 /// Helper to extract bytes from StorageFile
 async fn get_file_bytes(storage_file: StorageFile) -> Result<Vec<u8>, DockerError> {
@@ -29,7 +40,6 @@ async fn get_file_bytes(storage_file: StorageFile) -> Result<Vec<u8>, DockerErro
         )),
     }
 }
-
 
 /// Helper to create custom response with headers
 fn custom_response(status: StatusCode, headers: Vec<(&str, &str)>, body: Vec<u8>) -> RepoResponse {
@@ -48,6 +58,79 @@ fn json_response(value: serde_json::Value) -> RepoResponse {
         vec![("Content-Type", "application/json")],
         json_str.into_bytes(),
     )
+}
+
+const LOCAL_UPLOAD_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+
+pub(super) async fn stream_to_writer<S, W, F>(
+    mut stream: S,
+    writer: &mut BufWriter<W>,
+    mut on_chunk_written: F,
+) -> Result<(), DockerError>
+where
+    S: futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> + Unpin,
+    W: AsyncWrite + Unpin,
+    F: FnMut(&[u8]) -> Result<(), DockerError>,
+{
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(DockerError::from)?;
+        if chunk.is_empty() {
+            continue;
+        }
+
+        writer.write_all(&chunk).await.map_err(DockerError::from)?;
+        on_chunk_written(&chunk)?;
+    }
+
+    writer.flush().await.map_err(DockerError::from)?;
+
+    Ok(())
+}
+
+async fn collect_stream_bytes<S>(mut stream: S) -> Result<Vec<u8>, DockerError>
+where
+    S: futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> + Unpin,
+{
+    let mut data = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(DockerError::from)?;
+        if !chunk.is_empty() {
+            data.extend_from_slice(&chunk);
+        }
+    }
+    Ok(data)
+}
+
+async fn write_local_stream<S>(
+    storage: LocalStorage,
+    repository_id: Uuid,
+    upload_path: &StoragePath,
+    stream: S,
+    site: &NitroRepo,
+    upload_id: &str,
+) -> Result<u64, DockerError>
+where
+    S: futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> + Unpin,
+{
+    let (file, _path) = storage
+        .open_append_handle(repository_id, upload_path)
+        .await
+        .map_err(StorageError::from)
+        .map_err(DockerError::from)?;
+
+    let mut writer = BufWriter::with_capacity(LOCAL_UPLOAD_BUFFER_SIZE, file);
+
+    let mut total = site
+        .current_blob_upload_length(repository_id, upload_id)
+        .unwrap_or(0);
+
+    stream_to_writer(stream, &mut writer, |chunk| {
+        total = site.update_blob_upload_state(repository_id, upload_id, chunk);
+        Ok(())
+    })
+    .await?;
+
+    Ok(total)
 }
 
 /// Main routing handler for GET requests
@@ -312,7 +395,10 @@ async fn get_manifest(
         let acceptable_types: Vec<&str> = accept.split(',').map(|s| s.trim()).collect();
         if !acceptable_types.is_empty()
             && !acceptable_types.contains(&"*/*")
-            && !acceptable_types.iter().any(|&t| t == content_type || t.starts_with("application/*")) {
+            && !acceptable_types
+                .iter()
+                .any(|&t| t == content_type || t.starts_with("application/*"))
+        {
             debug!(
                 "Client requested {} but manifest is {}",
                 accept, content_type
@@ -392,16 +478,22 @@ async fn get_blob(
         .await?
         .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
 
-    let content = get_file_bytes(file).await?;
+    let (reader, meta) = file
+        .file()
+        .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
 
-    Ok(custom_response(
-        StatusCode::OK,
-        vec![
-            ("Docker-Content-Digest", digest),
-            ("Content-Length", &content.len().to_string()),
-            ("Content-Type", "application/octet-stream"),
-        ],
-        content.to_vec(),
+    let size = meta.file_type.file_size;
+    let stream = ReaderStream::new(reader);
+
+    let mut builder = Response::builder().status(StatusCode::OK);
+    builder = builder.header("Docker-Content-Digest", digest);
+    builder = builder.header("Content-Length", size.to_string());
+    builder = builder.header("Content-Type", "application/octet-stream");
+
+    Ok(RepoResponse::Other(
+        builder
+            .body(Body::from_stream(stream))
+            .expect("failed to build blob response"),
     ))
 }
 
@@ -421,13 +513,24 @@ async fn head_blob(
         .await?
         .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
 
-    let content = get_file_bytes(file).await?;
+    let (_, meta) = file
+        .file()
+        .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
+
+    let size = meta.file_type.file_size;
+    let stored_digest = meta
+        .file_type
+        .file_hash
+        .sha2_256
+        .as_ref()
+        .map(|hash| format!("sha256:{hash}"))
+        .unwrap_or_else(|| digest.to_string());
 
     Ok(custom_response(
         StatusCode::OK,
         vec![
-            ("Docker-Content-Digest", digest),
-            ("Content-Length", &content.len().to_string()),
+            ("Docker-Content-Digest", stored_digest.as_str()),
+            ("Content-Length", &size.to_string()),
             ("Content-Type", "application/octet-stream"),
         ],
         vec![],
@@ -529,11 +632,9 @@ async fn initiate_blob_upload(
     // Generate upload ID
     let upload_id = uuid::Uuid::new_v4().to_string();
 
-    // Create upload session directory
-    let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
-    repo.get_storage()
-        .save_file(repo.id(), vec![].into(), &upload_path)
-        .await?;
+    // Prepare upload state tracking
+    let site = repo.site();
+    site.begin_blob_upload_state(repo.id(), &upload_id);
 
     let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
 
@@ -557,32 +658,52 @@ async fn upload_blob_chunk(
 ) -> Result<RepoResponse, DockerError> {
     debug!("Uploading blob chunk: {}/{}", repository_name, upload_id);
 
+    let RepositoryRequest {
+        body,
+        authentication,
+        ..
+    } = request;
+
     // Check authentication
-    if request.authentication.get_user().is_none() {
+    if authentication.get_user().is_none() {
         return Ok(RepoResponse::unauthorized());
     }
 
     let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
 
-    // Check upload session exists
-    if !repo
-        .get_storage()
-        .file_exists(repo.id(), &upload_path)
-        .await?
-    {
+    let site = repo.site();
+    let mut total_size = if let Some(len) = site.current_blob_upload_length(repo.id(), upload_id) {
+        len
+    } else {
         return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
+    };
+    site.begin_blob_upload_state(repo.id(), upload_id);
+
+    let stream = body.into_byte_stream();
+
+    match repo.get_storage() {
+        nr_storage::DynStorage::Local(local) => {
+            total_size =
+                write_local_stream(local, repo.id(), &upload_path, stream, &site, upload_id)
+                    .await?;
+        }
+        storage => {
+            let bytes = collect_stream_bytes(stream).await?;
+            if !bytes.is_empty() {
+                storage
+                    .append_file(repo.id(), bytes.clone().into(), &upload_path)
+                    .await?;
+                total_size = site.update_blob_upload_state(repo.id(), upload_id, &bytes);
+            }
+        }
     }
 
-    // Get new chunk data
-    let new_data = request.body.body_as_bytes().await?;
-
-    // Append data directly to file (O(1) disk I/O)
-    let total_size = repo
-        .get_storage()
-        .append_file(repo.id(), new_data.into(), &upload_path)
-        .await?;
-
-    let range = format!("0-{}", total_size.saturating_sub(1));
+    let range_end = if total_size == 0 {
+        0
+    } else {
+        total_size.saturating_sub(1)
+    };
+    let range = format!("0-{}", range_end);
     let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
 
     Ok(custom_response(
@@ -605,14 +726,20 @@ async fn complete_blob_upload(
 ) -> Result<RepoResponse, DockerError> {
     info!("Completing blob upload: {}/{}", repository_name, upload_id);
 
+    let RepositoryRequest {
+        parts,
+        body,
+        authentication,
+        ..
+    } = request;
+
     // Check authentication
-    if request.authentication.get_user().is_none() {
+    if authentication.get_user().is_none() {
         return Ok(RepoResponse::unauthorized());
     }
 
     // Extract digest from query parameters
-    let raw_digest = request
-        .parts
+    let raw_digest = parts
         .uri
         .query()
         .and_then(|q| {
@@ -622,59 +749,85 @@ async fn complete_blob_upload(
         })
         .ok_or_else(|| DockerError::InvalidManifest("Missing digest parameter".to_string()))?;
 
-    let digest = percent_decode(raw_digest).map_err(|err| {
-        DockerError::InvalidManifest(format!("Invalid digest encoding: {err}"))
-    })?;
+    let digest = percent_decode(raw_digest)
+        .map_err(|err| DockerError::InvalidManifest(format!("Invalid digest encoding: {err}")))?;
 
     let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
     let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
 
-    // Check if there's final data in request body
-    let final_data = request.body.body_as_bytes().await?;
+    let site = repo.site();
+    let mut _current_size = site
+        .current_blob_upload_length(repo.id(), upload_id)
+        .unwrap_or(0);
 
-    if !final_data.is_empty() {
-        // Append final chunk before completing
-        repo.get_storage()
-            .append_file(repo.id(), final_data.into(), &upload_path)
-            .await?;
+    let stream = body.into_byte_stream();
+
+    match repo.get_storage() {
+        nr_storage::DynStorage::Local(local) => {
+            _current_size =
+                write_local_stream(local, repo.id(), &upload_path, stream, &site, upload_id)
+                    .await?;
+        }
+        storage => {
+            let bytes = collect_stream_bytes(stream).await?;
+            if !bytes.is_empty() {
+                storage
+                    .append_file(repo.id(), bytes.clone().into(), &upload_path)
+                    .await?;
+                _current_size = site.update_blob_upload_state(repo.id(), upload_id, &bytes);
+            }
+        }
     }
 
-    // Read the file (async I/O is fine)
-    let upload_file = repo
-        .get_storage()
-        .open_file(repo.id(), &upload_path)
-        .await?
-        .ok_or_else(|| DockerError::BlobUploadNotFound(upload_id.to_string()))?;
+    let finalized = if let Some(result) = site.finalize_blob_upload_state(repo.id(), upload_id) {
+        result
+    } else {
+        // Fallback: compute digest by reading the file (legacy behaviour)
+        let upload_file = repo
+            .get_storage()
+            .open_file(repo.id(), &upload_path)
+            .await?
+            .ok_or_else(|| DockerError::BlobUploadNotFound(upload_id.to_string()))?;
+        let data_bytes = get_file_bytes(upload_file).await?;
+        let sha2_bytes = Sha256::digest(&data_bytes);
+        let digest_value = format!("sha256:{:x}", sha2_bytes);
+        let hashes = FileHashes {
+            md5: Some(base64_utils::encode(Md5::digest(&data_bytes))),
+            sha1: Some(base64_utils::encode(Sha1::digest(&data_bytes))),
+            sha2_256: Some(base64_utils::encode(&sha2_bytes)),
+            sha3_256: Some(base64_utils::encode(Sha3_256::digest(&data_bytes))),
+        };
+        FinalizedUpload {
+            digest: digest_value,
+            hashes,
+            length: data_bytes.len() as u64,
+        }
+    };
 
-    let data_bytes = get_file_bytes(upload_file).await?;
-
-    // Offload CPU-intensive hashing to blocking thread pool
-    // This prevents blocking the async runtime and allows concurrent blob finalization
-    let calculated_digest = tokio::task::spawn_blocking(move || {
-        let mut hasher = Sha256::new();
-        hasher.update(&data_bytes);
-        format!("sha256:{:x}", hasher.finalize())
-    })
-    .await
-    .map_err(|e| DockerError::InvalidManifest(format!("Hash task failed: {}", e)))?;
-
-    // Verify digest
-    if calculated_digest != digest {
-        // Delete invalid upload on digest mismatch
+    if finalized.digest != digest {
+        site.abandon_blob_upload_state(repo.id(), upload_id);
         repo.get_storage()
             .delete_file(repo.id(), &upload_path)
             .await?;
         return Err(DockerError::DigestMismatch {
             expected: digest.to_string(),
-            actual: calculated_digest,
+            actual: finalized.digest,
         });
     }
 
-    // Use move_file for O(1) rename operation instead of read-write
-    // This is MUCH faster than save_file which would write 327MB again
-    repo.get_storage()
+    if let nr_storage::DynStorage::Local(local) = repo.get_storage() {
+        local.register_precomputed_hash(repo.id(), &blob_path, finalized.hashes.clone());
+    }
+
+    // Move upload to final blob location
+    let moved = repo
+        .get_storage()
         .move_file(repo.id(), &upload_path, &blob_path)
         .await?;
+    if !moved {
+        site.abandon_blob_upload_state(repo.id(), upload_id);
+        return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
+    }
 
     let location = format!("/v2/{}/blobs/{}", repository_name, digest);
 
@@ -682,7 +835,8 @@ async fn complete_blob_upload(
         StatusCode::CREATED,
         vec![
             ("Location", &location),
-            ("Docker-Content-Digest", digest.as_str()),
+            ("Docker-Content-Digest", finalized.digest.as_str()),
+            ("Content-Length", "0"),
         ],
         vec![],
     ))
@@ -768,4 +922,68 @@ async fn delete_blob(
         .await?;
 
     Ok(custom_response(StatusCode::ACCEPTED, vec![], vec![]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+    use tempfile::tempdir;
+    use tokio::{
+        fs::{self, OpenOptions},
+        io::{AsyncReadExt, BufWriter},
+    };
+
+    fn test_stream_from_bytes(
+        data: &[u8],
+        chunk_size: usize,
+    ) -> impl futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> {
+        let chunks = data
+            .chunks(chunk_size)
+            .map(|chunk| Bytes::copy_from_slice(chunk))
+            .collect::<Vec<_>>();
+        stream::iter(chunks.into_iter().map(|bytes| Ok(bytes)))
+    }
+
+    #[tokio::test]
+    async fn stream_writer_persists_full_payload() -> anyhow::Result<()> {
+        let payload = (0u32..(512 * 1024))
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<u8>>();
+        let dir = tempdir()?;
+        let file_path = dir.path().join("payload.bin");
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&file_path)
+            .await?;
+        let mut writer = BufWriter::with_capacity(16 * 1024, file);
+        let mut observed = Vec::new();
+        let mut total_written = 0usize;
+
+        stream_to_writer(
+            test_stream_from_bytes(&payload, 1024),
+            &mut writer,
+            |chunk| {
+                total_written += chunk.len();
+                observed.extend_from_slice(chunk);
+                Ok(())
+            },
+        )
+        .await?;
+
+        drop(writer);
+
+        let mut saved = Vec::new();
+        fs::File::open(&file_path)
+            .await?
+            .read_to_end(&mut saved)
+            .await?;
+
+        assert_eq!(total_written, payload.len());
+        assert_eq!(observed, payload);
+        assert_eq!(saved, payload);
+
+        Ok(())
+    }
 }

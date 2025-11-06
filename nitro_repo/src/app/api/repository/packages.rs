@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::{cmp::min, collections::HashSet};
 
 use axum::{
     Json,
@@ -10,6 +10,8 @@ use chrono::{DateTime, FixedOffset};
 use nr_storage::{FileType, Storage, StorageFile};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use tokio::io::AsyncReadExt;
+use sha2::{Digest, Sha256};
 use tracing::{instrument, warn};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -23,7 +25,10 @@ use crate::{
     error::InternalError,
     repository::{
         DynRepository, Repository,
-        docker::metadata::collect_manifest_entries,
+        docker::{
+            metadata::collect_manifest_entries,
+            types::{Manifest as DockerManifest, MediaType},
+        },
         utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
@@ -432,6 +437,227 @@ fn is_valid_docker_manifest_path(path: &str) -> bool {
     path.starts_with("v2/") && path.contains("/manifests/")
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct DockerDeletionResult {
+    removed_manifests: usize,
+    removed_blobs: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DockerDeletionError {
+    #[error("manifest not found")]
+    ManifestMissing,
+    #[error("invalid manifest path")]
+    InvalidManifestPath,
+    #[error("storage error: {0}")]
+    Storage(#[from] nr_storage::StorageError),
+    #[error("invalid manifest: {0}")]
+    InvalidManifest(String),
+}
+
+async fn delete_docker_package(
+    storage: &nr_storage::DynStorage,
+    repository_id: Uuid,
+    cache_path: &str,
+) -> Result<DockerDeletionResult, DockerDeletionError> {
+    let (repository_name, _) =
+        split_manifest_cache_path(cache_path).ok_or(DockerDeletionError::InvalidManifestPath)?;
+
+    let mut visited_manifests = HashSet::new();
+    let mut deleted_blobs = HashSet::new();
+    let mut total = DockerDeletionResult::default();
+    let mut stack = Vec::new();
+    stack.push(cache_path.to_string());
+
+    while let Some(current_path) = stack.pop() {
+        match process_manifest(
+            storage,
+            repository_id,
+            &repository_name,
+            &current_path,
+            &mut visited_manifests,
+            &mut deleted_blobs,
+        )
+        .await
+        {
+            Ok(process) => {
+                total.removed_manifests += process.delta.removed_manifests;
+                total.removed_blobs += process.delta.removed_blobs;
+                stack.extend(process.nested);
+            }
+            Err(DockerDeletionError::ManifestMissing) if current_path != cache_path => {
+                // Nested manifest already removed; skip silently.
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(total)
+}
+
+fn split_manifest_cache_path(path: &str) -> Option<(String, String)> {
+    if !path.starts_with("v2/") {
+        return None;
+    }
+    let without_prefix = &path[3..];
+    let marker = "/manifests/";
+    let split_index = without_prefix.find(marker)?;
+    let repository = &without_prefix[..split_index];
+    let reference = &without_prefix[split_index + marker.len()..];
+    if repository.is_empty() || reference.is_empty() {
+        return None;
+    }
+    Some((repository.to_string(), reference.to_string()))
+}
+
+async fn delete_blob_digest(
+    storage: &nr_storage::DynStorage,
+    repository_id: Uuid,
+    repository_name: &str,
+    digest: &str,
+    deleted_blobs: &mut HashSet<String>,
+    result: &mut DockerDeletionResult,
+) -> Result<(), DockerDeletionError> {
+    if !deleted_blobs.insert(digest.to_string()) {
+        return Ok(());
+    }
+    let blob_path =
+        nr_core::storage::StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
+    match storage.delete_file(repository_id, &blob_path).await {
+        Ok(true) => result.removed_blobs += 1,
+        Ok(false) => {}
+        Err(err) => return Err(DockerDeletionError::Storage(err)),
+    }
+    Ok(())
+}
+
+struct ManifestProcess {
+    delta: DockerDeletionResult,
+    nested: Vec<String>,
+}
+
+async fn process_manifest(
+    storage: &nr_storage::DynStorage,
+    repository_id: Uuid,
+    repository_name: &str,
+    cache_path: &str,
+    visited_manifests: &mut HashSet<String>,
+    deleted_blobs: &mut HashSet<String>,
+) -> Result<ManifestProcess, DockerDeletionError> {
+    let storage_path = nr_core::storage::StoragePath::from(cache_path);
+    let Some(file) = storage.open_file(repository_id, &storage_path).await? else {
+        return Err(DockerDeletionError::ManifestMissing);
+    };
+    let nr_storage::StorageFile::File { meta, mut content } = file else {
+        return Err(DockerDeletionError::InvalidManifest(
+            "expected manifest file".to_string(),
+        ));
+    };
+
+    let size_hint = usize::try_from(meta.file_type.file_size).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(size_hint);
+    content
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|err| DockerDeletionError::InvalidManifest(err.to_string()))?;
+
+    let manifest_digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let manifest = DockerManifest::from_bytes(&bytes, MediaType::OCI_IMAGE_MANIFEST)
+        .map_err(|err| DockerDeletionError::InvalidManifest(err.to_string()))?;
+
+    let mut result = DockerDeletionResult::default();
+    if storage
+        .delete_file(repository_id, &storage_path)
+        .await?
+    {
+        result.removed_manifests += 1;
+    }
+
+    let digest_path_str = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
+    let digest_path = nr_core::storage::StoragePath::from(digest_path_str.as_str());
+    if digest_path != storage_path {
+        if storage
+            .delete_file(repository_id, &digest_path)
+            .await?
+        {
+            result.removed_manifests += 1;
+        }
+    }
+
+    let first_visit = visited_manifests.insert(manifest_digest.clone());
+    if !first_visit {
+        return Ok(ManifestProcess {
+            delta: result,
+            nested: Vec::new(),
+        });
+    }
+
+    let mut nested = Vec::new();
+    match manifest {
+        DockerManifest::DockerV2(manifest) => {
+            delete_blob_digest(
+                storage,
+                repository_id,
+                repository_name,
+                &manifest.config.digest,
+                deleted_blobs,
+                &mut result,
+            )
+            .await?;
+            for layer in manifest.layers {
+                delete_blob_digest(
+                    storage,
+                    repository_id,
+                    repository_name,
+                    &layer.digest,
+                    deleted_blobs,
+                    &mut result,
+                )
+                .await?;
+            }
+        }
+        DockerManifest::OciImage(manifest) => {
+            if let Some(config) = manifest.config {
+                delete_blob_digest(
+                    storage,
+                    repository_id,
+                    repository_name,
+                    &config.digest,
+                    deleted_blobs,
+                    &mut result,
+                )
+                .await?;
+            }
+            for layer in manifest.layers {
+                delete_blob_digest(
+                    storage,
+                    repository_id,
+                    repository_name,
+                    &layer.digest,
+                    deleted_blobs,
+                    &mut result,
+                )
+                .await?;
+            }
+        }
+        DockerManifest::OciIndex(index) => {
+            for descriptor in index.manifests {
+                if !visited_manifests.contains(&descriptor.digest) {
+                    nested.push(format!(
+                        "v2/{}/manifests/{}",
+                        repository_name, descriptor.digest
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(ManifestProcess {
+        delta: result,
+        nested,
+    })
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PackageDeleteRequest {
     pub paths: Vec<String>,
@@ -489,6 +715,32 @@ pub async fn delete_cached_packages(
     for path in request.paths.iter() {
         if !is_valid_cache_path(path, strategy) {
             rejected.push(path.clone());
+            continue;
+        }
+        if let PackageStrategy::Docker = strategy {
+            match delete_docker_package(&storage, repository.id(), path).await {
+                Ok(result) => {
+                    if result.removed_manifests > 0 {
+                        deleted += 1;
+                    } else {
+                        missing.push(path.clone());
+                    }
+                }
+                Err(DockerDeletionError::ManifestMissing) => {
+                    missing.push(path.clone());
+                }
+                Err(DockerDeletionError::InvalidManifestPath) => {
+                    rejected.push(path.clone());
+                }
+                Err(DockerDeletionError::InvalidManifest(err)) => {
+                    warn!(?err, path, "Failed to parse Docker manifest during deletion");
+                    missing.push(path.clone());
+                }
+                Err(DockerDeletionError::Storage(err)) => {
+                    warn!(?err, path, "Storage error while deleting Docker manifest");
+                    missing.push(path.clone());
+                }
+            }
             continue;
         }
         let storage_path = nr_core::storage::StoragePath::from(path.as_str());
@@ -589,6 +841,8 @@ mod tests {
         DynStorage, FileContent, StaticStorageFactory,
         local::{LocalConfig, LocalStorageFactory},
     };
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
 
     async fn local_storage() -> Result<(DynStorage, TempDir)> {
@@ -654,6 +908,181 @@ mod tests {
         let mut packages = gather_package_dirs(&storage, repository, None).await?;
         packages.sort();
         assert_eq!(packages, vec!["example_pkg/1.0.0".to_string()]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_docker_manifest_removes_all_payloads() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository_id = Uuid::new_v4();
+        let repository_name = "library/alpine";
+
+        let config_bytes = b"config-json";
+        let layer_a = b"layer-a";
+        let layer_b = b"layer-b";
+        let config_digest = format!("sha256:{:x}", Sha256::digest(config_bytes));
+        let layer_a_digest = format!("sha256:{:x}", Sha256::digest(layer_a));
+        let layer_b_digest = format!("sha256:{:x}", Sha256::digest(layer_b));
+
+        let manifest_json = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "size": config_bytes.len(),
+                "digest": config_digest,
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
+                    "size": layer_a.len(),
+                    "digest": layer_a_digest,
+                },
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
+                    "size": layer_b.len(),
+                    "digest": layer_b_digest,
+                }
+            ]
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest_json)?;
+        let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+        let tag_path =
+            nr_core::storage::StoragePath::from(format!("v2/{}/manifests/latest", repository_name));
+        storage
+            .save_file(
+                repository_id,
+                FileContent::from(manifest_bytes.clone()),
+                &tag_path,
+            )
+            .await?;
+
+        let digest_path = nr_core::storage::StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            repository_name, manifest_digest
+        ));
+        storage
+            .save_file(
+                repository_id,
+                FileContent::from(manifest_bytes.clone()),
+                &digest_path,
+            )
+            .await?;
+
+        let blobs = [
+            (&config_digest, config_bytes.as_slice()),
+            (&layer_a_digest, layer_a.as_slice()),
+            (&layer_b_digest, layer_b.as_slice()),
+        ];
+
+        for (digest, content) in blobs {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(content.to_vec()),
+                    &blob_path,
+                )
+                .await?;
+        }
+
+        let tag_cache_path = tag_path.to_string();
+        let result = delete_docker_package(&storage, repository_id, tag_cache_path.as_str()).await?;
+        assert_eq!(result.removed_manifests, 2);
+        assert_eq!(result.removed_blobs, 3);
+
+        assert!(!storage.file_exists(repository_id, &tag_path).await?);
+        assert!(!storage.file_exists(repository_id, &digest_path).await?);
+
+        for digest in [config_digest, layer_a_digest, layer_b_digest] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            assert!(!storage.file_exists(repository_id, &blob_path).await?);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_docker_manifest_handles_digest_path() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository_id = Uuid::new_v4();
+        let repository_name = "library/busybox";
+
+        let config_bytes = b"config-blob";
+        let layer_bytes = b"layer-blob";
+        let config_digest = format!("sha256:{:x}", Sha256::digest(config_bytes));
+        let layer_digest = format!("sha256:{:x}", Sha256::digest(layer_bytes));
+
+        let manifest_json = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "size": config_bytes.len(),
+                "digest": config_digest,
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
+                    "size": layer_bytes.len(),
+                    "digest": layer_digest,
+                }
+            ]
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest_json)?;
+        let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+        let digest_path = nr_core::storage::StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            repository_name, manifest_digest
+        ));
+        storage
+            .save_file(
+                repository_id,
+                FileContent::from(manifest_bytes.clone()),
+                &digest_path,
+            )
+            .await?;
+
+        for (digest, content) in [
+            (&config_digest, config_bytes.as_slice()),
+            (&layer_digest, layer_bytes.as_slice()),
+        ] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(content.to_vec()),
+                    &blob_path,
+                )
+                .await?;
+        }
+
+        let digest_cache_path = digest_path.to_string();
+        let result =
+            delete_docker_package(&storage, repository_id, digest_cache_path.as_str()).await?;
+        assert_eq!(result.removed_manifests, 1);
+        assert_eq!(result.removed_blobs, 2);
+
+        assert!(!storage.file_exists(repository_id, &digest_path).await?);
+        for digest in [config_digest, layer_digest] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            assert!(!storage.file_exists(repository_id, &blob_path).await?);
+        }
+
         Ok(())
     }
 

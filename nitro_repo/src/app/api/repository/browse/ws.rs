@@ -30,8 +30,7 @@ use crate::{
     },
     error::InternalError,
     repository::{
-        DynRepository, Repository, RepositoryAuthConfig,
-        docker::metadata::resolve_browse_path,
+        DynRepository, Repository, RepositoryAuthConfig, docker::metadata::resolve_browse_path,
         utils::can_read_repository_with_auth,
     },
 };
@@ -353,9 +352,11 @@ impl StoragePathStream {
         info!(?self.path, "Changing directory");
         self.sent_end_of_directory = false;
         let target_path = match &self.repository {
-            DynRepository::Docker(_) => resolve_browse_path(&self.storage, self.repository.id(), &self.path)
-                .await
-                .map_err(InternalError::from)?,
+            DynRepository::Docker(_) => {
+                resolve_browse_path(&self.storage, self.repository.id(), &self.path)
+                    .await
+                    .map_err(InternalError::from)?
+            }
             _ => self.path.clone(),
         };
 

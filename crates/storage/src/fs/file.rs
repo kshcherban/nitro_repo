@@ -115,7 +115,7 @@ impl StorageFileMeta<DirectoryFileType> {
             return Err(LocalStorageError::expected_directory());
         }
         let location_meta: LocationMeta =
-            LocationMeta::get_or_default_local(path).map(|(meta, _)| meta)?;
+            LocationMeta::get_or_default_local(path, None).map(|(meta, _)| meta)?;
         let dir_meta = location_meta.dir_meta_or_err()?;
 
         Ok(StorageFileMeta {
@@ -139,7 +139,7 @@ impl StorageFileMeta<FileFileType> {
         let file = File::open(path)?;
 
         let file_meta: LocationMeta =
-            LocationMeta::get_or_default_local(path).map(|(meta, _)| meta)?;
+            LocationMeta::get_or_default_local(path, None).map(|(meta, _)| meta)?;
         let metadata = file.metadata()?;
         let LocationTypedMeta::File(file_location_meta) = file_meta.location_typed_meta else {
             error!(?file_meta, "Expected File Meta");

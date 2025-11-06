@@ -27,8 +27,7 @@ use crate::{
     },
     error::InternalError,
     repository::{
-        DynRepository, Repository,
-        docker::metadata::resolve_browse_path,
+        DynRepository, Repository, docker::metadata::resolve_browse_path,
         utils::can_read_repository_with_auth,
     },
     utils::{ResponseBuilder, request_logging::request_id::RequestId},
@@ -103,9 +102,11 @@ async fn browse(
     let repository_storage = repository.get_storage();
     let path = browse_path.path.unwrap_or_default();
     let storage_path = match &repository {
-        DynRepository::Docker(_) => resolve_browse_path(&repository_storage, repository.id(), &path)
-            .await
-            .map_err(InternalError::from)?,
+        DynRepository::Docker(_) => {
+            resolve_browse_path(&repository_storage, repository.id(), &path)
+                .await
+                .map_err(InternalError::from)?
+        }
         _ => path.clone(),
     };
     let Some(file) = repository_storage
