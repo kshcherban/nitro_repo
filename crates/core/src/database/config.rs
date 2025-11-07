@@ -6,7 +6,7 @@ use super::DBError;
 /// The configuration for the database.
 ///
 /// Currently only supports PostgreSQL.
-#[derive(Debug, Clone, Deserialize, Serialize, clap::Args)]
+#[derive(Clone, Deserialize, Serialize, clap::Args)]
 #[serde(default)]
 pub struct DatabaseConfig {
     /// The username to connect to the database.
@@ -31,6 +31,19 @@ pub struct DatabaseConfig {
     #[clap(long = "database-port")]
     pub port: Option<u16>,
 }
+
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("user", &self.user)
+            .field("password", &"********") // Mask password
+            .field("database", &self.database)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .finish()
+    }
+}
+
 impl DatabaseConfig {
     /// Returns the host and port
     ///

@@ -68,11 +68,20 @@ use crate::{
     StorageFile, StorageFileMeta, StorageTypeConfig, StorageTypeConfigTrait, meta::RepositoryMeta,
     streaming::VecDirectoryListStream, utils::new_type_arc_type,
 };
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct S3Credentials {
     pub access_key: Option<String>,
     /// AWS secret key.
     pub secret_key: Option<String>,
+}
+
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("access_key", &self.access_key.as_ref().map(|_| "********")) // Mask access key
+            .field("secret_key", &"********") // Always mask secret key
+            .finish()
+    }
 }
 impl S3Credentials {
     pub fn new_access_key(access_key: impl Into<String>, secret_key: impl Into<String>) -> Self {
@@ -91,7 +100,7 @@ impl S3Credentials {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct S3Config {
     pub bucket_name: String,
     pub region: Option<S3StorageRegion>,
@@ -103,6 +112,19 @@ pub struct S3Config {
     #[schema(default = true)]
     pub path_style: bool,
 }
+
+impl std::fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Config")
+            .field("bucket_name", &self.bucket_name)
+            .field("region", &self.region)
+            .field("custom_region", &self.custom_region)
+            .field("credentials", &"********") // Mask credentials entirely
+            .field("path_style", &self.path_style)
+            .finish()
+    }
+}
+
 fn default_true() -> bool {
     true
 }

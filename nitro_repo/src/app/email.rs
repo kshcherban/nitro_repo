@@ -10,7 +10,7 @@ pub enum EmailEncryption {
 /// Yes the email software management software needs email settings
 ///
 /// This is for sending reset password emails and any other emails.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct EmailSetting {
     pub username: String,
     pub password: String,
@@ -19,6 +19,20 @@ pub struct EmailSetting {
     pub from: String,
     pub reply_to: Option<String>,
 }
+
+impl std::fmt::Debug for EmailSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailSetting")
+            .field("username", &self.username)
+            .field("password", &"********") // Mask password
+            .field("host", &self.host)
+            .field("encryption", &self.encryption)
+            .field("from", &self.from)
+            .field("reply_to", &self.reply_to)
+            .finish()
+    }
+}
+
 impl Default for EmailSetting {
     fn default() -> Self {
         Self {

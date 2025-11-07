@@ -448,9 +448,15 @@ impl HasForwardedHeader for NitroRepo {
 impl NitroRepo {
     #[instrument]
     async fn load_database(database: DatabaseConfig) -> anyhow::Result<PgPool> {
-        info!(?database, "Connecting to database");
+        info!(
+            user = %database.user,
+            database = %database.database,
+            host = %database.host,
+            port = ?database.port,
+            "Connecting to database"
+        );
         let options = database.try_into()?;
-        info!(?options, "Database connection options");
+        info!("Database connection established successfully (password masked in logs)");
         let database = PgPool::connect_with(options)
             .await
             .context("Could not connect to database")?;
