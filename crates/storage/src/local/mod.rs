@@ -68,55 +68,79 @@ fn meta_update_task(
     mut receiver: tokio::sync::mpsc::Receiver<PathBuf>,
 ) {
     tokio::task::spawn(async move {
+        const MAX_CONCURRENT_UPDATES: usize = 20;
+        let mut update_tasks = JoinSet::new();
+
         loop {
             tokio::select! {
                 _ = &mut shutdown => {
                     break;
                 }
-                path = receiver.recv() => {
-                    let Some(path) = path else{
-                        break
+                path = receiver.recv(), if update_tasks.len() < MAX_CONCURRENT_UPDATES => {
+                    let Some(path) = path else {
+                        break;
                     };
-                    let span = info_span!(
-                        "Meta Update Task",
-                        path = debug(&path),
-                        otel.status_code = Empty,
-                        otel.exception = Empty,
-                    );
-                    let _guard = span.enter();
-                    if !path.exists(){
-                        warn!("Path does not exist");
+
+                    if !path.exists() {
+                        warn!(?path, "Path does not exist");
                         continue;
                     }
-                    let precomputed = take_precomputed_hash(&path);
-                    let result = spawn_blocking({
-                        let span = span.clone();
-                        let path = path.clone();
-                        move || {
-                            span.in_scope(|| {
-                                LocationMeta::create_meta_or_update(&path, precomputed.as_ref())
-                            })
-                        }
-                    })
-                    .await;
 
-                    match result {
-                        Ok(Ok(ok)) => {
-                            info!(?ok, "Updated Meta");
-                            span.record("otel.status_code", "OK");
+                    let precomputed = take_precomputed_hash(&path);
+                    update_tasks.spawn(async move {
+                        let span = info_span!(
+                            "Meta Update Task",
+                            path = debug(&path),
+                            otel.status_code = Empty,
+                            otel.exception = Empty,
+                        );
+
+                        let result = spawn_blocking({
+                            let span = span.clone();
+                            let path = path.clone();
+                            move || {
+                                span.in_scope(|| {
+                                    LocationMeta::create_meta_or_update(&path, precomputed.as_ref())
+                                })
+                            }
+                        })
+                        .await;
+
+                        match result {
+                            Ok(Ok(_)) => {
+                                span.record("otel.status_code", "OK");
+                                debug!("Updated Meta");
+                            }
+                            Ok(Err(err)) => {
+                                span.record("otel.status_code", "ERROR");
+                                event!(Level::ERROR, ?err, "Error Updating Meta");
+                            }
+                            Err(err) => {
+                                span.record("otel.status_code", "ERROR");
+                                event!(Level::ERROR, ?err, "Metadata update task panicked");
+                            }
                         }
-                        Ok(Err(err)) => {
-                            span.record("otel.status_code", "ERROR");
-                            event!(Level::ERROR, ?err, "Error Updating Meta");
-                        }
-                        Err(err) => {
-                            span.record("otel.status_code", "ERROR");
-                            event!(Level::ERROR, ?err, "Metadata update task panicked");
-                        }
-                  }
+                    });
+                }
+                Some(result) = update_tasks.join_next() => {
+                    if let Err(err) = result {
+                        event!(Level::ERROR, ?err, "Metadata update task failed");
+                    }
                 }
             }
         }
+
+        // Wait for remaining tasks to complete
+        while let Some(result) = update_tasks.join_next().await {
+            if let Err(err) = result {
+                event!(
+                    Level::ERROR,
+                    ?err,
+                    "Metadata update task failed during shutdown"
+                );
+            }
+        }
+
         receiver.close();
     });
 }
@@ -185,9 +209,7 @@ impl LocalStorage {
             Ok::<_, LocalStorageError>((file, path))
         })
         .await
-        .map_err(|err| {
-            LocalStorageError::IOError(std::io::Error::new(std::io::ErrorKind::Other, err))
-        })??;
+        .map_err(|err| LocalStorageError::IOError(std::io::Error::other(err)))??;
 
         Ok((tokio::fs::File::from_std(std_file), path))
     }
@@ -340,36 +362,57 @@ impl LocalStorageInner {
                 if parent == self.config.path {
                     trace!("Do not update root directory");
                 } else {
-                    metas_updated += 1;
-                    self.meta_update_sender
-                        .send(parent.to_path_buf())
-                        .await
-                        .unwrap();
+                    // Use try_send to avoid blocking when channel is full
+                    if self
+                        .meta_update_sender
+                        .try_send(parent.to_path_buf())
+                        .is_ok()
+                    {
+                        metas_updated += 1;
+                    } else {
+                        warn!(
+                            ?parent,
+                            "Metadata update channel full, skipping parent update"
+                        );
+                    }
                 }
             }
             let mut next_path = greatest_parent.clone();
             for part in path.strip_prefix(&greatest_parent).unwrap().components() {
                 event!(Level::DEBUG, ?next_path, "Updating Meta");
-                self.meta_update_sender
-                    .send(next_path.clone())
-                    .await
-                    .unwrap();
-                metas_updated += 1;
+                // Use try_send to avoid blocking when channel is full
+                if self.meta_update_sender.try_send(next_path.clone()).is_ok() {
+                    metas_updated += 1;
+                } else {
+                    warn!(
+                        ?next_path,
+                        "Metadata update channel full, skipping directory update"
+                    );
+                }
                 next_path = next_path.join(part);
             }
         } else {
-            self.meta_update_sender
-                .send(path.to_path_buf())
-                .await
-                .unwrap();
-            metas_updated += 1;
+            // Use try_send to avoid blocking when channel is full
+            if self.meta_update_sender.try_send(path.to_path_buf()).is_ok() {
+                metas_updated += 1;
+            } else {
+                warn!(?path, "Metadata update channel full, skipping file update");
+            }
             let parent = path.parent();
             if let Some(parent) = parent {
-                metas_updated += 1;
-                self.meta_update_sender
-                    .send(parent.to_path_buf())
-                    .await
-                    .unwrap();
+                // Use try_send to avoid blocking when channel is full
+                if self
+                    .meta_update_sender
+                    .try_send(parent.to_path_buf())
+                    .is_ok()
+                {
+                    metas_updated += 1;
+                } else {
+                    warn!(
+                        ?parent,
+                        "Metadata update channel full, skipping parent update"
+                    );
+                }
             }
         }
 
@@ -566,7 +609,10 @@ impl Storage for LocalStorage {
         // Create destination directory if needed
         if new_directory_start.is_some() {
             trace!("Creating Parent Directory");
-            fs::create_dir_all(parent_directory)?;
+            let parent = parent_directory.clone();
+            spawn_blocking(move || fs::create_dir_all(parent))
+                .await
+                .map_err(|e| LocalStorageError::other(e))??;
         }
 
         let current_span = Span::current();
@@ -574,10 +620,18 @@ impl Storage for LocalStorage {
         debug!(?from_path, ?to_path, "Moving file");
 
         // Use fs::rename which is O(1) on same filesystem
-        fs::rename(&from_path, &to_path)?;
+        // Wrap in spawn_blocking to avoid blocking async runtime
+        let from = from_path.clone();
+        let to = to_path.clone();
+        spawn_blocking(move || fs::rename(&from, &to))
+            .await
+            .map_err(|e| LocalStorageError::other(e))??;
 
-        // Delete old metadata
-        LocationMeta::delete_local(&from_path)?;
+        // Delete old metadata (wrap in spawn_blocking)
+        let from_meta = from_path.clone();
+        spawn_blocking(move || LocationMeta::delete_local(&from_meta))
+            .await
+            .map_err(|e| LocalStorageError::other(e))??;
 
         // Update metadata for new location
         if !is_hidden_file(&to_path) {

@@ -307,42 +307,101 @@ async fn calculate_repository_storage_usage(
     repository: &DynRepository,
 ) -> Result<u64, nr_storage::StorageError> {
     let storage = repository.get_storage();
-    let mut total = 0u64;
     let repository_id = repository.id();
-    let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back("/".to_string());
 
-    while let Some(path) = queue.pop_front() {
-        let storage_path = StoragePath::from(path.as_str());
-        let Some(entry) = storage.open_file(repository_id, &storage_path).await? else {
-            continue;
-        };
-        match entry {
-            StorageFile::File { meta, .. } => {
-                total += meta.file_type.file_size;
+    // Start with root directory
+    let root_path = StoragePath::from("/");
+    let Some(root_entry) = storage.open_file(repository_id, &root_path).await? else {
+        return Ok(0);
+    };
+
+    match root_entry {
+        StorageFile::File { meta, .. } => {
+            // Repository is a single file
+            return Ok(meta.file_type.file_size);
+        }
+        StorageFile::Directory { files, .. } => {
+            // Process all files in parallel with a controlled concurrency limit
+            use tokio::task::JoinSet;
+            const MAX_CONCURRENT_TASKS: usize = 20;
+
+            let mut total = 0u64;
+            let mut tasks = JoinSet::new();
+            let mut queue: VecDeque<String> = VecDeque::new();
+
+            // Add immediate subdirectories to queue
+            for entry in &files {
+                match entry.file_type() {
+                    FileType::Directory(_) => {
+                        let mut path = String::from("/");
+                        path.push_str(entry.name());
+                        path.push('/');
+                        queue.push_back(path);
+                    }
+                    FileType::File(_) => {
+                        // Will be processed below
+                    }
+                }
             }
-            StorageFile::Directory { files, .. } => {
-                for entry in files {
-                    match entry.file_type() {
-                        FileType::File(file_meta) => {
-                            total += file_meta.file_size;
+
+            // Process all immediate files in parallel
+            for entry in &files {
+                if let FileType::File(file_meta) = entry.file_type() {
+                    if tasks.len() < MAX_CONCURRENT_TASKS {
+                        let file_size = file_meta.file_size;
+                        tasks.spawn(async move { file_size });
+                    } else {
+                        // If we hit the limit, wait for some tasks to complete
+                        while let Some(result) = tasks.join_next().await {
+                            total += result.unwrap_or(0);
                         }
-                        FileType::Directory(_) => {
-                            let mut next_path = path.clone();
-                            if !next_path.ends_with('/') {
-                                next_path.push('/');
+                        // Now add this file
+                        let file_size = file_meta.file_size;
+                        tasks.spawn(async move { file_size });
+                    }
+                }
+            }
+
+            // Process subdirectories concurrently
+            while let Some(path) = queue.pop_front() {
+                let storage_path = StoragePath::from(path.as_str());
+                if let Ok(Some(entry)) = storage.open_file(repository_id, &storage_path).await {
+                    if let StorageFile::Directory { files, .. } = entry {
+                        for file_entry in &files {
+                            match file_entry.file_type() {
+                                FileType::File(file_meta) => {
+                                    if tasks.len() < MAX_CONCURRENT_TASKS {
+                                        let file_size = file_meta.file_size;
+                                        tasks.spawn(async move { file_size });
+                                    } else {
+                                        // Wait for tasks to complete
+                                        while let Some(result) = tasks.join_next().await {
+                                            total += result.unwrap_or(0);
+                                        }
+                                        let file_size = file_meta.file_size;
+                                        tasks.spawn(async move { file_size });
+                                    }
+                                }
+                                FileType::Directory(_) => {
+                                    let mut next_path = path.clone();
+                                    next_path.push_str(file_entry.name());
+                                    next_path.push('/');
+                                    queue.push_back(next_path);
+                                }
                             }
-                            next_path.push_str(entry.name());
-                            next_path.push('/');
-                            queue.push_back(next_path);
                         }
                     }
                 }
             }
+
+            // Wait for all remaining tasks to complete
+            while let Some(result) = tasks.join_next().await {
+                total += result.unwrap_or(0);
+            }
+
+            Ok(total)
         }
     }
-
-    Ok(total)
 }
 
 fn normalize_cached_usage(value: Option<i64>) -> Option<u64> {

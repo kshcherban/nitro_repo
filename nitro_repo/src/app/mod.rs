@@ -156,10 +156,10 @@ impl From<&OAuth2Settings> for InstanceOAuth2Settings {
 
 #[derive(Debug)]
 struct UploadState {
-    md5: Md5,
-    sha1: Sha1,
+    md5: Option<Md5>,
+    sha1: Option<Sha1>,
     sha2: Sha256,
-    sha3: Sha3_256,
+    sha3: Option<Sha3_256>,
     length: u64,
 }
 
@@ -171,12 +171,24 @@ pub struct FinalizedUpload {
 }
 
 impl UploadState {
+    /// Create upload state with all hash algorithms (for general use)
     fn new() -> Self {
         Self {
-            md5: Md5::new(),
-            sha1: Sha1::new(),
+            md5: Some(Md5::new()),
+            sha1: Some(Sha1::new()),
             sha2: Sha256::new(),
-            sha3: Sha3_256::new(),
+            sha3: Some(Sha3_256::new()),
+            length: 0,
+        }
+    }
+
+    /// Create upload state with only SHA256 (for Docker)
+    fn new_sha256_only() -> Self {
+        Self {
+            md5: None,
+            sha1: None,
+            sha2: Sha256::new(),
+            sha3: None,
             length: 0,
         }
     }
@@ -186,25 +198,27 @@ impl UploadState {
             return;
         }
 
-        self.md5.update(chunk);
-        self.sha1.update(chunk);
+        if let Some(md5) = &mut self.md5 {
+            md5.update(chunk);
+        }
+        if let Some(sha1) = &mut self.sha1 {
+            sha1.update(chunk);
+        }
         self.sha2.update(chunk);
-        self.sha3.update(chunk);
+        if let Some(sha3) = &mut self.sha3 {
+            sha3.update(chunk);
+        }
         self.length += chunk.len() as u64;
     }
 
     fn finalize(self) -> FinalizedUpload {
-        let md5 = base64_utils::encode(self.md5.finalize());
-        let sha1 = base64_utils::encode(self.sha1.finalize());
         let sha2_bytes = self.sha2.finalize();
-        let sha2_b64 = base64_utils::encode(&sha2_bytes);
-        let sha3 = base64_utils::encode(self.sha3.finalize());
         let digest = format!("sha256:{:x}", sha2_bytes);
         let hashes = FileHashes {
-            md5: Some(md5),
-            sha1: Some(sha1),
-            sha2_256: Some(sha2_b64),
-            sha3_256: Some(sha3),
+            md5: self.md5.map(|h| base64_utils::encode(h.finalize())),
+            sha1: self.sha1.map(|h| base64_utils::encode(h.finalize())),
+            sha2_256: Some(base64_utils::encode(&sha2_bytes)),
+            sha3_256: self.sha3.map(|h| base64_utils::encode(h.finalize())),
         };
 
         FinalizedUpload {
@@ -212,6 +226,27 @@ impl UploadState {
             hashes,
             length: self.length,
         }
+    }
+}
+
+#[cfg(test)]
+mod upload_state_tests {
+    use super::*;
+
+    #[test]
+    fn docker_upload_state_only_emits_sha256() {
+        let mut state = UploadState::new_sha256_only();
+        state.update(b"hello world");
+
+        let finalized = state.finalize();
+        assert!(finalized.hashes.md5.is_none());
+        assert!(finalized.hashes.sha1.is_none());
+        assert!(finalized.hashes.sha3_256.is_none());
+        assert!(finalized.hashes.sha2_256.is_some());
+        assert_eq!(
+            finalized.digest,
+            "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 }
 #[derive(Debug, Clone, Hash, PartialEq, Eq, IntoParams, Deserialize)]
@@ -774,11 +809,34 @@ impl NitroRepo {
             .or_insert_with(UploadState::new);
     }
 
+    /// Begin blob upload state for Docker (SHA256 only)
+    pub fn begin_docker_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
+        let mut states = self.inner.blob_upload_states.lock();
+        states
+            .entry((repository, upload_id.to_owned()))
+            .or_insert_with(UploadState::new_sha256_only);
+    }
+
     pub fn update_blob_upload_state(&self, repository: Uuid, upload_id: &str, chunk: &[u8]) -> u64 {
         let mut states = self.inner.blob_upload_states.lock();
         let state = states
             .entry((repository, upload_id.to_owned()))
             .or_insert_with(UploadState::new);
+        state.update(chunk);
+        state.length
+    }
+
+    /// Update blob upload state for Docker (ensures SHA256-only hashing)
+    pub fn update_docker_blob_upload_state(
+        &self,
+        repository: Uuid,
+        upload_id: &str,
+        chunk: &[u8],
+    ) -> u64 {
+        let mut states = self.inner.blob_upload_states.lock();
+        let state = states
+            .entry((repository, upload_id.to_owned()))
+            .or_insert_with(UploadState::new_sha256_only);
         state.update(chunk);
         state.length
     }

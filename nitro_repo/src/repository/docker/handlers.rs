@@ -7,15 +7,12 @@ use axum::{body::Body, response::Response};
 use bytes::Bytes;
 use futures::StreamExt;
 use http::StatusCode;
-use md5::Md5;
 use nr_core::{
     storage::{FileHashes, StoragePath},
     utils::base64_utils,
 };
 use nr_storage::{Storage, StorageError, StorageFile, local::LocalStorage};
-use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use sha3::Sha3_256;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, instrument};
@@ -125,7 +122,7 @@ where
         .unwrap_or(0);
 
     stream_to_writer(stream, &mut writer, |chunk| {
-        total = site.update_blob_upload_state(repository_id, upload_id, chunk);
+        total = site.update_docker_blob_upload_state(repository_id, upload_id, chunk);
         Ok(())
     })
     .await?;
@@ -632,9 +629,9 @@ async fn initiate_blob_upload(
     // Generate upload ID
     let upload_id = uuid::Uuid::new_v4().to_string();
 
-    // Prepare upload state tracking
+    // Prepare upload state tracking (SHA256 only for Docker)
     let site = repo.site();
-    site.begin_blob_upload_state(repo.id(), &upload_id);
+    site.begin_docker_blob_upload_state(repo.id(), &upload_id);
 
     let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
 
@@ -677,7 +674,7 @@ async fn upload_blob_chunk(
     } else {
         return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
     };
-    site.begin_blob_upload_state(repo.id(), upload_id);
+    site.begin_docker_blob_upload_state(repo.id(), upload_id);
 
     let stream = body.into_byte_stream();
 
@@ -693,7 +690,7 @@ async fn upload_blob_chunk(
                 storage
                     .append_file(repo.id(), bytes.clone().into(), &upload_path)
                     .await?;
-                total_size = site.update_blob_upload_state(repo.id(), upload_id, &bytes);
+                total_size = site.update_docker_blob_upload_state(repo.id(), upload_id, &bytes);
             }
         }
     }
@@ -774,7 +771,7 @@ async fn complete_blob_upload(
                 storage
                     .append_file(repo.id(), bytes.clone().into(), &upload_path)
                     .await?;
-                _current_size = site.update_blob_upload_state(repo.id(), upload_id, &bytes);
+                _current_size = site.update_docker_blob_upload_state(repo.id(), upload_id, &bytes);
             }
         }
     }
@@ -783,6 +780,7 @@ async fn complete_blob_upload(
         result
     } else {
         // Fallback: compute digest by reading the file (legacy behaviour)
+        // For Docker, only SHA256 is needed
         let upload_file = repo
             .get_storage()
             .open_file(repo.id(), &upload_path)
@@ -792,10 +790,10 @@ async fn complete_blob_upload(
         let sha2_bytes = Sha256::digest(&data_bytes);
         let digest_value = format!("sha256:{:x}", sha2_bytes);
         let hashes = FileHashes {
-            md5: Some(base64_utils::encode(Md5::digest(&data_bytes))),
-            sha1: Some(base64_utils::encode(Sha1::digest(&data_bytes))),
+            md5: None,
+            sha1: None,
             sha2_256: Some(base64_utils::encode(&sha2_bytes)),
-            sha3_256: Some(base64_utils::encode(Sha3_256::digest(&data_bytes))),
+            sha3_256: None,
         };
         FinalizedUpload {
             digest: digest_value,

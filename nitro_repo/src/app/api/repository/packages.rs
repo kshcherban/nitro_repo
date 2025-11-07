@@ -9,9 +9,9 @@ use axum::{
 use chrono::{DateTime, FixedOffset};
 use nr_storage::{FileType, Storage, StorageFile};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tokio::io::AsyncReadExt;
-use sha2::{Digest, Sha256};
 use tracing::{instrument, warn};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -566,20 +566,14 @@ async fn process_manifest(
         .map_err(|err| DockerDeletionError::InvalidManifest(err.to_string()))?;
 
     let mut result = DockerDeletionResult::default();
-    if storage
-        .delete_file(repository_id, &storage_path)
-        .await?
-    {
+    if storage.delete_file(repository_id, &storage_path).await? {
         result.removed_manifests += 1;
     }
 
     let digest_path_str = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
     let digest_path = nr_core::storage::StoragePath::from(digest_path_str.as_str());
     if digest_path != storage_path {
-        if storage
-            .delete_file(repository_id, &digest_path)
-            .await?
-        {
+        if storage.delete_file(repository_id, &digest_path).await? {
             result.removed_manifests += 1;
         }
     }
@@ -733,7 +727,10 @@ pub async fn delete_cached_packages(
                     rejected.push(path.clone());
                 }
                 Err(DockerDeletionError::InvalidManifest(err)) => {
-                    warn!(?err, path, "Failed to parse Docker manifest during deletion");
+                    warn!(
+                        ?err,
+                        path, "Failed to parse Docker manifest during deletion"
+                    );
                     missing.push(path.clone());
                 }
                 Err(DockerDeletionError::Storage(err)) => {
@@ -991,7 +988,8 @@ mod tests {
         }
 
         let tag_cache_path = tag_path.to_string();
-        let result = delete_docker_package(&storage, repository_id, tag_cache_path.as_str()).await?;
+        let result =
+            delete_docker_package(&storage, repository_id, tag_cache_path.as_str()).await?;
         assert_eq!(result.removed_manifests, 2);
         assert_eq!(result.removed_blobs, 3);
 
