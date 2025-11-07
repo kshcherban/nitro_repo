@@ -684,7 +684,11 @@ impl Storage for LocalStorage {
         let file = if path.is_dir() {
             self.open_folder(path).await?
         } else {
-            self.0.open_file(path)?
+            let storage = self.0.clone();
+            let path_clone = path.clone();
+            spawn_blocking(move || storage.open_file(path_clone))
+                .await
+                .map_err(|err| LocalStorageError::other(err))??
         };
         Ok(Some(file))
     }
