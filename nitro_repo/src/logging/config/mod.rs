@@ -21,7 +21,6 @@ pub struct LoggingConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         let mut loggers = HashMap::new();
-        loggers.insert("app".to_string(), AppLogger::Otel(OtelConfig::default()));
         loggers.insert(
             "console".to_string(),
             AppLogger::Console(ConsoleLogger::default()),

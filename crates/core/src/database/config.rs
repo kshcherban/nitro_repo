@@ -12,13 +12,13 @@ pub struct DatabaseConfig {
     /// The username to connect to the database.
     ///
     /// Default is `postgres`.
-    /// Environment_variable: NITRO-REPO_DATABASE_USER
+    /// Environment variable: NITRO_DATABASE__USER
     #[clap(long = "database-user", default_value = "postgres")]
     pub user: String,
     /// The password to connect to the database.
     ///
     /// Default is `password`.
-    /// Environment_variable: NITRO-REPO_DATABASE_PASSWORD
+    /// Environment variable: NITRO_DATABASE__PASSWORD
     #[clap(long = "database-password", default_value = "password")]
     pub password: String,
     #[clap(long = "database-name", default_value = "nitro_repo")]

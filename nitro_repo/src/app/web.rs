@@ -38,6 +38,7 @@ pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         web_server,
         database,
         log,
+        opentelemetry,
         mode,
         sessions,
         staging: staging_config,
@@ -53,7 +54,7 @@ pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         open_api_routes,
     } = web_server;
 
-    let logger = crate::logging::init(log)?;
+    let logger = crate::logging::init(log, opentelemetry)?;
 
     let site = NitroRepo::new(
         mode,

@@ -34,14 +34,3 @@ allow_basic_without_tokens = true
 
 [log.levels]
 default = "Debug"
-#
-# [log.loggers.file]
-# type = "RollingFile"
-#
-#   [log.loggers.file.config]
-#   path = "/logs"
-#   file_prefix = "nitro_repo"
-#   interval = "Never"          # or "Hourly", "Minutely", "Never"
-#
-#     [log.loggers.file.config.levels]
-#     default = "Debug"

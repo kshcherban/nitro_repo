@@ -83,18 +83,18 @@ fn metrics(config: MetricsConfig) -> anyhow::Result<SdkMeterProvider> {
         .build())
 }
 
-pub fn init(config: LoggingConfig) -> anyhow::Result<LoggingState> {
+pub fn init(log_config: LoggingConfig, otel_config: OtelConfig) -> anyhow::Result<LoggingState> {
     let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> =
-        Vec::with_capacity(config.loggers.len());
+        Vec::with_capacity(log_config.loggers.len() + 1); // +1 for potential OTEL
     let mut state = LoggingState {
-        items: Vec::with_capacity(config.loggers.len()),
+        items: Vec::with_capacity(log_config.loggers.len() + 1),
         ..Default::default()
     };
     let LoggingConfig {
         loggers,
         metrics: metrics_config,
         levels: parent_levels,
-    } = config;
+    } = log_config;
 
     for (name, logger) in loggers.into_iter().map(|(k, mut v)| {
         v.get_levels_mut().inherit_from(&parent_levels);
@@ -177,6 +177,52 @@ pub fn init(config: LoggingConfig) -> anyhow::Result<LoggingState> {
             }
         }
     }
+
+    // Handle standalone OpenTelemetry configuration
+    if otel_config.enabled {
+        let Some(TracerResult {
+            mut levels,
+            logging,
+            tracing,
+        }) = tracer(otel_config)?
+        else {
+            // This shouldn't happen since we checked enabled, but just in case
+            let subscriber = Registry::default().with(layers);
+            subscriber.init();
+            return Ok(state);
+        };
+
+        state.set_global_text_propagator();
+        levels.inherit_from(&parent_levels);
+        let logging_levels: Targets = levels.into();
+
+        if let Some(tracer_provider) = tracing {
+            let tracer = tracer_provider.tracer("opentelemetry");
+            state.items.push(NamedLogger {
+                name: "opentelemetry".to_string(),
+                logger: LoggingStateItem::Tracer(tracer_provider),
+            });
+            let otel_layer = tracing_subscriber::Layer::with_filter(
+                tracing_opentelemetry::layer().with_tracer(tracer).boxed(),
+                logging_levels.clone(),
+            );
+            layers.push(otel_layer.boxed());
+        }
+
+        if let Some(logging_provider) = logging {
+            let tracing_bridge = OpenTelemetryTracingBridge::new(&logging_provider);
+            state.items.push(NamedLogger {
+                name: "opentelemetry-logs".to_string(),
+                logger: LoggingStateItem::Logger(logging_provider),
+            });
+
+            let otel_layer =
+                tracing_subscriber::Layer::with_filter(tracing_bridge, logging_levels);
+
+            layers.push(otel_layer.boxed());
+        }
+    }
+
     let subscriber = Registry::default().with(layers);
     subscriber.init();
     if let Some(metrics_config) = metrics_config

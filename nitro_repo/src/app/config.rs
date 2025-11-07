@@ -11,8 +11,8 @@ pub use max_upload::*;
 pub use security::*;
 
 use super::{authentication::session::SessionManagerConfig, email::EmailSetting};
-use crate::{logging::config::LoggingConfig, repository::StagingConfig};
-pub const CONFIG_PREFIX: &str = "NITRO-REPO";
+use crate::{logging::config::{LoggingConfig, OtelConfig}, repository::StagingConfig};
+pub const CONFIG_PREFIX: &str = "NITRO";
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("Invalid size: {0}")]
@@ -51,6 +51,7 @@ pub struct NitroRepoConfig {
     pub suggested_local_storage_path: Option<PathBuf>,
     pub database: DatabaseConfig,
     pub log: LoggingConfig,
+    pub opentelemetry: OtelConfig,
     pub sessions: SessionManagerConfig,
     pub site: SiteSetting,
     pub security: SecuritySettings,
@@ -65,6 +66,7 @@ pub struct ReadConfigType {
     pub web_server: Option<WebServer>,
     pub database: Option<DatabaseConfig>,
     pub log: Option<LoggingConfig>,
+    pub opentelemetry: Option<OtelConfig>,
     pub sessions: Option<SessionManagerConfig>,
     pub email: Option<EmailSetting>,
     pub site: Option<SiteSetting>,
@@ -163,14 +165,15 @@ pub fn load_config(path: Option<PathBuf>) -> anyhow::Result<NitroRepoConfig> {
         ReadConfigType::default()
     };
     // Merge the environment variables with the configuration file. If neither exists the default values are used.
-    // Environment variables take precedence.
-    let (mode, web_server, database, log, sessions, site, security, staging) = env_or_file_or_default!(
+    // Environment variables take precedence for most fields, but opentelemetry.enabled has special handling.
+    let (mode, web_server, database, log, opentelemetry, sessions, site, security, staging) = env_or_file_or_default!(
         config_from_file,
         environment,
         mode,
         web_server,
         database,
         log,
+        opentelemetry,
         sessions,
         site,
         security,
@@ -179,11 +182,17 @@ pub fn load_config(path: Option<PathBuf>) -> anyhow::Result<NitroRepoConfig> {
     let email = env_or_file_or_none!(config_from_file, environment, email);
     let suggested_local_storage_path =
         env_or_file_or_none!(config_from_file, environment, suggested_local_storage_path);
+
+    // Apply environment variable fallback logic for OpenTelemetry configuration
+    // Config file takes precedence over environment variables for opentelemetry.enabled
+    let opentelemetry = opentelemetry.apply_env_fallback();
+
     Ok(NitroRepoConfig {
         mode,
         web_server,
         database,
         log,
+        opentelemetry,
         sessions,
         site,
         security,
