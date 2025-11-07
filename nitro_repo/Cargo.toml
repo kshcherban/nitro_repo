@@ -102,25 +102,17 @@ digestible.workspace = true
 digest.workspace = true
 
 # Tracing
-tracing.workspace = true
-tracing-subscriber.workspace = true
-tracing-appender.workspace = true
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 
 # OpenTelemetry - Tracing framework
-tracing-opentelemetry = "0.31"
-opentelemetry = { version = "0.30", features = [] }
-opentelemetry_sdk = { version = "0.30", features = [
-    "rt-tokio",
-    "trace",
-    "metrics",
-    "logs",
-] }
-opentelemetry-otlp = { version = "0.30", default-features = true, features = [
-    "grpc-tonic",
-    "http-proto",
-    "http-json",
-] }
-opentelemetry-appender-tracing = { version = "0.30" }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-appender-tracing = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
 lettre = { version = "0.11", features = [
     "builder",
     "tokio1",

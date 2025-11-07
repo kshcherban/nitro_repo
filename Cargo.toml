@@ -2,8 +2,8 @@
 members = ["crates/*", "nitro_repo"]
 resolver = "3"
 [workspace.package]
-version = "2.0.0-BETA"
-authors = ["Wyatt Jacob Herkamp <wherkamp@gmail.com>"]
+version = "3.0.0-BETA"
+authors = ["Wyatt Jacob Herkamp <wherkamp@gmail.com>", "Konstantin Shcherban <insider@sudoers.dev>"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/wyatt-herkamp/nitro_repo"
@@ -16,8 +16,24 @@ toml = "0.9"
 
 
 tracing = "0.1"
-tracing-subscriber = { version = "0.3" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
+# OpenTelemetry
+tracing-opentelemetry = "0.31"
+opentelemetry = { version = "0.30", features = [] }
+opentelemetry_sdk = { version = "0.30", features = [
+    "rt-tokio",
+    "trace",
+    "metrics",
+    "logs",
+] }
+opentelemetry-otlp = { version = "0.30", default-features = true, features = [
+    "grpc-tonic",
+    "http-proto",
+    "http-json",
+] }
+opentelemetry-appender-tracing = "0.30"
+opentelemetry-semantic-conventions = "0.27"
 utoipa = { version = "5", features = ["chrono", "uuid", "url", "debug"] }
 rand = "0.9"
 

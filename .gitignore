@@ -5,3 +5,4 @@ test/
 nr_tests.env
 storage_tests
 artipie/
+*.png

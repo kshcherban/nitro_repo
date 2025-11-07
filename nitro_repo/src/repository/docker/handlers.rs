@@ -21,7 +21,7 @@ use super::{
     DockerError, DockerHosted, RepoResponse, Repository, RepositoryHandlerError, RepositoryRequest,
     types::{Manifest, MediaType},
 };
-use crate::app::{FinalizedUpload, NitroRepo};
+use crate::app::{BlobUploadStateHandle, FinalizedUpload, NitroRepo};
 use uuid::Uuid;
 
 /// Helper to extract bytes from StorageFile
@@ -59,6 +59,14 @@ fn json_response(value: serde_json::Value) -> RepoResponse {
 
 const LOCAL_UPLOAD_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
+#[tracing::instrument(
+    name = "docker_stream_to_writer",
+    skip(writer, on_chunk_written, stream),
+    fields(
+        chunk_count = tracing::field::Empty,
+        total_bytes = tracing::field::Empty
+    )
+)]
 pub(super) async fn stream_to_writer<S, W, F>(
     mut stream: S,
     writer: &mut BufWriter<W>,
@@ -69,15 +77,31 @@ where
     W: AsyncWrite + Unpin,
     F: FnMut(&[u8]) -> Result<(), DockerError>,
 {
+    let mut chunk_count = 0u64;
+    let mut total_bytes = 0u64;
+
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(DockerError::from)?;
         if chunk.is_empty() {
             continue;
         }
 
+        chunk_count += 1;
+        total_bytes += chunk.len() as u64;
+
         writer.write_all(&chunk).await.map_err(DockerError::from)?;
         on_chunk_written(&chunk)?;
+
+        // Record progress every 10 chunks
+        if chunk_count % 10 == 0 {
+            tracing::Span::current().record("chunk_count", chunk_count);
+            tracing::Span::current().record("total_bytes", total_bytes);
+        }
     }
+
+    // Final update
+    tracing::Span::current().record("chunk_count", chunk_count);
+    tracing::Span::current().record("total_bytes", total_bytes);
 
     writer.flush().await.map_err(DockerError::from)?;
 
@@ -105,6 +129,7 @@ async fn write_local_stream<S>(
     stream: S,
     site: &NitroRepo,
     upload_id: &str,
+    state_handle: BlobUploadStateHandle,
 ) -> Result<u64, DockerError>
 where
     S: futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> + Unpin,
@@ -117,17 +142,15 @@ where
 
     let mut writer = BufWriter::with_capacity(LOCAL_UPLOAD_BUFFER_SIZE, file);
 
-    let mut total = site
-        .current_blob_upload_length(repository_id, upload_id)
-        .unwrap_or(0);
+    let handle_for_stream = state_handle.clone();
 
     stream_to_writer(stream, &mut writer, |chunk| {
-        total = site.update_docker_blob_upload_state(repository_id, upload_id, chunk);
+        site.update_upload_state_handle(&handle_for_stream, chunk);
         Ok(())
     })
     .await?;
 
-    Ok(total)
+    Ok(site.blob_upload_state_length(&state_handle))
 }
 
 /// Main routing handler for GET requests
@@ -614,11 +637,26 @@ async fn put_manifest(
 }
 
 /// POST /v2/<name>/blobs/uploads/ - Initiate blob upload
+#[tracing::instrument(
+    name = "docker_initiate_blob_upload",
+    skip(repo),
+    fields(
+        repository_name,
+        user_id = tracing::field::Empty,
+        upload_id = tracing::field::Empty
+    )
+)]
 async fn initiate_blob_upload(
     repo: &DockerHosted,
     repository_name: &str,
     request: RepositoryRequest,
 ) -> Result<RepoResponse, DockerError> {
+    let user_id = request.authentication.get_user().map(|u| u.id.to_string());
+    tracing::Span::current().record(
+        "user_id",
+        &user_id.unwrap_or_else(|| "anonymous".to_string()),
+    );
+
     info!("Initiating blob upload for: {}", repository_name);
 
     // Check authentication
@@ -628,6 +666,7 @@ async fn initiate_blob_upload(
 
     // Generate upload ID
     let upload_id = uuid::Uuid::new_v4().to_string();
+    tracing::Span::current().record("upload_id", &upload_id);
 
     // Prepare upload state tracking (SHA256 only for Docker)
     let site = repo.site();
@@ -647,6 +686,15 @@ async fn initiate_blob_upload(
 }
 
 /// PATCH /v2/<name>/blobs/uploads/<uuid> - Upload blob chunk
+#[tracing::instrument(
+    name = "docker_upload_blob_chunk",
+    skip(repo),
+    fields(
+        repository_name,
+        upload_id,
+        chunk_size = tracing::field::Empty
+    )
+)]
 async fn upload_blob_chunk(
     repo: &DockerHosted,
     repository_name: &str,
@@ -669,20 +717,27 @@ async fn upload_blob_chunk(
     let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
 
     let site = repo.site();
-    let mut total_size = if let Some(len) = site.current_blob_upload_length(repo.id(), upload_id) {
-        len
+    let state_handle = if let Some(handle) = site.get_upload_state_handle(repo.id(), upload_id) {
+        handle
     } else {
         return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
     };
-    site.begin_docker_blob_upload_state(repo.id(), upload_id);
+    let mut total_size = site.blob_upload_state_length(&state_handle);
 
     let stream = body.into_byte_stream();
 
     match repo.get_storage() {
         nr_storage::DynStorage::Local(local) => {
-            total_size =
-                write_local_stream(local, repo.id(), &upload_path, stream, &site, upload_id)
-                    .await?;
+            total_size = write_local_stream(
+                local,
+                repo.id(),
+                &upload_path,
+                stream,
+                &site,
+                upload_id,
+                state_handle.clone(),
+            )
+            .await?;
         }
         storage => {
             let bytes = collect_stream_bytes(stream).await?;
@@ -690,10 +745,13 @@ async fn upload_blob_chunk(
                 storage
                     .append_file(repo.id(), bytes.clone().into(), &upload_path)
                     .await?;
-                total_size = site.update_docker_blob_upload_state(repo.id(), upload_id, &bytes);
+
+                // Update blob upload state
+                total_size = site.update_upload_state_handle(&state_handle, &bytes);
             }
         }
     }
+    drop(state_handle);
 
     let range_end = if total_size == 0 {
         0
@@ -715,6 +773,16 @@ async fn upload_blob_chunk(
 }
 
 /// PUT /v2/<name>/blobs/uploads/<uuid>?digest=<digest> - Complete blob upload
+#[tracing::instrument(
+    name = "docker_complete_blob_upload",
+    skip(repo),
+    fields(
+        repository_name,
+        upload_id,
+        final_size = tracing::field::Empty,
+        upload_duration_ms = tracing::field::Empty
+    )
+)]
 async fn complete_blob_upload(
     repo: &DockerHosted,
     repository_name: &str,
@@ -753,17 +821,27 @@ async fn complete_blob_upload(
     let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
 
     let site = repo.site();
-    let mut _current_size = site
-        .current_blob_upload_length(repo.id(), upload_id)
-        .unwrap_or(0);
+    let state_handle = if let Some(handle) = site.get_upload_state_handle(repo.id(), upload_id) {
+        handle
+    } else {
+        return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
+    };
+    let mut _current_size = site.blob_upload_state_length(&state_handle);
 
     let stream = body.into_byte_stream();
 
     match repo.get_storage() {
         nr_storage::DynStorage::Local(local) => {
-            _current_size =
-                write_local_stream(local, repo.id(), &upload_path, stream, &site, upload_id)
-                    .await?;
+            _current_size = write_local_stream(
+                local,
+                repo.id(),
+                &upload_path,
+                stream,
+                &site,
+                upload_id,
+                state_handle.clone(),
+            )
+            .await?;
         }
         storage => {
             let bytes = collect_stream_bytes(stream).await?;
@@ -771,10 +849,14 @@ async fn complete_blob_upload(
                 storage
                     .append_file(repo.id(), bytes.clone().into(), &upload_path)
                     .await?;
-                _current_size = site.update_docker_blob_upload_state(repo.id(), upload_id, &bytes);
+
+                // Update blob upload state
+                _current_size = site.update_upload_state_handle(&state_handle, &bytes);
             }
         }
     }
+
+    drop(state_handle);
 
     let finalized = if let Some(result) = site.finalize_blob_upload_state(repo.id(), upload_id) {
         result

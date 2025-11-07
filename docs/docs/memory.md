@@ -15,6 +15,8 @@
 - **Python Hosted Simple Index**: Served PEP 503 simple index HTML pages (root and package-specific) including hashing and `data-requires-python` attributes.
 
 ## Operational Notes
-- `docker compose build` + `docker compose up -d --force-recreate nitro_repo` are standard rebuild steps; npm build runs in container using cache mounts.
-- Logs stream to `/logs/nitro_repo`; trimming requires re-enabling logging if file truncated during runtime.
+- `./dev.sh` is a standard rebuild and app restart for debugging
 - Maven proxy routes default to `https://repo.maven.apache.org/maven2/`; trimming trailing slash is handled by `ProxyURL` normalization.
+- Use jaeger from @docker-compose.dev.yml to access traces and debug further
+- Fetch trace from jaeger: `curl -s http://localhost:16686/api/traces/6411c391351280a02b171a4b9c624b56 | jq ...`
+- Logs can be retrieved with `docker compose logs nitro_repo`

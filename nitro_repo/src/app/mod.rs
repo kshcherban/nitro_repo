@@ -161,7 +161,11 @@ struct UploadState {
     sha2: Sha256,
     sha3: Option<Sha3_256>,
     length: u64,
+    sha256_only: bool,
 }
+
+#[derive(Clone)]
+pub struct BlobUploadStateHandle(Arc<parking_lot::Mutex<UploadState>>);
 
 #[derive(Debug, Clone)]
 pub struct FinalizedUpload {
@@ -179,6 +183,7 @@ impl UploadState {
             sha2: Sha256::new(),
             sha3: Some(Sha3_256::new()),
             length: 0,
+            sha256_only: false,
         }
     }
 
@@ -190,6 +195,7 @@ impl UploadState {
             sha2: Sha256::new(),
             sha3: None,
             length: 0,
+            sha256_only: true,
         }
     }
 
@@ -225,6 +231,34 @@ impl UploadState {
             digest,
             hashes,
             length: self.length,
+        }
+    }
+
+    fn take(&mut self) -> Self {
+        let sha_only = self.sha256_only;
+        let mut replacement = if sha_only {
+            UploadState::new_sha256_only()
+        } else {
+            UploadState::new()
+        };
+        std::mem::swap(self, &mut replacement);
+        replacement
+    }
+}
+
+impl BlobUploadStateHandle {
+    fn new(state: UploadState) -> Self {
+        Self(Arc::new(parking_lot::Mutex::new(state)))
+    }
+
+    fn lock(&self) -> parking_lot::MutexGuard<'_, UploadState> {
+        self.0.lock()
+    }
+
+    fn try_into_state(self) -> Result<UploadState, Self> {
+        match Arc::try_unwrap(self.0) {
+            Ok(inner) => Ok(inner.into_inner()),
+            Err(arc) => Err(Self(arc)),
         }
     }
 }
@@ -305,7 +339,7 @@ pub struct NitroRepoInner {
     pub frontend: frontend::HostedFrontend,
     pub staging_config: StagingConfig,
     services: Mutex<InternalServices>,
-    blob_upload_states: Mutex<HashMap<(Uuid, String), UploadState>>,
+    blob_upload_states: parking_lot::Mutex<HashMap<(Uuid, String), BlobUploadStateHandle>>,
     pub suggested_local_storage_path: PathBuf,
 }
 macro_rules! take_service {
@@ -525,7 +559,7 @@ impl NitroRepo {
             oauth2_rbac: RwLock::new(oauth2_rbac),
             staging_config,
             services: Mutex::new(services),
-            blob_upload_states: Mutex::new(HashMap::new()),
+            blob_upload_states: parking_lot::Mutex::new(HashMap::new()),
             #[cfg(feature = "frontend")]
             frontend: frontend::HostedFrontend::new(site.frontend_path)?,
             suggested_local_storage_path,
@@ -802,28 +836,72 @@ impl NitroRepo {
         Ok(config.map(|cfg| cfg.value.0).unwrap_or_default())
     }
 
-    pub fn begin_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
+    fn ensure_upload_state_handle(
+        &self,
+        repository: Uuid,
+        upload_id: &str,
+        sha256_only: bool,
+    ) -> BlobUploadStateHandle {
         let mut states = self.inner.blob_upload_states.lock();
         states
             .entry((repository, upload_id.to_owned()))
-            .or_insert_with(UploadState::new);
+            .or_insert_with(|| {
+                if sha256_only {
+                    BlobUploadStateHandle::new(UploadState::new_sha256_only())
+                } else {
+                    BlobUploadStateHandle::new(UploadState::new())
+                }
+            })
+            .clone()
+    }
+
+    pub fn get_upload_state_handle(
+        &self,
+        repository: Uuid,
+        upload_id: &str,
+    ) -> Option<BlobUploadStateHandle> {
+        let states = self.inner.blob_upload_states.lock();
+        states.get(&(repository, upload_id.to_owned())).cloned()
+    }
+
+    pub fn ensure_docker_blob_upload_state_handle(
+        &self,
+        repository: Uuid,
+        upload_id: &str,
+    ) -> BlobUploadStateHandle {
+        self.ensure_upload_state_handle(repository, upload_id, true)
+    }
+
+    fn ensure_blob_upload_state_handle(
+        &self,
+        repository: Uuid,
+        upload_id: &str,
+    ) -> BlobUploadStateHandle {
+        self.ensure_upload_state_handle(repository, upload_id, false)
+    }
+
+    pub fn update_upload_state_handle(&self, handle: &BlobUploadStateHandle, chunk: &[u8]) -> u64 {
+        let mut guard = handle.lock();
+        guard.update(chunk);
+        guard.length
+    }
+
+    pub fn blob_upload_state_length(&self, handle: &BlobUploadStateHandle) -> u64 {
+        handle.lock().length
+    }
+
+    pub fn begin_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
+        self.ensure_blob_upload_state_handle(repository, upload_id);
     }
 
     /// Begin blob upload state for Docker (SHA256 only)
     pub fn begin_docker_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
-        let mut states = self.inner.blob_upload_states.lock();
-        states
-            .entry((repository, upload_id.to_owned()))
-            .or_insert_with(UploadState::new_sha256_only);
+        self.ensure_docker_blob_upload_state_handle(repository, upload_id);
     }
 
     pub fn update_blob_upload_state(&self, repository: Uuid, upload_id: &str, chunk: &[u8]) -> u64 {
-        let mut states = self.inner.blob_upload_states.lock();
-        let state = states
-            .entry((repository, upload_id.to_owned()))
-            .or_insert_with(UploadState::new);
-        state.update(chunk);
-        state.length
+        let state = self.ensure_blob_upload_state_handle(repository, upload_id);
+        self.update_upload_state_handle(&state, chunk)
     }
 
     /// Update blob upload state for Docker (ensures SHA256-only hashing)
@@ -833,19 +911,13 @@ impl NitroRepo {
         upload_id: &str,
         chunk: &[u8],
     ) -> u64 {
-        let mut states = self.inner.blob_upload_states.lock();
-        let state = states
-            .entry((repository, upload_id.to_owned()))
-            .or_insert_with(UploadState::new_sha256_only);
-        state.update(chunk);
-        state.length
+        let state = self.ensure_docker_blob_upload_state_handle(repository, upload_id);
+        self.update_upload_state_handle(&state, chunk)
     }
 
     pub fn current_blob_upload_length(&self, repository: Uuid, upload_id: &str) -> Option<u64> {
-        let states = self.inner.blob_upload_states.lock();
-        states
-            .get(&(repository, upload_id.to_owned()))
-            .map(|state| state.length)
+        self.get_upload_state_handle(repository, upload_id)
+            .map(|handle| handle.lock().length)
     }
 
     pub fn finalize_blob_upload_state(
@@ -853,10 +925,18 @@ impl NitroRepo {
         repository: Uuid,
         upload_id: &str,
     ) -> Option<FinalizedUpload> {
-        let mut states = self.inner.blob_upload_states.lock();
-        states
-            .remove(&(repository, upload_id.to_owned()))
-            .map(UploadState::finalize)
+        let state = {
+            let mut states = self.inner.blob_upload_states.lock();
+            states.remove(&(repository, upload_id.to_owned()))
+        };
+        state.map(|handle| match handle.try_into_state() {
+            Ok(state) => state.finalize(),
+            Err(handle) => {
+                let mut guard = handle.lock();
+                let state = guard.take();
+                state.finalize()
+            }
+        })
     }
 
     pub fn abandon_blob_upload_state(&self, repository: Uuid, upload_id: &str) {

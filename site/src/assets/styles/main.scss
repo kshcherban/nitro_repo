@@ -3,6 +3,28 @@
   src: url("https://fonts.googleapis.com/css2?family=Roboto:wght@100;400&display=swap")
     format("truetype");
 }
+:root {
+  --nr-text-color: #e2e6f6;
+  --nr-text-secondary: rgba(226, 230, 246, 0.65);
+  --text-secondary: rgba(226, 230, 246, 0.65);
+  --nr-background-primary: #070a17;
+  --nr-background-secondary: #12182c;
+  --nr-background-tertiary: #1a213a;
+  --nr-border-color: rgba(226, 230, 246, 0.15);
+  --border-color: rgba(226, 230, 246, 0.15);
+  --nr-primary-color: #8aa3db;
+  --nr-primary-color-strong: rgba(138, 163, 219, 0.85);
+  --nr-primary-color-soft: rgba(138, 163, 219, 0.18);
+  --nr-accent-color: #c95172;
+  --nr-accent-color-soft: rgba(201, 81, 114, 0.18);
+  --nr-success-color: #90ee90;
+  --error-color: #e12b2b;
+  --nr-focus-ring: rgba(138, 163, 219, 0.35);
+  --nr-input-background: rgba(26, 33, 58, 0.92);
+  --nr-input-border: rgba(226, 230, 246, 0.22);
+  --nr-input-placeholder: rgba(226, 230, 246, 0.55);
+  --nr-table-row-hover: rgba(138, 163, 219, 0.12);
+}
 *,
 *::before,
 *::after {
@@ -13,8 +35,8 @@
 
 body {
   min-height: 100vh;
-  color: $text;
-  background: $background-90;
+  color: var(--nr-text-color, $text);
+  background: var(--nr-background-primary, $background-90);
   transition:
     color 0.5s,
     background-color 0.5s;

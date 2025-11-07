@@ -27,3 +27,40 @@ to create a fast and modern experience.
 - crates/storages
   - This layer provides different ways storing the artifacts that nitro-repo hosts
 
+### Development
+
+#### Prerequisites
+- Docker and Docker Compose
+- Rust (latest stable)
+- Node.js (for frontend development)
+
+#### Quick Start
+1. Clone the repository
+2. Run `./dev.sh` to build and start the development environment
+3. Access Nitro Repo at `http://localhost:6742`
+4. Access the API documentation at `http://localhost:6742/api/docs`
+
+#### Tracing & Observability
+
+The development environment includes distributed tracing with Jaeger to help diagnose performance issues:
+
+- **Jaeger UI**: Available at `http://localhost:16686`
+- **Tracing Configuration**: Automatically enabled in development via `docker-compose.dev.yml`
+- **Key Traced Operations**:
+  - HTTP requests (method, route, status code, timing)
+  - Docker Registry V2 operations (blob upload, chunk processing)
+  - Database operations and configuration loading
+  - Authentication and session management
+  - Background tasks and cleanup operations
+
+#### Environment Variables
+The development compose file automatically configures tracing with:
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317`
+- `OTEL_SERVICE_NAME=nitro-repo`
+- `NITRO_TRACING_ENABLED=true`
+
+#### Troubleshooting
+- If Docker upload operations are blocking the async runtime, check Jaeger traces for long-running spans
+- Use `docker-compose logs nitro_repo` to view application logs
+- Restart services with `./dev.sh` after making configuration changes
+

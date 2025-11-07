@@ -43,9 +43,11 @@ import {
 
 import { sessionStore } from "./stores/session";
 import { autoAnimatePlugin } from "@formkit/auto-animate/vue";
+import { applyThemeTokens } from "@/utils/themeTokens";
 
 const app = createApp(App);
 const vfm = createVfm();
+applyThemeTokens();
 router.beforeEach((to) => {
   const store = sessionStore(pinia);
   if (to.meta.requiresAuth && store.session === undefined) {

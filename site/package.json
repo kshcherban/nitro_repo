@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build --force",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint 'src/**/*.{js,vue}'",
     "lint-fix": "eslint 'src/**/*.{js,vue}' --fix",
     "format": "prettier --write src/"
@@ -54,6 +56,8 @@
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.6.0",
     "@vue/tsconfig": "^0.8.1",
+    "vitest": "^2.1.4",
+    "jsdom": "^24.0.0",
     "browserslist": "^4.25.4",
     "browserslist-to-esbuild": "^2.1.1",
     "eslint": "^9.23.0",

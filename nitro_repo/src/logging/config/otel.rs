@@ -7,7 +7,7 @@ use super::{AppLoggerType, LoggingLevels};
 ///
 /// ```toml
 /// "service.name" = "nitro-repo"
-/// "service.version" = "2.0.0-BETA"
+/// "service.version" = "3.0.0-BETA"
 /// "service.environment" = "development"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,13 +81,17 @@ impl AppLoggerType for OtelConfig {
 }
 impl Default for OtelConfig {
     fn default() -> Self {
+        // Enable tracing if NITRO_TRACING_ENABLED environment variable is set
+        let enabled = std::env::var("NITRO_TRACING_ENABLED").is_ok();
+
         Self {
-            enabled: false,
+            enabled,
             protocol: TracingProtocol::GRPC,
-            endpoint: "http://localhost:4317".to_owned(),
+            endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4317".to_owned()),
             config: OtelResourceMap::default(),
             traces: true,
-            logs: true,
+            logs: false, // Don't send logs to OTLP - logs should always be available locally
             levels: LoggingLevels::default(),
         }
     }
