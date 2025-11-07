@@ -438,13 +438,13 @@ fn is_valid_docker_manifest_path(path: &str) -> bool {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct DockerDeletionResult {
-    removed_manifests: usize,
-    removed_blobs: usize,
+pub struct DockerDeletionResult {
+    pub removed_manifests: usize,
+    pub removed_blobs: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
-enum DockerDeletionError {
+pub enum DockerDeletionError {
     #[error("manifest not found")]
     ManifestMissing,
     #[error("invalid manifest path")]
@@ -455,7 +455,7 @@ enum DockerDeletionError {
     InvalidManifest(String),
 }
 
-async fn delete_docker_package(
+pub async fn delete_docker_package(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,
     cache_path: &str,

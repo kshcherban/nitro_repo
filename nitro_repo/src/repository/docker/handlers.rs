@@ -15,7 +15,7 @@ use nr_storage::{Storage, StorageError, StorageFile, local::LocalStorage};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio_util::io::ReaderStream;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, warn, instrument};
 
 use super::{
     DockerError, DockerHosted, RepoResponse, Repository, RepositoryHandlerError, RepositoryRequest,
@@ -979,12 +979,42 @@ async fn delete_manifest(
 
     let manifest_path =
         StoragePath::from(format!("v2/{}/manifests/{}", repository_name, reference));
+    let manifest_path_str = manifest_path.to_string();
 
-    repo.get_storage()
-        .delete_file(repo.id(), &manifest_path)
-        .await?;
-
-    Ok(custom_response(StatusCode::ACCEPTED, vec![], vec![]))
+    // Use the same comprehensive deletion logic as the packages API
+    // This ensures proper garbage collection of associated blobs and layers
+    match crate::app::api::repository::packages::delete_docker_package(
+        &repo.get_storage(),
+        repo.id(),
+        &manifest_path_str,
+    )
+    .await
+    {
+        Ok(result) => {
+            info!(
+                "Successfully deleted Docker manifest: {}/{} (removed {} manifests, {} blobs)",
+                repository_name,
+                reference,
+                result.removed_manifests,
+                result.removed_blobs
+            );
+            Ok(custom_response(StatusCode::ACCEPTED, vec![], vec![]))
+        }
+        Err(crate::app::api::repository::packages::DockerDeletionError::ManifestMissing) => {
+            info!("Manifest not found: {}/{}", repository_name, reference);
+            // Still return ACCEPTED as the spec requires idempotent deletion
+            Ok(custom_response(StatusCode::ACCEPTED, vec![], vec![]))
+        }
+        Err(err) => {
+            warn!(
+                "Failed to delete Docker manifest: {}/{} - {}",
+                repository_name,
+                reference,
+                err
+            );
+            Err(DockerError::InvalidManifest(format!("Failed to delete manifest: {}", err)))
+        }
+    }
 }
 
 /// DELETE /v2/<name>/blobs/<digest> - Delete blob

@@ -40,7 +40,7 @@ use crate::{
 mod browse;
 mod config;
 mod management;
-mod packages;
+pub mod packages;
 mod page;
 mod types;
 #[derive(OpenApi)]
