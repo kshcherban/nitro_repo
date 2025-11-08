@@ -14,7 +14,7 @@ cleanup_interval = 3600
 database_location = "/data/sessions.redb"
 
 [site]
-app_url = "https://repo.sudoers.dev"
+app_url = "https://nitro.sudoers.dev"
 
 
 [security]

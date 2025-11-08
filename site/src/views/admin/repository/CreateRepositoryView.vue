@@ -5,7 +5,7 @@
       <h2>{{ currentRepositoryType.description }}</h2>
     </div>
 
-    <form @submit.prevent="createRepository()">
+    <form @submit.prevent="createRepository()" :class="{ 'go-repository-form': selectedRepositoryType === 'go' }">
       <TwoByFormBox>
         <TextInput
           id="repositoryName"
@@ -190,6 +190,13 @@ form {
   width: 50%;
   padding: 1rem;
   margin: 0 auto;
+
+  &.go-repository-form {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 1rem 2rem;
+  }
 }
 .storageConfig {
   padding: 1rem;

@@ -44,7 +44,7 @@ uv publish --index-url https://<host>/repositories/<storage>/<repo> \
 ```
 uv pip install https://<host>/repositories/<storage>/<repo>/<package>/<version>/<filename>
 ```
- (replace <filename> with the actual wheel or sdist you uploaded.)
+ replace `<filename>` with the actual wheel or sdist you uploaded
 
 3. Proxy download – flip the repo to Proxy mode with an upstream such as https://pypi.org, then:
 
@@ -57,3 +57,4 @@ uv pip install --index-url https://<host>/repositories/<storage>/<repo>/simple <
 4. Proxy verification – repeat the install (step 3) and observe that the second run is served from Nitro Repo without contacting the upstream.
 
 For hosted NPM repos, the proxy/hosted flows follow the same pattern via the updated Vue config screen.
+

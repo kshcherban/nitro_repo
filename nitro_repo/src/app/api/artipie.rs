@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     extract::{OriginalUri, Path, State},
     response::Response,
-    routing::{any, get},
+    routing::{any, get, post},
 };
 use http::{StatusCode, header::LOCATION};
 use nr_core::database::entities::repository::DBRepositoryWithStorageName;
@@ -15,6 +15,7 @@ pub fn routes() -> Router<NitroRepo> {
     Router::new()
         .route("/artifact/{repo}/{*path}", any(artifact_redirect))
         .route("/meta/{repo}/{*group}", get(meta_redirect))
+        .route("/{repo}/upload", post(api_upload_redirect))
         .route("/{repo}/{*rest}", any(api_repository_redirect))
         .route("/{repo}", any(api_repository_root_redirect))
 }
@@ -74,6 +75,25 @@ async fn api_repository_redirect(
         repo_info.storage_name.as_ref(),
         repo_info.name.as_ref(),
         rest.trim_start_matches('/'),
+        original.query(),
+    );
+    Ok(redirect(location))
+}
+
+async fn api_upload_redirect(
+    State(site): State<NitroRepo>,
+    Path(repo): Path<String>,
+    OriginalUri(original): OriginalUri,
+) -> Result<Response, InternalError> {
+    let repo_info = match resolve_repository(&site, &repo, "API upload route").await? {
+        Ok(repo) => repo,
+        Err(response) => return Ok(response),
+    };
+    debug!(?repo, "Artipie API upload rewrite");
+    let location = build_repository_location(
+        repo_info.storage_name.as_ref(),
+        repo_info.name.as_ref(),
+        "upload",
         original.query(),
     );
     Ok(redirect(location))

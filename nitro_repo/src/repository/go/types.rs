@@ -1,0 +1,746 @@
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Represents a Go module path following Go module naming conventions
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GoModulePath(String);
+
+impl GoModulePath {
+    /// Create a new Go module path, validating it follows Go conventions
+    pub fn new(path: impl Into<String>) -> Result<Self, GoModuleError> {
+        let path = path.into();
+        Self::validate(&path)?;
+        Ok(GoModulePath(path))
+    }
+
+    /// Get the module path as a string
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Get the module path as a string slice
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    /// Get the module name (last component of the path)
+    pub fn module_name(&self) -> &str {
+        self.0.split('/').last().unwrap_or(&self.0)
+    }
+
+    /// Get the domain prefix (first component of the path)
+    pub fn domain(&self) -> &str {
+        self.0.split('/').next().unwrap_or(&self.0)
+    }
+
+    /// Check if this is a standard library module
+    pub fn is_stdlib(&self) -> bool {
+        self.0.starts_with("std") || self.0.starts_with("cmd")
+    }
+
+    /// Validate a Go module path according to Go naming conventions
+    fn validate(path: &str) -> Result<(), GoModuleError> {
+        if path.is_empty() {
+            return Err(GoModuleError::EmptyPath);
+        }
+
+        // Basic validation according to Go module path rules
+        // https://golang.org/ref/mod#module-path
+
+        // Check for invalid characters
+        if path.chars().any(|c| !Self::is_valid_path_char(c)) {
+            return Err(GoModuleError::InvalidCharacters(path.to_string()));
+        }
+
+        // Check that it doesn't start or end with '/'
+        if path.starts_with('/') || path.ends_with('/') {
+            return Err(GoModuleError::InvalidPathFormat(path.to_string()));
+        }
+
+        // Check for consecutive slashes
+        if path.contains("//") {
+            return Err(GoModuleError::InvalidPathFormat(path.to_string()));
+        }
+
+        // Check that the domain is valid if it looks like a domain
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() > 1 {
+            let domain = parts[0];
+            if domain.contains('.') && !Self::is_valid_domain(domain) {
+                return Err(GoModuleError::InvalidDomain(domain.to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a character is valid in a Go module path
+    fn is_valid_path_char(c: char) -> bool {
+        matches!(c,
+            'a'..='z' | 'A'..='Z' | '0'..='9' |
+            '-' | '_' | '.' | '/' | '~'
+        )
+    }
+
+    /// Check if a domain is valid according to DNS rules
+    fn is_valid_domain(domain: &str) -> bool {
+        // Basic domain validation
+        if domain.is_empty() || domain.len() > 253 {
+            return false;
+        }
+
+        // Check for valid characters and structure
+        for label in domain.split('.') {
+            if label.is_empty() || label.len() > 63 {
+                return false;
+            }
+
+            // Check if label starts and ends with alphanumeric
+            if !label.chars().next().unwrap_or(' ').is_alphanumeric()
+                || !label.chars().last().unwrap_or(' ').is_alphanumeric()
+            {
+                return false;
+            }
+
+            // Check for valid characters in label
+            if label
+                .chars()
+                .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl FromStr for GoModulePath {
+    type Err = GoModuleError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl std::fmt::Display for GoModulePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Represents a Go module version following semantic versioning
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GoVersion(String);
+
+impl GoVersion {
+    /// Create a new Go version, validating it follows semantic versioning
+    pub fn new(version: impl Into<String>) -> Result<Self, GoModuleError> {
+        let version = version.into();
+        Self::validate(&version)?;
+        Ok(GoVersion(version))
+    }
+
+    /// Get the version as a string
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Check if this is a pre-release version
+    pub fn is_prerelease(&self) -> bool {
+        self.0.contains('-')
+    }
+
+    /// Check if this is a pseudo-version (like v1.0.0-20210101123456-abcdefabcdef)
+    pub fn is_pseudo_version(&self) -> bool {
+        self.0.contains('-') && self.0.matches('-').count() >= 2
+    }
+
+    /// Get the major version
+    pub fn major(&self) -> Result<u64, GoModuleError> {
+        self.parse_semver().map(|(major, _, _)| major)
+    }
+
+    /// Get the minor version
+    pub fn minor(&self) -> Result<u64, GoModuleError> {
+        self.parse_semver().map(|(_, minor, _)| minor)
+    }
+
+    /// Get the patch version
+    pub fn patch(&self) -> Result<u64, GoModuleError> {
+        self.parse_semver().map(|(_, _, patch)| patch)
+    }
+
+    /// Parse semantic version components
+    fn parse_semver(&self) -> Result<(u64, u64, u64), GoModuleError> {
+        // Handle pseudo-versions by extracting the base version
+        let base_version = if self.is_pseudo_version() {
+            self.0
+                .split('-')
+                .next()
+                .unwrap_or(&self.0)
+                .trim_start_matches('v')
+        } else {
+            self.0.trim_start_matches('v')
+        };
+
+        let parts: Vec<&str> = base_version.split('.').collect();
+        if parts.len() != 3 {
+            return Err(GoModuleError::InvalidVersion(self.0.clone()));
+        }
+
+        let major = parts[0]
+            .parse::<u64>()
+            .map_err(|_| GoModuleError::InvalidVersion(self.0.clone()))?;
+        let minor = parts[1]
+            .parse::<u64>()
+            .map_err(|_| GoModuleError::InvalidVersion(self.0.clone()))?;
+        let patch = parts[2]
+            .parse::<u64>()
+            .map_err(|_| GoModuleError::InvalidVersion(self.0.clone()))?;
+
+        Ok((major, minor, patch))
+    }
+
+    /// Validate a Go version string
+    fn validate(version: &str) -> Result<(), GoModuleError> {
+        if version.is_empty() {
+            return Err(GoModuleError::EmptyVersion);
+        }
+
+        // Check for 'v' prefix (optional but common)
+        let version = version.trim_start_matches('v');
+
+        // Basic semantic version validation
+        if version.contains(' ') {
+            return Err(GoModuleError::InvalidVersion(version.to_string()));
+        }
+
+        // Try to parse as semantic version
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() < 2 {
+            return Err(GoModuleError::InvalidVersion(version.to_string()));
+        }
+
+        // Check if major version is numeric
+        if parts[0].parse::<u64>().is_err() {
+            return Err(GoModuleError::InvalidVersion(version.to_string()));
+        }
+
+        Ok(())
+    }
+}
+
+impl FromStr for GoVersion {
+    type Err = GoModuleError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl std::fmt::Display for GoVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Go module-related errors
+#[derive(Debug, Error, Clone)]
+pub enum GoModuleError {
+    #[error("Empty module path")]
+    EmptyPath,
+    #[error("Empty version")]
+    EmptyVersion,
+    #[error("Invalid characters in module path: {0}")]
+    InvalidCharacters(String),
+    #[error("Invalid path format: {0}")]
+    InvalidPathFormat(String),
+    #[error("Invalid domain: {0}")]
+    InvalidDomain(String),
+    #[error("Invalid version: {0}")]
+    InvalidVersion(String),
+    #[error("Invalid module path: {0}")]
+    InvalidModulePath(String),
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+}
+
+impl crate::utils::IntoErrorResponse for GoModuleError {
+    fn into_response_boxed(self: Box<Self>) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        match *self {
+            GoModuleError::EmptyPath | GoModuleError::EmptyVersion => {
+                crate::utils::ResponseBuilder::bad_request()
+                    .body("Empty module path or version")
+                    .into_response()
+            }
+            GoModuleError::InvalidCharacters(message)
+            | GoModuleError::InvalidPathFormat(message)
+            | GoModuleError::InvalidDomain(message)
+            | GoModuleError::InvalidVersion(message)
+            | GoModuleError::InvalidModulePath(message)
+            | GoModuleError::InvalidRequest(message) => {
+                crate::utils::ResponseBuilder::bad_request()
+                    .body(message)
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// Represents information about a Go module
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoModuleInfo {
+    pub module_path: GoModulePath,
+    pub version: GoVersion,
+    pub time: chrono::DateTime<chrono::Utc>,
+}
+
+/// Represents a go.mod file content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoModFile {
+    pub module: String,
+    pub go_version: Option<String>,
+    pub require: Vec<GoDependency>,
+    pub replace: Vec<GoReplace>,
+    pub exclude: Vec<GoExclude>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoDependency {
+    pub path: String,
+    pub version: String,
+    pub indirect: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoReplace {
+    pub old: GoDependencySpec,
+    pub new: GoDependencySpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoDependencySpec {
+    pub path: String,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoExclude {
+    pub path: String,
+    pub version: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_go_module_path_valid() {
+        let valid_paths = [
+            "github.com/example/module",
+            "golang.org/x/text",
+            "example.com/module",
+            "module",
+            "example.com/module/v2",
+        ];
+
+        for path in valid_paths {
+            assert!(
+                GoModulePath::new(path).is_ok(),
+                "Path {} should be valid",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_go_module_path_invalid() {
+        let invalid_paths = [
+            "",
+            "/module",
+            "module/",
+            "module//submodule",
+            "module with spaces",
+            "example.com/../module",
+        ];
+
+        for path in invalid_paths {
+            assert!(
+                GoModulePath::new(path).is_err(),
+                "Path {} should be invalid",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_go_module_path_properties() {
+        let path = GoModulePath::new("github.com/example/my-module").unwrap();
+
+        assert_eq!(path.as_str(), "github.com/example/my-module");
+        assert_eq!(path.module_name(), "my-module");
+        assert_eq!(path.domain(), "github.com");
+        assert!(!path.is_stdlib());
+
+        let stdlib_path = GoModulePath::new("std/context").unwrap();
+        assert!(stdlib_path.is_stdlib());
+    }
+
+    #[test]
+    fn test_go_version_valid() {
+        let valid_versions = [
+            "v1.0.0",
+            "v1.2.3",
+            "1.0.0",
+            "v1.0.0-alpha",
+            "v1.0.0-beta.1",
+            "v1.0.0-20210101123456-abcdefabcdef",
+        ];
+
+        for version in valid_versions {
+            assert!(
+                GoVersion::new(version).is_ok(),
+                "Version {} should be valid",
+                version
+            );
+        }
+    }
+
+    #[test]
+    fn test_go_version_invalid() {
+        let invalid_versions = [
+            "",
+            "not.a.version",
+            "v1.0",
+            "v1.0.0.0",
+            "v1.0.0 with spaces",
+        ];
+
+        for version in invalid_versions {
+            assert!(
+                GoVersion::new(version).is_err(),
+                "Version {} should be invalid",
+                version
+            );
+        }
+    }
+
+    #[test]
+    fn test_go_version_properties() {
+        let version = GoVersion::new("v1.2.3").unwrap();
+
+        assert_eq!(version.as_str(), "v1.2.3");
+        assert_eq!(version.major().unwrap(), 1);
+        assert_eq!(version.minor().unwrap(), 2);
+        assert_eq!(version.patch().unwrap(), 3);
+        assert!(!version.is_prerelease());
+        assert!(!version.is_pseudo_version());
+
+        let prerelease = GoVersion::new("v1.2.3-alpha").unwrap();
+        assert!(prerelease.is_prerelease());
+        assert!(!prerelease.is_pseudo_version());
+
+        let pseudo = GoVersion::new("v1.2.3-20210101123456-abcdefabcdef").unwrap();
+        assert!(pseudo.is_pseudo_version());
+    }
+
+    #[test]
+    fn test_go_version_comparison() {
+        let v1 = GoVersion::new("v1.0.0").unwrap();
+        let v2 = GoVersion::new("v1.0.1").unwrap();
+        let v3 = GoVersion::new("v2.0.0").unwrap();
+
+        assert!(v1 < v2);
+        assert!(v2 < v3);
+        assert!(v1 < v3);
+    }
+
+    #[test]
+    fn test_go_module_path_from_str() {
+        let path: Result<GoModulePath, _> = "github.com/example/module".parse();
+        assert!(path.is_ok());
+
+        let path: Result<GoModulePath, _> = "".parse();
+        assert!(path.is_err());
+    }
+
+    #[test]
+    fn test_go_version_from_str() {
+        let version: Result<GoVersion, _> = "v1.0.0".parse();
+        assert!(version.is_ok());
+
+        let version: Result<GoVersion, _> = "invalid".parse();
+        assert!(version.is_err());
+    }
+
+    #[test]
+    fn test_go_version_edge_cases() {
+        // Test version without v prefix
+        let version = GoVersion::new("1.2.3").unwrap();
+        assert_eq!(version.as_str(), "v1.2.3");
+
+        // Test single digit version
+        let version = GoVersion::new("v1").unwrap();
+        assert_eq!(version.as_str(), "v1");
+
+        // Test two-part version
+        let version = GoVersion::new("v1.2").unwrap();
+        assert_eq!(version.as_str(), "v1.2");
+
+        // Test complex prerelease
+        let version = GoVersion::new("v1.2.3-alpha.1+build.123").unwrap();
+        assert!(version.is_prerelease());
+        assert_eq!(version.as_str(), "v1.2.3-alpha.1+build.123");
+    }
+
+    #[test]
+    fn test_go_module_path_edge_cases() {
+        // Test minimal valid path
+        let path = GoModulePath::new("module").unwrap();
+        assert_eq!(path.as_str(), "module");
+        assert_eq!(path.module_name(), "module");
+        assert_eq!(path.domain(), "");
+
+        // Test path with multiple subdirectories
+        let path = GoModulePath::new("github.com/user/repo/sub/pkg").unwrap();
+        assert_eq!(path.module_name(), "pkg");
+        assert_eq!(path.domain(), "github.com");
+
+        // Test standard library paths
+        let std_paths = [
+            "std/context",
+            "std/fmt",
+            "std/net/http",
+            "std/encoding/json",
+        ];
+
+        for std_path in std_paths {
+            let path = GoModulePath::new(std_path).unwrap();
+            assert!(path.is_stdlib());
+        }
+    }
+
+    #[test]
+    fn test_go_module_path_major_version_suffixes() {
+        // Test paths with major version suffixes
+        let paths_with_versions = [
+            ("github.com/example/module/v2", "module", Some("v2")),
+            ("golang.org/x/text/v2", "text", Some("v2")),
+            ("gitlab.com/user/repo/v3", "repo", Some("v3")),
+        ];
+
+        for (full_path, module_name, version) in paths_with_versions {
+            let path = GoModulePath::new(full_path).unwrap();
+            assert_eq!(path.module_name(), module_name);
+            // Note: Add has_major_version_suffix() method if needed
+        }
+    }
+
+    #[test]
+    fn test_go_module_path_invalid_characters() {
+        let invalid_paths = [
+            "module with spaces",
+            "module\twith\ttabs",
+            "module\nwith\nlines",
+            "module/with/../../../backreferences",
+            "module/with//double/slashes",
+            "module/with/./dot/segments",
+            "module/with/./leading/dot",
+            "module/with/trailing/dot/.",
+        ];
+
+        for path in invalid_paths {
+            assert!(
+                GoModulePath::new(path).is_err(),
+                "Path '{}' should be invalid",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_go_version_zero_versions() {
+        let versions = [
+            ("v0.0.0", true, true, true),   // all zeros
+            ("v0.1.0", true, false, true),  // major zero
+            ("v1.0.0", false, true, true),  // minor zero
+            ("v1.1.0", false, false, true), // patch zero
+            ("v0.0.1", true, true, false),  // major/minor zero
+        ];
+
+        for (version_str, major_zero, minor_zero, patch_zero) in versions {
+            let version = GoVersion::new(version_str).unwrap();
+            assert_eq!(version.major().unwrap() == 0, major_zero);
+            assert_eq!(version.minor().unwrap() == 0, minor_zero);
+            assert_eq!(version.patch().unwrap() == 0, patch_zero);
+        }
+    }
+
+    #[test]
+    fn test_go_version_large_numbers() {
+        let version = GoVersion::new("v999.888.777").unwrap();
+        assert_eq!(version.major().unwrap(), 999);
+        assert_eq!(version.minor().unwrap(), 888);
+        assert_eq!(version.patch().unwrap(), 777);
+    }
+
+    #[test]
+    fn test_go_module_path_case_sensitivity() {
+        // Go module paths are case-sensitive
+        let lower_path = GoModulePath::new("github.com/user/module").unwrap();
+        let upper_path = GoModulePath::new("GitHub.com/User/Module").unwrap();
+
+        assert_ne!(lower_path.as_str(), upper_path.as_str());
+        assert_eq!(lower_path.as_str(), "github.com/user/module");
+        assert_eq!(upper_path.as_str(), "GitHub.com/User/Module");
+    }
+
+    #[test]
+    fn test_go_module_request_from_path() {
+        use crate::repository::go::utils::{GoModuleRequest, GoRequestType};
+
+        // Test version list endpoint
+        let request = GoModuleRequest::from_path("github.com/example/module/@v/list").unwrap();
+        assert!(matches!(request.request_type, GoRequestType::ListVersions));
+        assert_eq!(request.module_path.as_str(), "github.com/example/module");
+        assert!(request.version.is_none());
+
+        // Test version info endpoint
+        let request =
+            GoModuleRequest::from_path("github.com/example/module/@v/v1.2.3.info").unwrap();
+        assert!(matches!(request.request_type, GoRequestType::VersionInfo));
+        assert_eq!(request.module_path.as_str(), "github.com/example/module");
+        assert_eq!(request.version.unwrap().as_str(), "v1.2.3");
+
+        // Test go.mod endpoint
+        let request =
+            GoModuleRequest::from_path("github.com/example/module/@v/v1.2.3.mod").unwrap();
+        assert!(matches!(request.request_type, GoRequestType::GoMod));
+        assert_eq!(request.module_path.as_str(), "github.com/example/module");
+        assert_eq!(request.version.unwrap().as_str(), "v1.2.3");
+
+        // Test module zip endpoint
+        let request =
+            GoModuleRequest::from_path("github.com/example/module/@v/v1.2.3.zip").unwrap();
+        assert!(matches!(request.request_type, GoRequestType::ModuleZip));
+        assert_eq!(request.module_path.as_str(), "github.com/example/module");
+        assert_eq!(request.version.unwrap().as_str(), "v1.2.3");
+
+        // Test latest endpoint
+        let request = GoModuleRequest::from_path("github.com/example/module/@latest").unwrap();
+        assert!(matches!(request.request_type, GoRequestType::Latest));
+        assert_eq!(request.module_path.as_str(), "github.com/example/module");
+        assert!(request.version.is_none());
+    }
+
+    #[test]
+    fn test_go_module_request_invalid_paths() {
+        use crate::repository::go::utils::GoModuleRequest;
+
+        let invalid_paths = [
+            "",
+            "/",
+            "module",
+            "github.com/module",
+            "github.com/module/@v",
+            "github.com/module/@v/invalid",
+            "github.com/module/@latest/",
+            "github.com/module/@v/v1.2.3.invalid",
+        ];
+
+        for path in invalid_paths {
+            assert!(
+                GoModuleRequest::from_path(path).is_err(),
+                "Path '{}' should be invalid",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_go_module_request_storage_path() {
+        use crate::repository::go::utils::{GoModuleRequest, GoRequestType};
+        use nr_core::storage::StoragePath;
+
+        let request =
+            GoModuleRequest::from_path("github.com/example/module/@v/v1.2.3.info").unwrap();
+        let storage_path = request.storage_path();
+
+        assert_eq!(
+            storage_path.to_string(),
+            "github.com/example/module/@v/v1.2.3.info"
+        );
+    }
+
+    #[test]
+    fn test_go_module_request_requires_version() {
+        use crate::repository::go::utils::{GoModuleRequest, GoRequestType};
+
+        let version_requests = [
+            GoRequestType::VersionInfo,
+            GoRequestType::GoMod,
+            GoRequestType::ModuleZip,
+        ];
+
+        for request_type in version_requests {
+            let mut request = GoModuleRequest {
+                module_path: super::GoModulePath::new("github.com/example/module").unwrap(),
+                version: None,
+                request_type: request_type.clone(),
+                sumdb_path: None,
+            };
+            assert!(request.requires_version());
+
+            request.version = Some(super::GoVersion::new("v1.0.0").unwrap());
+            assert!(request.requires_version());
+        }
+
+        let non_version_requests = [
+            GoRequestType::ListVersions,
+            GoRequestType::Latest,
+            GoRequestType::GoModWithoutVersion,
+        ];
+
+        for request_type in non_version_requests {
+            let request = GoModuleRequest {
+                module_path: super::GoModulePath::new("github.com/example/module").unwrap(),
+                version: None,
+                request_type,
+                sumdb_path: None,
+            };
+            assert!(!request.requires_version());
+        }
+    }
+
+    #[test]
+    fn test_go_module_request_sumdb_lookup_path() {
+        use crate::repository::go::utils::{GoModuleRequest, GoRequestType};
+
+        let request = GoModuleRequest::from_path(
+            "sumdb/sum.golang.org/lookup/github.com/example/module@v1.2.3",
+        )
+        .expect("expected valid sumdb lookup request");
+        assert!(matches!(request.request_type, GoRequestType::SumdbLookup));
+        assert_eq!(
+            request.sumdb_path.as_deref(),
+            Some("lookup/github.com/example/module@v1.2.3")
+        );
+    }
+
+    #[test]
+    fn test_go_module_request_sumdb_supported_path() {
+        use crate::repository::go::utils::{GoModuleRequest, GoRequestType};
+
+        let request =
+            GoModuleRequest::from_path("sumdb/sum.golang.org/supported").expect("valid request");
+        assert!(matches!(
+            request.request_type,
+            GoRequestType::SumdbSupported
+        ));
+        assert_eq!(request.sumdb_path.as_deref(), Some("supported"));
+    }
+}

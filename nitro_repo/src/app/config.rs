@@ -11,7 +11,10 @@ pub use max_upload::*;
 pub use security::*;
 
 use super::{authentication::session::SessionManagerConfig, email::EmailSetting};
-use crate::{logging::config::{LoggingConfig, OtelConfig}, repository::StagingConfig};
+use crate::{
+    logging::config::{LoggingConfig, OtelConfig},
+    repository::StagingConfig,
+};
 pub const CONFIG_PREFIX: &str = "NITRO";
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

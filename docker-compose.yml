@@ -24,13 +24,11 @@ services:
         condition: service_healthy
     links:
       - postgres
-    ports:
-      - "6742:6742"
     command: ["start", "--config", "/data/nitro_repo.toml"]
     environment:
       RUST_LOG: info
     labels:
-      - "traefik.frontend.rule=Host:repo.sudoers.dev"
+      - "traefik.frontend.rule=Host:nitro.sudoers.dev"
       - "traefik.enable=true"
       - "traefik.port=6742"
     volumes:

@@ -15,7 +15,7 @@ use nr_storage::{Storage, StorageError, StorageFile, local::LocalStorage};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio_util::io::ReaderStream;
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use super::{
     DockerError, DockerHosted, RepoResponse, Repository, RepositoryHandlerError, RepositoryRequest,
@@ -993,10 +993,7 @@ async fn delete_manifest(
         Ok(result) => {
             info!(
                 "Successfully deleted Docker manifest: {}/{} (removed {} manifests, {} blobs)",
-                repository_name,
-                reference,
-                result.removed_manifests,
-                result.removed_blobs
+                repository_name, reference, result.removed_manifests, result.removed_blobs
             );
             Ok(custom_response(StatusCode::ACCEPTED, vec![], vec![]))
         }
@@ -1008,11 +1005,12 @@ async fn delete_manifest(
         Err(err) => {
             warn!(
                 "Failed to delete Docker manifest: {}/{} - {}",
-                repository_name,
-                reference,
-                err
+                repository_name, reference, err
             );
-            Err(DockerError::InvalidManifest(format!("Failed to delete manifest: {}", err)))
+            Err(DockerError::InvalidManifest(format!(
+                "Failed to delete manifest: {}",
+                err
+            )))
         }
     }
 }

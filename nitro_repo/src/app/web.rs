@@ -103,6 +103,11 @@ pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         .route("/", axum::routing::any(super::frontend::frontend_request))
         .nest("/api", api::api_routes())
         .nest("/badge", super::badge::badge_routes())
+        // Direct repository routes for patterns like /{storage}/{repository}/{*path}
+        .route(
+            "/{storage}/{repository}/{*path}",
+            axum::routing::any(crate::repository::handle_repo_request),
+        )
         .fallback(super::frontend::frontend_request)
         .with_state(site.clone());
 

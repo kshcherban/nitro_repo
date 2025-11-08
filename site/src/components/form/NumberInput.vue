@@ -19,6 +19,6 @@ const value = defineModel<number>({
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/variables.scss";
+@import "@/assets/styles/theme.scss";
 @import "@/assets/styles/form.scss";
 </style>

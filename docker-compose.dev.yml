@@ -3,6 +3,7 @@ services:
     volumes:
       - ./target/debug/nitro_repo:/app/nitro_repo:ro
     environment:
+      - RUST_LOG=debug
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=nitro-repo
       - NITRO_TRACING_ENABLED=true
@@ -13,8 +14,12 @@ services:
     image: jaegertracing/all-in-one:latest
     network_mode: "bridge"
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC receiver
-      - "4318:4318"    # OTLP HTTP receiver
+      - "127.0.0.1:16686:16686"  # Jaeger UI
+      - "127.0.0.1:4317:4317"    # OTLP gRPC receiver
+      - "127.0.0.1:4318:4318"    # OTLP HTTP receiver
+    labels:
+      - "traefik.frontend.rule=Host:jaeger.sudoers.dev"
+      - "traefik.enable=true"
+      - "traefik.port=16686"
     environment:
       - COLLECTOR_OTLP_ENABLED=true

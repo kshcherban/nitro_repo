@@ -216,8 +216,7 @@ pub fn init(log_config: LoggingConfig, otel_config: OtelConfig) -> anyhow::Resul
                 logger: LoggingStateItem::Logger(logging_provider),
             });
 
-            let otel_layer =
-                tracing_subscriber::Layer::with_filter(tracing_bridge, logging_levels);
+            let otel_layer = tracing_subscriber::Layer::with_filter(tracing_bridge, logging_levels);
 
             layers.push(otel_layer.boxed());
         }

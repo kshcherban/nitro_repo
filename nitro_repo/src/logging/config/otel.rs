@@ -92,10 +92,7 @@ impl OtelConfig {
             }
         }
 
-        OtelConfig {
-            endpoint,
-            ..self
-        }
+        OtelConfig { endpoint, ..self }
     }
 }
 impl AppLoggerType for OtelConfig {
@@ -197,7 +194,12 @@ mod tests {
         assert_eq!(config1.endpoint, "http://localhost:4317");
 
         // Set environment variable
-        unsafe { env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://custom-collector:9999") };
+        unsafe {
+            env::set_var(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "http://custom-collector:9999",
+            )
+        };
 
         let config2 = OtelConfig::default().apply_env_fallback();
         assert_eq!(config2.endpoint, "http://custom-collector:9999");
@@ -206,7 +208,8 @@ mod tests {
         let config3 = OtelConfig {
             endpoint: "http://explicit-config:8080".to_string(),
             ..Default::default()
-        }.apply_env_fallback();
+        }
+        .apply_env_fallback();
         assert_eq!(config3.endpoint, "http://explicit-config:8080");
 
         // Clean up

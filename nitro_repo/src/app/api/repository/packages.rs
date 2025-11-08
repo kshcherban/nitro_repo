@@ -72,7 +72,7 @@ pub struct PackageListResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageStrategy {
-    PackagesDirectory,
+    PackagesDirectory { base: Option<&'static str> },
     Maven,
     PythonHosted,
     Docker,
@@ -83,10 +83,22 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
         DynRepository::Maven(_) => PackageStrategy::Maven,
         DynRepository::Python(python_repo) => match python_repo {
             crate::repository::python::PythonRepository::Hosted(_) => PackageStrategy::PythonHosted,
-            _ => PackageStrategy::PackagesDirectory,
+            _ => PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
         },
         DynRepository::Docker(_) => PackageStrategy::Docker,
-        _ => PackageStrategy::PackagesDirectory,
+        DynRepository::Go(go_repo) => match go_repo {
+            crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
+            crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::PackagesDirectory {
+                base: Some("go-proxy-cache/"),
+            },
+        },
+        _ => PackageStrategy::PackagesDirectory {
+            base: Some("packages/"),
+        },
     }
 }
 
@@ -133,8 +145,8 @@ pub async fn list_cached_packages(
         return Ok(MissingPermission::ReadRepository(repository.id()).into_response());
     }
     match package_strategy(&repository) {
-        PackageStrategy::PackagesDirectory => {
-            list_directory_packages(repository, query.page, query.per_page, Some("packages/")).await
+        PackageStrategy::PackagesDirectory { base } => {
+            list_directory_packages(repository, query.page, query.per_page, base).await
         }
         PackageStrategy::Maven => {
             list_maven_packages(site, repository, query.page, query.per_page).await
@@ -160,7 +172,7 @@ async fn list_directory_packages(
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
     let mut package_dirs = gather_package_dirs(&storage, repository.id(), base).await?;
-    package_dirs.sort();
+    package_dirs.sort_by(|a, b| a.0.cmp(&b.0));
 
     let total_packages = package_dirs.len();
     if total_packages == 0 {
@@ -187,16 +199,25 @@ async fn list_directory_packages(
     }
     let end = min(start + per_page, total_packages);
     let mut items = Vec::new();
-    for package in &package_dirs[start..end] {
+    for (display_name, storage_relative) in &package_dirs[start..end] {
         let path = match base {
             Some(prefix) => {
-                if package.is_empty() {
-                    prefix.to_string()
-                } else {
-                    format!("{}{}/", prefix, package)
+                let mut combined = String::from(prefix);
+                if !storage_relative.is_empty() {
+                    combined.push_str(storage_relative);
+                    if !combined.ends_with('/') {
+                        combined.push('/');
+                    }
                 }
+                combined
             }
-            None => format!("{}/", package),
+            None => {
+                let mut path = storage_relative.clone();
+                if !path.is_empty() && !path.ends_with('/') {
+                    path.push('/');
+                }
+                path
+            }
         };
         let storage_path = nr_core::storage::StoragePath::from(path.clone());
         if let Some(StorageFile::Directory { files, .. }) =
@@ -214,7 +235,7 @@ async fn list_directory_packages(
                         format!("{}/{}", directory_prefix, meta.name())
                     };
                     items.push(PackageFileEntry {
-                        package: package.clone(),
+                        package: display_name.clone(),
                         name: meta.name().to_string(),
                         cache_path,
                         size: file_meta.file_size,
@@ -414,7 +435,13 @@ async fn list_docker_packages(
 
 fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
     match strategy {
-        PackageStrategy::PackagesDirectory => path.starts_with("packages/") && !path.contains(".."),
+        PackageStrategy::PackagesDirectory { base } => {
+            if let Some(prefix) = base {
+                path.starts_with(prefix) && is_valid_repository_path(path)
+            } else {
+                is_valid_repository_path(path)
+            }
+        }
         PackageStrategy::Maven | PackageStrategy::PythonHosted => is_valid_repository_path(path),
         PackageStrategy::Docker => is_valid_docker_manifest_path(path),
     }
@@ -763,7 +790,7 @@ async fn gather_package_dirs(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,
     base: Option<&str>,
-) -> Result<Vec<String>, nr_storage::StorageError> {
+) -> Result<Vec<(String, String)>, nr_storage::StorageError> {
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<(String, String)> = VecDeque::new();
@@ -810,8 +837,8 @@ async fn gather_package_dirs(
         }
 
         if has_files {
-            let package_name = if !relative.is_empty() {
-                relative.clone()
+            let storage_relative = if !relative.is_empty() {
+                relative.trim_matches('/').to_string()
             } else if let Some(prefix) = base {
                 path.trim_start_matches(prefix)
                     .trim_matches('/')
@@ -819,8 +846,21 @@ async fn gather_package_dirs(
             } else {
                 path.trim_matches('/').to_string()
             };
-            if !package_name.is_empty() {
-                packages.push(package_name);
+
+            if storage_relative.is_empty() {
+                continue;
+            }
+
+            let mut display_name = storage_relative.clone();
+            if let Some(prefix) = base {
+                if prefix == "go-proxy-cache/" {
+                    if let Some(stripped) = display_name.strip_suffix("/@v") {
+                        display_name = stripped.to_string();
+                    }
+                }
+            }
+            if !display_name.is_empty() {
+                packages.push((display_name, storage_relative));
             }
         }
     }
@@ -882,10 +922,13 @@ mod tests {
             .await?;
 
         let mut packages = gather_package_dirs(&storage, repository, Some("packages/")).await?;
-        packages.sort();
+        packages.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             packages,
-            vec!["@scope/pkg".to_string(), "example".to_string()]
+            vec![
+                ("@scope/pkg".to_string(), "@scope/pkg".to_string()),
+                ("example".to_string(), "example".to_string())
+            ]
         );
         Ok(())
     }
@@ -903,8 +946,41 @@ mod tests {
             .await?;
 
         let mut packages = gather_package_dirs(&storage, repository, None).await?;
-        packages.sort();
-        assert_eq!(packages, vec!["example_pkg/1.0.0".to_string()]);
+        packages.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            packages,
+            vec![(
+                "example_pkg/1.0.0".to_string(),
+                "example_pkg/1.0.0".to_string()
+            )]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gather_package_dirs_handles_go_proxy_layout() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository = Uuid::new_v4();
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"info-json"),
+                &nr_core::storage::StoragePath::from(
+                    "go-proxy-cache/github.com/example/module/@v/v1.0.0.info",
+                ),
+            )
+            .await?;
+
+        let mut packages =
+            gather_package_dirs(&storage, repository, Some("go-proxy-cache/")).await?;
+        packages.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            packages,
+            vec![(
+                "github.com/example/module".to_string(),
+                "github.com/example/module/@v".to_string()
+            )]
+        );
         Ok(())
     }
 
@@ -1095,19 +1171,27 @@ mod tests {
     fn validate_cache_path_rules() {
         assert!(is_valid_cache_path(
             "packages/example/pkg-1.0.whl",
-            PackageStrategy::PackagesDirectory,
+            PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
         ));
         assert!(!is_valid_cache_path(
             "/etc/passwd",
-            PackageStrategy::PackagesDirectory,
+            PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
         ));
         assert!(!is_valid_cache_path(
             "../packages/pkg.whl",
-            PackageStrategy::PackagesDirectory,
+            PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
         ));
         assert!(!is_valid_cache_path(
             "package.zip",
-            PackageStrategy::PackagesDirectory,
+            PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
         ));
     }
 
