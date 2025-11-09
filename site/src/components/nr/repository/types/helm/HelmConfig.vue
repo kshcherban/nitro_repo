@@ -47,11 +47,15 @@
       Hybrid mode exposes classic HTTP chart downloads and OCI registry endpoints simultaneously.
     </p>
 
-    <button
+    <div
       v-if="!isCreate"
-      class="nr-button nr-button--primary"
-      type="submit"
-    >Save</button>
+      class="helm-config__actions"
+    >
+      <button
+        class="nr-button nr-button--primary"
+        type="submit"
+      >Save</button>
+    </div>
   </form>
 </template>
 <script setup lang="ts">
@@ -143,6 +147,7 @@ async function save() {
   }
   try {
     await http.put(`/api/repository/${props.repository}/config/helm`, value.value);
+    await load();
   } catch (error) {
     console.error("Failed to save Helm config", error);
   }
@@ -175,5 +180,14 @@ onMounted(() => {
   margin: 0;
   font-size: 0.9rem;
   color: $text-50;
+}
+
+.helm-config__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.helm-config__actions .nr-button {
+  min-width: 8rem;
 }
 </style>

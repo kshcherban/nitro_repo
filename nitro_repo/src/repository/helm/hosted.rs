@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     future::Future,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -21,7 +24,7 @@ use nr_core::{
     },
     repository::{
         Visibility,
-        config::RepositoryConfigType,
+        config::{RepositoryConfigType, get_repository_config_or_default},
         project::{Author, ReleaseType, VersionData},
     },
     storage::StoragePath,
@@ -34,6 +37,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
+use tracing::instrument;
 
 use super::{
     HelmRepositoryError,
@@ -64,13 +68,77 @@ use nr_storage::StorageFile;
 use tokio::io::AsyncReadExt;
 
 #[derive(Debug)]
+struct HelmRuntimeState {
+    name: RwLock<String>,
+    visibility: RwLock<Visibility>,
+    active: AtomicBool,
+    repository: RwLock<DBRepository>,
+    config: RwLock<HelmRepositoryConfig>,
+    auth_config: RwLock<RepositoryAuthConfig>,
+}
+
+impl HelmRuntimeState {
+    fn new(
+        repository: DBRepository,
+        config: HelmRepositoryConfig,
+        auth_config: RepositoryAuthConfig,
+    ) -> Self {
+        let name = repository.name.to_string();
+        let visibility = repository.visibility;
+        let active = repository.active;
+        Self {
+            name: RwLock::new(name),
+            visibility: RwLock::new(visibility),
+            active: AtomicBool::new(active),
+            repository: RwLock::new(repository),
+            config: RwLock::new(config),
+            auth_config: RwLock::new(auth_config),
+        }
+    }
+
+    fn update(
+        &self,
+        repository: DBRepository,
+        config: HelmRepositoryConfig,
+        auth_config: RepositoryAuthConfig,
+    ) {
+        self.active.store(repository.active, Ordering::Relaxed);
+        *self.name.write() = repository.name.to_string();
+        *self.visibility.write() = repository.visibility;
+        *self.repository.write() = repository;
+        *self.config.write() = config;
+        *self.auth_config.write() = auth_config;
+    }
+
+    fn config(&self) -> HelmRepositoryConfig {
+        self.config.read().clone()
+    }
+
+    fn auth_config(&self) -> RepositoryAuthConfig {
+        self.auth_config.read().clone()
+    }
+
+    fn repository(&self) -> DBRepository {
+        self.repository.read().clone()
+    }
+
+    fn name(&self) -> String {
+        self.name.read().clone()
+    }
+
+    fn visibility(&self) -> Visibility {
+        *self.visibility.read()
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+}
+
+#[derive(Debug)]
 pub struct HelmRepositoryInner {
     pub id: Uuid,
-    pub name: String,
-    pub visibility: RwLock<Visibility>,
-    pub repository: DBRepository,
-    pub config: HelmRepositoryConfig,
-    pub auth_config: RepositoryAuthConfig,
+    state: HelmRuntimeState,
     pub storage: DynStorage,
     pub storage_name: String,
     pub site: NitroRepo,
@@ -282,14 +350,12 @@ impl HelmHosted {
         auth_config: RepositoryAuthConfig,
     ) -> Result<Self, RepositoryFactoryError> {
         let storage_name = storage.storage_config().storage_config.storage_name.clone();
+        let repository_id = repository.id;
+        let state = HelmRuntimeState::new(repository, config, auth_config);
 
         Ok(Self(Arc::new(HelmRepositoryInner {
-            id: repository.id,
-            name: repository.name.to_string(),
-            visibility: RwLock::new(repository.visibility),
-            repository,
-            config,
-            auth_config,
+            id: repository_id,
+            state,
             storage,
             storage_name,
             site,
@@ -301,8 +367,8 @@ impl HelmHosted {
         self.0.storage.clone()
     }
 
-    fn config(&self) -> &HelmRepositoryConfig {
-        &self.0.config
+    fn config(&self) -> HelmRepositoryConfig {
+        self.0.state.config()
     }
 
     fn index_cache_ttl(&self) -> Option<Duration> {
@@ -312,7 +378,7 @@ impl HelmHosted {
     }
 
     fn compute_repository_base(&self, request: &RepositoryRequest) -> String {
-        if let Some(url) = &self.config().public_base_url {
+        if let Some(url) = self.config().public_base_url {
             return url.trim_end_matches('/').to_string();
         }
 
@@ -416,10 +482,11 @@ impl HelmHosted {
 
     fn chart_validation_options(&self) -> ChartValidationOptions {
         let mut options = ChartValidationOptions::default();
-        if let Some(limit) = self.config().max_chart_size {
+        let config = self.config();
+        if let Some(limit) = config.max_chart_size {
             options.max_chart_size = limit;
         }
-        if let Some(limit) = self.config().max_file_count {
+        if let Some(limit) = config.max_file_count {
             options.max_file_count = limit;
         }
         options
@@ -617,8 +684,8 @@ impl HelmHosted {
         F: FnOnce(DockerHosted, RepositoryRequest) -> Fut,
         Fut: Future<Output = Result<RepoResponse, DockerError>> + Send,
     {
-        let docker_repo =
-            DockerHosted::load(self.0.repository.clone(), self.storage(), self.site()).await?;
+        let repository = self.0.state.repository();
+        let docker_repo = DockerHosted::load(repository, self.storage(), self.site()).await?;
         {
             let mut push_rules = docker_repo.push_rules.write();
             // Respect the Helm repository's overwrite configuration
@@ -633,12 +700,13 @@ impl HelmHosted {
         &self,
         auth: &RepositoryAuthentication,
     ) -> Result<bool, HelmRepositoryError> {
+        let auth_config = self.0.state.auth_config();
         let allowed = crate::repository::utils::can_read_repository_with_auth(
             auth,
             self.visibility(),
             self.id(),
             &self.site().database,
-            &self.0.auth_config,
+            &auth_config,
         )
         .await?;
         Ok(allowed)
@@ -1786,7 +1854,7 @@ impl Repository for HelmHosted {
     }
 
     fn name(&self) -> String {
-        self.0.name.clone()
+        self.0.state.name()
     }
 
     fn id(&self) -> Uuid {
@@ -1794,11 +1862,11 @@ impl Repository for HelmHosted {
     }
 
     fn visibility(&self) -> Visibility {
-        *self.0.visibility.read()
+        self.0.state.visibility()
     }
 
     fn is_active(&self) -> bool {
-        self.0.repository.active
+        self.0.state.is_active()
     }
 
     fn config_types(&self) -> Vec<&str> {
@@ -1899,6 +1967,49 @@ impl Repository for HelmHosted {
             .body("HEAD not supported for this resource")
             .into())
     }
+
+    #[instrument(skip(self), fields(repository_id = %self.id()))]
+    async fn reload(&self) -> Result<(), RepositoryFactoryError> {
+        let site = self.site();
+        let repository_id = self.id();
+        let database = site.as_ref();
+
+        match DBRepository::get_by_id(repository_id, database).await? {
+            Some(repository) => {
+                let config = get_repository_config_or_default::<
+                    HelmRepositoryConfigType,
+                    HelmRepositoryConfig,
+                >(repository_id, database)
+                .await?
+                .value
+                .0;
+                let auth_config = get_repository_config_or_default::<
+                    RepositoryAuthConfigType,
+                    RepositoryAuthConfig,
+                >(repository_id, database)
+                .await?
+                .value
+                .0;
+                self.0.state.update(repository, config, auth_config);
+                self.invalidate_index_cache();
+            }
+            None => {
+                tracing::warn!(
+                    %repository_id,
+                    "Reload requested for missing Helm repository; marking inactive"
+                );
+                let mut repository_snapshot = self.0.state.repository();
+                repository_snapshot.active = false;
+                let current_config = self.config();
+                let current_auth = self.0.state.auth_config();
+                self.0
+                    .state
+                    .update(repository_snapshot, current_config, current_auth);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1959,9 +2070,27 @@ fn update_provenance_extra(extra: &mut HelmChartVersionExtra, canonical_path: &S
 mod tests {
     use super::*;
     use crate::repository::helm::chart::{ChartApiVersion, ChartType, HelmChartMetadata};
-    use chrono::Utc;
+    use chrono::{Utc, FixedOffset, TimeZone};
     use semver::Version;
     use std::collections::BTreeMap;
+    use uuid::Uuid;
+    use nr_core::repository::RepositoryName;
+
+    fn sample_repository_record(active: bool, visibility: Visibility) -> DBRepository {
+        let offset = FixedOffset::east_opt(0).unwrap();
+        DBRepository {
+            id: Uuid::new_v4(),
+            storage_id: Uuid::new_v4(),
+            name: RepositoryName::new("helm-repo".into()).unwrap(),
+            repository_type: "helm".into(),
+            visibility,
+            active,
+            updated_at: offset.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            created_at: offset.with_ymd_and_hms(2023, 12, 31, 0, 0, 0).unwrap(),
+            storage_usage_bytes: None,
+            storage_usage_updated_at: None,
+        }
+    }
 
     fn sample_metadata() -> HelmChartMetadata {
         HelmChartMetadata {
@@ -2059,6 +2188,50 @@ mod tests {
         assert_eq!(
             extra.provenance_path.as_deref(),
             Some("charts/webapp/webapp-1.0.0.tgz.prov")
+        );
+    }
+
+    #[test]
+    fn runtime_state_update_refreshes_config_and_flags() {
+        let repository = sample_repository_record(true, Visibility::Private);
+        let mut new_repository = repository.clone();
+        new_repository.active = false;
+        new_repository.visibility = Visibility::Public;
+
+        let config = HelmRepositoryConfig {
+            overwrite: false,
+            index_cache_ttl: Some(42),
+            mode: HelmRepositoryMode::Hybrid,
+            public_base_url: None,
+            max_chart_size: Some(1_000),
+            max_file_count: Some(50),
+        };
+        let mut updated_config = config.clone();
+        updated_config.overwrite = true;
+        updated_config.index_cache_ttl = Some(99);
+
+        let auth = RepositoryAuthConfig { enabled: false };
+        let mut updated_auth = auth.clone();
+        updated_auth.enabled = true;
+
+        let state = HelmRuntimeState::new(repository, config, auth);
+        state.update(new_repository.clone(), updated_config.clone(), updated_auth.clone());
+
+        assert_eq!(state.is_active(), new_repository.active, "active flag should refresh");
+        assert_eq!(state.visibility(), new_repository.visibility, "visibility should refresh");
+        assert!(
+            state.config().overwrite,
+            "expected overwrite flag to update from runtime refresh"
+        );
+        assert_eq!(
+            state.config().index_cache_ttl,
+            updated_config.index_cache_ttl,
+            "expected cache ttl to update"
+        );
+        assert_eq!(
+            state.auth_config().enabled,
+            updated_auth.enabled,
+            "expected auth config to refresh"
         );
     }
 }

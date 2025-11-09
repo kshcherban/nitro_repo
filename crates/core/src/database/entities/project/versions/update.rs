@@ -61,25 +61,58 @@ pub struct UpdateProjectVersion {
 impl UpdateProjectVersion {
     pub async fn update(&self, version_id: Uuid, database: &PgPool) -> DBResult<()> {
         let mut update = UpdateQueryBuilder::new(DBProjectVersion::table_name());
-        update
-            .set(DBProjectVersionColumn::Id, version_id)
-            .set(DBProjectVersionColumn::UpdatedAt, SqlFunctionBuilder::now());
-
-        if let Some(release_type) = &self.release_type {
-            update.set(DBProjectVersionColumn::ReleaseType, release_type);
-        }
-        if let Some(extra) = &self.extra {
-            update.set(DBProjectVersionColumn::Extra, Json(extra));
-        }
-        if let Some(version_page) = &self.version_page {
-            update.set(DBProjectVersionColumn::VersionPage, version_page.value());
-        }
-        if let Some(publisher) = &self.publisher {
-            update.set(DBProjectVersionColumn::Publisher, *publisher);
-        }
-
+        self.apply_update_fields(version_id, &mut update);
         update.query().execute(database).await?;
 
         Ok(())
+    }
+
+    fn apply_update_fields<'args>(
+        &self,
+        version_id: Uuid,
+        update: &mut UpdateQueryBuilder<'args>,
+    ) {
+        let release_type = self.release_type.clone();
+        let extra = self.extra.clone();
+        let version_page = self.version_page.clone();
+        let publisher = self.publisher;
+
+        update
+            .filter(DBProjectVersionColumn::Id.equals(version_id.value()))
+            .set(DBProjectVersionColumn::UpdatedAt, SqlFunctionBuilder::now());
+
+        if let Some(release_type) = release_type {
+            update.set(DBProjectVersionColumn::ReleaseType, release_type);
+        }
+        if let Some(extra) = extra {
+            update.set(DBProjectVersionColumn::Extra, Json(extra));
+        }
+        if let Some(version_page) = version_page {
+            update.set(DBProjectVersionColumn::VersionPage, version_page.value());
+        }
+        if let Some(publisher) = publisher {
+            update.set(DBProjectVersionColumn::Publisher, publisher);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn update_query_should_filter_by_version_id() {
+        let mut builder = UpdateQueryBuilder::new(DBProjectVersion::table_name());
+        let mut update = UpdateProjectVersion::default();
+        update.extra = Some(VersionData::default());
+        let version_id = Uuid::new_v4();
+        update.apply_update_fields(version_id, &mut builder);
+
+        let sql = builder.format_sql_query().to_string();
+        assert!(
+            sql.contains("WHERE project_versions.id = $1"),
+            "expected filter on version id, got {sql}"
+        );
     }
 }
