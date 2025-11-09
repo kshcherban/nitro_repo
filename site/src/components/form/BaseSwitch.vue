@@ -23,6 +23,15 @@ const emit = defineEmits<{
   (e: "setTrue"): void;
   (e: "setFalse"): void;
 }>();
+
+// Update innerValue when the parent model changes
+watch(value, (newValue) => {
+  if (newValue !== undefined) {
+    innerValue.value = newValue;
+  }
+});
+
+// Update parent model when innerValue changes
 watch(innerValue, (newValue) => {
   value.value = newValue;
   emit("change", newValue);
