@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tokio::io::AsyncReadExt;
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -29,10 +29,13 @@ use crate::{
             metadata::collect_manifest_entries,
             types::{Manifest as DockerManifest, MediaType},
         },
+        helm::hosted::HelmHosted,
+        helm::{DeletePackageEntry, HelmChartVersionExtra, HelmRepository, HelmRepositoryError},
         utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
 };
+use nr_core::repository::project::VersionData;
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
 
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
@@ -76,6 +79,7 @@ enum PackageStrategy {
     Maven,
     PythonHosted,
     Docker,
+    Helm,
 }
 
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
@@ -87,9 +91,7 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
                 base: Some("packages/"),
             },
         },
-        DynRepository::Helm(_) => PackageStrategy::PackagesDirectory {
-            base: Some("charts/"),
-        },
+        DynRepository::Helm(_) => PackageStrategy::Helm,
         DynRepository::Docker(_) => PackageStrategy::Docker,
         DynRepository::Go(go_repo) => match go_repo {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::PackagesDirectory {
@@ -159,6 +161,9 @@ pub async fn list_cached_packages(
         }
         PackageStrategy::Docker => {
             list_docker_packages(repository, query.page, query.per_page).await
+        }
+        PackageStrategy::Helm => {
+            list_helm_packages(site, repository, query.page, query.per_page).await
         }
     }
 }
@@ -253,6 +258,110 @@ async fn list_directory_packages(
         page: current_page,
         per_page,
         total_packages,
+        items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
+async fn list_helm_packages(
+    site: NitroRepo,
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let offset = ((current_page - 1) * per_page) as i64;
+
+    let total_versions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        "#,
+    )
+    .bind(repository.id())
+    .fetch_one(&site.database)
+    .await?;
+
+    if total_versions == 0 {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    if offset >= total_versions {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions as usize,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            p.name AS chart_name,
+            pv.version,
+            pv.path,
+            pv.extra,
+            pv.updated_at
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        ORDER BY p.name ASC, pv.version ASC
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(repository.id())
+    .bind(per_page as i64)
+    .bind(offset)
+    .fetch_all(&site.database)
+    .await?;
+
+    let mut items = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let chart_name: String = row.try_get("chart_name")?;
+        let version: String = row.try_get("version")?;
+        let path: String = row.try_get("path")?;
+        let version_data: sqlx::types::Json<VersionData> = row.try_get("extra")?;
+        let updated_at: DateTime<FixedOffset> = row.try_get("updated_at")?;
+
+        let Some(extra_value) = version_data.0.extra else {
+            debug!(
+                chart = %chart_name,
+                version = %version,
+                "Skipping Helm version without extra metadata"
+            );
+            continue;
+        };
+        let chart_extra: HelmChartVersionExtra = serde_json::from_value(extra_value)?;
+        let cache_path = if chart_extra.canonical_path.is_empty() {
+            path.clone()
+        } else {
+            chart_extra.canonical_path.clone()
+        };
+        items.push(PackageFileEntry {
+            package: chart_name,
+            name: version,
+            cache_path,
+            size: chart_extra.size_bytes,
+            modified: updated_at,
+        });
+    }
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions as usize,
         items,
     };
     Ok(ResponseBuilder::ok().json(&response))
@@ -447,6 +556,12 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
         }
         PackageStrategy::Maven | PackageStrategy::PythonHosted => is_valid_repository_path(path),
         PackageStrategy::Docker => is_valid_docker_manifest_path(path),
+        PackageStrategy::Helm => {
+            if !(path.starts_with("charts/") || path.starts_with("v2/")) {
+                return false;
+            }
+            is_valid_repository_path(path)
+        }
     }
 }
 
@@ -523,6 +638,42 @@ pub async fn delete_docker_package(
     }
 
     Ok(total)
+}
+
+async fn delete_helm_package(
+    site: &NitroRepo,
+    hosted: &HelmHosted,
+    cache_path: &str,
+) -> Result<bool, HelmRepositoryError> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            p.name AS chart_name,
+            pv.version
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1 AND LOWER(pv.path) = LOWER($2)
+        "#,
+    )
+    .bind(hosted.id())
+    .bind(cache_path)
+    .fetch_optional(&site.database)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(false);
+    };
+
+    let chart_name: String = row.try_get("chart_name")?;
+    let version: String = row.try_get("version")?;
+    let entry = DeletePackageEntry {
+        name: chart_name,
+        version,
+    };
+    let removed = hosted
+        .delete_chart_versions(std::slice::from_ref(&entry))
+        .await?;
+    Ok(removed > 0)
 }
 
 fn split_manifest_cache_path(path: &str) -> Option<(String, String)> {
@@ -731,6 +882,14 @@ pub async fn delete_cached_packages(
     }
 
     let strategy = package_strategy(&repository);
+    let helm_repository = if let PackageStrategy::Helm = strategy {
+        match repository.clone() {
+            DynRepository::Helm(HelmRepository::Hosted(hosted)) => Some(hosted),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let storage = repository.get_storage();
     let mut deleted = 0usize;
     let mut missing = Vec::new();
@@ -739,6 +898,25 @@ pub async fn delete_cached_packages(
     for path in request.paths.iter() {
         if !is_valid_cache_path(path, strategy) {
             rejected.push(path.clone());
+            continue;
+        }
+        if let PackageStrategy::Helm = strategy {
+            if let Some(hosted) = helm_repository.as_ref() {
+                match delete_helm_package(&site, hosted, path).await {
+                    Ok(true) => deleted += 1,
+                    Ok(false) => missing.push(path.clone()),
+                    Err(err) => {
+                        warn!(?err, path, "Failed to delete Helm chart package");
+                        missing.push(path.clone());
+                    }
+                }
+            } else {
+                warn!(
+                    path,
+                    "Helm repository missing hosted instance during deletion"
+                );
+                missing.push(path.clone());
+            }
             continue;
         }
         if let PackageStrategy::Docker = strategy {

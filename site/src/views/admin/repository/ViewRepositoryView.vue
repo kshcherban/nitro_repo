@@ -59,8 +59,11 @@ const configDescriptions = ref<Map<string, ConfigDescription>>(new Map());
 const configTypes = ref<string[]>([]);
 const repositoryKind = ref<string | null>(null);
 const showPackagesTab = computed(() => {
-  const type = repository.value?.repository_type;
-  return type === "python" || type === "npm" || type === "maven" || type === "docker" || type === "go";
+  const type = repository.value?.repository_type?.toLowerCase();
+  if (!type) {
+    return false;
+  }
+  return ["python", "npm", "maven", "docker", "go", "helm"].includes(type);
 });
 function getConfigTitleOrFallback(config: string) {
   return configDescriptions.value.get(config)?.name || config;
@@ -124,8 +127,17 @@ async function loadRepositoryKind() {
   const configKey = type.toLowerCase();
   try {
     const response = await http.get(`/api/repository/${repositoryId}/config/${configKey}`);
-    if (response?.data?.type) {
-      repositoryKind.value = String(response.data.type);
+    const data = response?.data;
+    if (configKey === "helm") {
+      const mode =
+          typeof data?.mode === "string"
+            ? data.mode.toLowerCase()
+            : null;
+      repositoryKind.value = mode;
+      return;
+    }
+    if (data?.type) {
+      repositoryKind.value = String(data.type);
     } else {
       repositoryKind.value = null;
     }

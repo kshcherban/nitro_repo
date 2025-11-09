@@ -1,8 +1,14 @@
 <template>
   <div
     v-if="user"
-    class="tabs">
-    <div class="tabs-header">
+    class="admin-user-page">
+    <FloatingErrorBanner
+      :visible="errorBanner.visible"
+      :title="errorBanner.title"
+      :message="errorBanner.message"
+      @close="resetError" />
+    <div class="tabs">
+      <div class="tabs-header">
       <div
         class="tab"
         :data-active="currentTab === 'main'"
@@ -27,13 +33,13 @@
         @click="currentTab = 'repository-permissions'">
         Repository Permissions
       </div>
-    </div>
-    <div class="tabs-content">
-      <div
-        class="tab-content"
-        :data-active="currentTab === 'main'">
-        <div id="userMain">
-          <div class="userStatus">
+      </div>
+      <div class="tabs-content">
+        <div
+          class="tab-content"
+          :data-active="currentTab === 'main'">
+          <div id="userMain">
+            <div class="userStatus">
             <span
               class="statusBadge"
               :data-active="user.active">
@@ -94,42 +100,42 @@
               :value="new Date(user.created_at).toLocaleString()" />
           </div>
         </div>
-      </div>
-      <div
-        class="tab-content"
-        :data-active="currentTab === 'password'">
-        <form
-          id="setPassword"
-          @submit.prevent="changePassword">
-          <input
+        </div>
+        <div
+          class="tab-content"
+          :data-active="currentTab === 'password'">
+          <form
+            id="setPassword"
+            @submit.prevent="changePassword">
+            <input
             type="hidden"
             name="email"
             autocomplete="email"
             :value="user.email" />
-          <input
+            <input
             type="hidden"
             name="username"
             autocomplete="username"
             :value="user.username" />
-          <NewPasswordInput
+            <NewPasswordInput
             id="password"
-            v-if="passwordRules"
             v-model="newPassword"
             :passwordRules="passwordRules">
             Password</NewPasswordInput
           >
-          <SubmitButton>Save</SubmitButton>
-        </form>
-      </div>
-      <div
-        class="tab-content"
-        :data-active="currentTab === 'user-permissions'">
-        <UserPermissions :user="user" />
-      </div>
-      <div
-        class="tab-content"
-        :data-active="currentTab === 'repository-permissions'">
-        <RepositoryPermissions :user="user" />
+            <SubmitButton :disabled="!newPassword">Save</SubmitButton>
+          </form>
+        </div>
+        <div
+          class="tab-content"
+          :data-active="currentTab === 'user-permissions'">
+          <UserPermissions :user="user" />
+        </div>
+        <div
+          class="tab-content"
+          :data-active="currentTab === 'repository-permissions'">
+          <RepositoryPermissions :user="user" />
+        </div>
       </div>
     </div>
   </div>
@@ -143,6 +149,7 @@ import TextInput from "@/components/form/text/TextInput.vue";
 import { siteStore } from "@/stores/site";
 import { sessionStore } from "@/stores/session";
 import type { UserResponseType } from "@/types/base";
+import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
 import { computed, ref, type PropType, watch } from "vue";
 import UserPermissions from "./UserPermissions.vue";
 import RepositoryPermissions from "./RepositoryPermissions.vue";
@@ -150,6 +157,7 @@ import http from "@/http";
 import { notify } from "@kyvg/vue3-notification";
 import ValidatableTextBox from "@/components/form/text/ValidatableTextBox.vue";
 import { EMAIL_VALIDATIONS, USERNAME_VALIDATIONS } from "@/components/form/text/validations";
+import { isAxiosError } from "axios";
 const props = defineProps({
   user: {
     type: Object as PropType<UserResponseType>,
@@ -166,13 +174,34 @@ const changeUser = ref({
   email: "",
   username: "",
 });
-const newPassword = ref("");
+const newPassword = ref<string | undefined>(undefined);
 
-const passwordRules = siteStore().siteInfo?.password_rules;
+const site = siteStore();
+if (!site.siteInfo) {
+  site.getInfo();
+}
+const passwordRules = computed(() => site.getPasswordRulesOrDefault());
 const session = sessionStore();
 const isCurrentUser = computed(() => session.user?.id === props.user.id);
 const statusUpdating = ref(false);
 const deletingUser = ref(false);
+const errorBanner = ref({
+  visible: false,
+  title: "",
+  message: "",
+});
+
+const resetError = () => {
+  errorBanner.value.visible = false;
+  errorBanner.value.title = "";
+  errorBanner.value.message = "";
+};
+
+const showError = (title: string, message: string) => {
+  errorBanner.value.visible = true;
+  errorBanner.value.title = title;
+  errorBanner.value.message = message;
+};
 
 watch(
   () => props.user,
@@ -185,14 +214,26 @@ watch(
       email: newUser.email,
       username: newUser.username,
     };
+    resetError();
   },
   { immediate: true },
 );
+
+watch(newPassword, () => {
+  if (errorBanner.value.visible) {
+    resetError();
+  }
+});
+
 async function changePassword() {
   console.log("Changing Password");
 
   if (!newPassword.value) {
-    console.log("Password is required");
+    notify({
+      type: "error",
+      title: "Password required",
+      text: "Enter and confirm a password before saving.",
+    });
     return;
   }
 
@@ -206,13 +247,19 @@ async function changePassword() {
       notify({
         type: "success",
         title: "Password Changed",
-        text: "Password has been changed",
-      });
-      newPassword.value = "";
-      console.log("Password Changed");
-    })
+      text: "Password has been changed",
+    });
+    newPassword.value = undefined;
+    console.log("Password Changed");
+  })
     .catch((error) => {
-      console.error(error);
+      const resolved = resolveUserOperationError(
+        error,
+        "Unable to change password",
+        "Review the password requirements and try again.",
+      );
+      console.error(resolved.debugMessage);
+      showError(resolved.title, resolved.message);
     });
 }
 
@@ -232,12 +279,17 @@ async function setActive(active: boolean) {
     emit("refresh");
   } catch (error: any) {
     console.error(error);
-    const message = error?.response?.data ?? "Failed to update user status.";
+    const resolved = resolveUserOperationError(
+      error,
+      "Unable to update status",
+      "Failed to update user status.",
+    );
     notify({
       type: "error",
-      title: "Unable to update status",
-      text: message,
+      title: resolved.title,
+      text: resolved.message,
     });
+    showError(resolved.title, resolved.message);
   } finally {
     statusUpdating.value = false;
   }
@@ -264,20 +316,80 @@ async function deleteUser() {
     emit("deleted");
   } catch (error: any) {
     console.error(error);
-    const message = error?.response?.data ?? "Failed to delete user.";
+    const resolved = resolveUserOperationError(
+      error,
+      "Unable to delete user",
+      "Failed to delete user.",
+    );
     notify({
       type: "error",
-      title: "Unable to delete user",
-      text: message,
+      title: resolved.title,
+      text: resolved.message,
     });
+    showError(resolved.title, resolved.message);
   } finally {
     deletingUser.value = false;
   }
+}
+
+function resolveUserOperationError(
+  error: unknown,
+  fallbackTitle: string,
+  fallbackMessage: string,
+): { title: string; message: string; debugMessage: string } {
+  const fallback = {
+    title: fallbackTitle,
+    message: fallbackMessage,
+    debugMessage: typeof error === "string" ? error : JSON.stringify(error),
+  };
+
+  if (isAxiosError(error)) {
+    const status = error.response?.status;
+    const data = error.response?.data;
+    const payloadMessage =
+      (typeof data === "string" && data.trim().length > 0 && data.trim()) ||
+      (typeof data === "object" &&
+        data !== null &&
+        "message" in data &&
+        typeof (data as { message?: unknown }).message === "string" &&
+        (data as { message: string }).message.trim().length > 0
+        ? (data as { message: string }).message.trim()
+        : undefined);
+
+    if (payloadMessage) {
+      return {
+        title: fallback.title,
+        message: payloadMessage,
+        debugMessage: JSON.stringify(error.toJSON?.() ?? error),
+      };
+    }
+
+    return {
+      title: fallback.title,
+      message: `Request failed${status ? ` with status ${status}` : ""}.`,
+      debugMessage: JSON.stringify(error.toJSON?.() ?? error),
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      title: fallback.title,
+      message: error.message,
+      debugMessage: error.stack ?? error.message,
+    };
+  }
+
+  return fallback;
 }
 </script>
 
 <style scoped lang="scss">
 @import "@/assets/styles/theme";
+.admin-user-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
 .tabs {
   display: flex;
   flex-direction: column;

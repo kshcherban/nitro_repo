@@ -12,8 +12,8 @@ use nr_core::{
     user::permissions::RepositoryActions,
 };
 use serde::{
-    Deserialize, Serialize,
-    de::{Deserializer, Error as DeError, SeqAccess, Visitor},
+    Serialize,
+    de::{Deserializer, IgnoredAny, MapAccess, Visitor},
 };
 use tracing::{debug, error, instrument, warn};
 use uuid::Uuid;
@@ -26,14 +26,69 @@ use crate::{
 
 const DEFAULT_TOKEN_LIFETIME: i64 = 15 * 60;
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Default)]
 pub struct DockerTokenQuery {
     pub service: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_scopes")]
     pub scope: Vec<String>,
     pub account: Option<String>,
     pub client_id: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for DockerTokenQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct QueryVisitor;
+
+        impl<'de> Visitor<'de> for QueryVisitor {
+            type Value = DockerTokenQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("Docker token query parameters")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut service: Option<String> = None;
+                let mut scope: Vec<String> = Vec::new();
+                let mut account: Option<String> = None;
+                let mut client_id: Option<String> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "service" => {
+                            service = Some(map.next_value()?);
+                        }
+                        "scope" => {
+                            let value: String = map.next_value()?;
+                            scope.extend(split_scope_values(&value));
+                        }
+                        "account" => {
+                            account = Some(map.next_value()?);
+                        }
+                        "client_id" => {
+                            client_id = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _ = map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                Ok(DockerTokenQuery {
+                    service,
+                    scope,
+                    account,
+                    client_id,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(QueryVisitor)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -45,69 +100,6 @@ pub struct DockerTokenResponse {
     pub issued_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-}
-
-fn deserialize_scopes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct ScopeVisitor;
-
-    impl<'de> Visitor<'de> for ScopeVisitor {
-        type Value = Vec<String>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a Docker scope value as a string or list of strings")
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: DeError,
-        {
-            Ok(Vec::new())
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: DeError,
-        {
-            Ok(Vec::new())
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            let mut scopes = Vec::new();
-            while let Some(value) = seq.next_element::<String>()? {
-                scopes.extend(split_scope_values(&value));
-            }
-            Ok(scopes)
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: DeError,
-        {
-            Ok(split_scope_values(value))
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: DeError,
-        {
-            Ok(split_scope_values(&value))
-        }
-
-        fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
-        where
-            D2: Deserializer<'de>,
-        {
-            deserializer.deserialize_any(ScopeVisitor)
-        }
-    }
-
-    deserializer.deserialize_option(ScopeVisitor)
 }
 
 fn split_scope_values(value: &str) -> Vec<String> {
@@ -259,12 +251,13 @@ pub async fn handle_docker_token(
 
         let repository_id = match repository {
             DynRepository::Docker(ref repo) => repo.id(),
+            DynRepository::Helm(ref repo) => repo.id(),
             other => {
                 warn!(
                     repository_type = other.get_type(),
                     storage = scope.storage,
                     repository = scope.repository,
-                    "Scope requested repository that is not Docker"
+                    "Scope requested repository that does not support OCI flows"
                 );
                 return Err(DockerTokenError::InvalidScope(scope.raw.clone()));
             }
@@ -339,9 +332,12 @@ pub async fn handle_docker_token(
 }
 
 fn parse_scopes(scopes: &[String]) -> Result<Vec<ParsedScope>, DockerTokenError> {
-    let mut parsed = Vec::with_capacity(scopes.len());
+    let mut parsed = Vec::new();
 
-    for scope in scopes {
+    for scope in scopes
+        .iter()
+        .flat_map(|value| split_scope_values(value).into_iter())
+    {
         if scope.is_empty() {
             continue;
         }
@@ -356,13 +352,15 @@ fn parse_scopes(scopes: &[String]) -> Result<Vec<ParsedScope>, DockerTokenError>
         let name = parts[1];
         let actions_part = parts[2];
 
-        let mut segments = name.split('/');
-        let Some(storage) = segments.next() else {
+        let mut segments: Vec<&str> = name.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.first().copied() == Some("repositories") {
+            segments.remove(0);
+        }
+        if segments.len() < 2 {
             return Err(DockerTokenError::InvalidScope(scope.clone()));
-        };
-        let Some(repository) = segments.next() else {
-            return Err(DockerTokenError::InvalidScope(scope.clone()));
-        };
+        }
+        let storage = segments[0];
+        let repository = segments[1];
 
         let mut actions: Vec<RepositoryActions> = Vec::new();
         for action in actions_part.split(',') {
@@ -401,6 +399,45 @@ fn parse_scopes(scopes: &[String]) -> Result<Vec<ParsedScope>, DockerTokenError>
     }
 
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiple_scope_query_parameters_are_collected() {
+        let query: DockerTokenQuery = serde_urlencoded::from_str(
+            "service=nitro&scope=repository%3Arepositories/test/helm/nitro-repo%3Apull%2Cpush\
+            &scope=repository%3Atest/helm/nitro-repo%3Apull",
+        )
+        .expect("query should deserialize");
+
+        assert_eq!(query.scope.len(), 2);
+        assert!(
+            query
+                .scope
+                .iter()
+                .any(|value| value.contains("repositories/test/helm/nitro-repo"))
+        );
+        assert!(
+            query
+                .scope
+                .iter()
+                .any(|value| value.contains("test/helm/nitro-repo"))
+        );
+    }
+
+    #[test]
+    fn parse_scopes_handles_repositories_prefix() {
+        let scopes = vec!["repository:repositories/test/helm/chart:pull,push".to_string()];
+        let parsed = parse_scopes(&scopes).expect("scopes should parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].storage, "test");
+        assert_eq!(parsed[0].repository, "helm");
+        assert!(parsed[0].actions.contains(&RepositoryActions::Read));
+        assert!(parsed[0].actions.contains(&RepositoryActions::Write));
+    }
 }
 
 pub fn build_docker_bearer_challenge(

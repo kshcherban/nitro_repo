@@ -1,0 +1,30 @@
+apiVersion: v2
+appVersion: 3.0.0-BETA
+dependencies:
+- condition: postgresql.enabled
+  name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 18.1.8
+- condition: jaeger.enabled
+  name: jaeger
+  repository: https://jaegertracing.github.io/helm-charts
+  version: 3.4.1
+description: Nitro Repo - Universal artifact repository supporting various packages
+home: https://github.com/kshcherban/nitro_repo
+keywords:
+- artifact-repository
+- package-management
+- docker-registry
+- go-proxy
+- maven-repository
+- npm-registry
+- helm-chart-repo
+- oci-registry
+maintainers:
+- email: insider@sudoers.dev
+  name: Konstantin Shcherban
+name: nitro-repo
+sources:
+- https://github.com/kshcherban/nitro_repo
+type: application
+version: 0.3.3

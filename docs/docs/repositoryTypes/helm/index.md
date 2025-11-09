@@ -27,14 +27,30 @@ curl -u token:secret \
   https://nitro.example.com/repositories/default/helm/webapp-1.0.0.tgz
 ```
 
-### OCI
+### OCI (Helm v3)
 
 ```bash
 helm registry login nitro.example.com --username token --password secret
-helm push webapp-1.0.0.tgz oci://nitro.example.com/repositories/default/helm/webapp
+
+# URL form with explicit storage/repo prefix
+helm push webapp-1.0.0.tgz oci://nitro.example.com/repositories/default/helm
+
+# Short form also supported; Nitro infers storage/repo
+helm push webapp-1.0.0.tgz oci://nitro.example.com/default/helm
 ```
 
 Hybrid repositories automatically mirror uploads between the HTTP and OCI layouts, keeping package metadata and the rendered index synchronized.
+
+> **Tip:** The OCI URL path is translated by Nitro so either `oci://nitro/repositories/<storage>/<repo>` or `oci://nitro/<storage>/<repo>` resolves to the same repository.
+
+## Admin UI & Package Management
+
+The Admin view for a Helm repository now includes a **Packages** tab that lists every uploaded chart version, no matter whether it arrived through HTTP or the OCI registry. The table supports filtering, paging, and bulk deletion:
+
+- Deleting a chart version from the UI removes the HTTP artifact (when present), the OCI manifest, and any associated blobs/config layers.
+- Metadata originates from the chart archive itself, so entries uploaded via `helm push` appear in the list immediately.
+
+You can invoke the same behaviour through the REST API at `/api/repository/<id>/packages`; see the [route reference](./routes.md#admin-api--packages) for sample requests.
 
 ## Further Reading
 

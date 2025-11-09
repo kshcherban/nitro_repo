@@ -3,6 +3,7 @@ import SwitchInput from "@/components/form/SwitchInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 import SpinnerElement from "@/components/spinner/SpinnerElement.vue";
+import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
 import http from "@/http";
 import { siteStore } from "@/stores/site";
 import type {
@@ -13,7 +14,8 @@ import type {
   SsoConfiguration,
 } from "@/types/base";
 import { notify } from "@kyvg/vue3-notification";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { isAxiosError } from "axios";
 
 interface EditableSsoConfiguration {
   enabled: boolean;
@@ -99,9 +101,47 @@ const hasOAuthChanges = computed(
   () => oauthInitialSignature.value !== JSON.stringify(oauthForm.value),
 );
 
+const errorBanner = ref({
+  visible: false,
+  title: "",
+  message: "",
+});
+
+const showError = (title: string, message: string) => {
+  errorBanner.value.visible = true;
+  errorBanner.value.title = title;
+  errorBanner.value.message = message;
+};
+
+const resetError = () => {
+  errorBanner.value.visible = false;
+  errorBanner.value.title = "";
+  errorBanner.value.message = "";
+};
+
 onMounted(async () => {
   await Promise.all([fetchSsoSettings(), fetchOAuthSettings()]);
 });
+
+watch(
+  ssoForm,
+  () => {
+    if (errorBanner.value.visible) {
+      resetError();
+    }
+  },
+  { deep: true },
+);
+
+watch(
+  oauthForm,
+  () => {
+    if (errorBanner.value.visible) {
+      resetError();
+    }
+  },
+  { deep: true },
+);
 
 function generateId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -112,17 +152,19 @@ function generateId(): string {
 
 async function fetchSsoSettings() {
   ssoLoading.value = true;
+  resetError();
   try {
     const response = await http.get<SsoConfiguration>("/api/security/sso");
     ssoForm.value = toSsoEditable(response.data);
     ssoInitialSignature.value = JSON.stringify(toSsoPayload(ssoForm.value));
   } catch (error) {
-    console.error("Failed to load SSO configuration", error);
-    notify({
-      type: "error",
-      title: "Unable to load SSO settings",
-      text: "Check the server logs for more information.",
-    });
+    const resolved = resolveRequestError(
+      error,
+      "Unable to load SSO settings",
+      "Check the server logs for more information.",
+    );
+    console.error(resolved.debugMessage);
+    showError(resolved.title, resolved.message);
   } finally {
     ssoLoading.value = false;
   }
@@ -130,18 +172,20 @@ async function fetchSsoSettings() {
 
 async function fetchOAuthSettings() {
   oauthLoading.value = true;
+  resetError();
   try {
     const response = await http.get<OAuth2Configuration>("/api/security/oauth2");
     oauthForm.value = toOAuthEditable(response.data);
     oauthInitialSignature.value = JSON.stringify(oauthForm.value);
     availableRoles.value = response.data.available_roles ?? [];
   } catch (error) {
-    console.error("Failed to load OAuth2 configuration", error);
-    notify({
-      type: "error",
-      title: "Unable to load OAuth2 settings",
-      text: "Check the server logs for more information.",
-    });
+    const resolved = resolveRequestError(
+      error,
+      "Unable to load OAuth2 settings",
+      "Check the server logs for more information.",
+    );
+    console.error(resolved.debugMessage);
+    showError(resolved.title, resolved.message);
   } finally {
     oauthLoading.value = false;
   }
@@ -151,12 +195,9 @@ async function saveSsoSettings() {
   if (ssoSaving.value) {
     return;
   }
+  resetError();
   if (!ssoForm.value.username_header.trim()) {
-    notify({
-      type: "error",
-      title: "Missing username header",
-      text: "Username header cannot be empty.",
-    });
+    showError("Missing username header", "Username header cannot be empty.");
     return;
   }
 
@@ -173,12 +214,13 @@ async function saveSsoSettings() {
     ssoInitialSignature.value = JSON.stringify(toSsoPayload(ssoForm.value));
     await site.getInfo();
   } catch (error: any) {
-    console.error("Failed to update SSO configuration", error);
-    notify({
-      type: "error",
-      title: "Unable to save SSO settings",
-      text: error?.response?.data ?? "Check the server logs for more details.",
-    });
+    const resolved = resolveRequestError(
+      error,
+      "Unable to save SSO settings",
+      "Check the server logs for more details.",
+    );
+    console.error(resolved.debugMessage);
+    showError(resolved.title, resolved.message);
   } finally {
     ssoSaving.value = false;
   }
@@ -188,14 +230,14 @@ async function saveOAuthSettings() {
   if (oauthSaving.value) {
     return;
   }
+  resetError();
 
   if (oauthForm.value.enabled) {
     if (oauthForm.value.google.enabled && !oauthForm.value.google.client_id.trim()) {
-      notify({
-        type: "error",
-        title: "Google client ID required",
-        text: "Enter a Google client ID or disable the provider.",
-      });
+      showError(
+        "Google client ID required",
+        "Enter a Google client ID or disable the provider.",
+      );
       return;
     }
     if (
@@ -203,19 +245,14 @@ async function saveOAuthSettings() {
       !oauthForm.value.google.secretConfigured &&
       !oauthForm.value.google.client_secret.trim()
     ) {
-      notify({
-        type: "error",
-        title: "Google client secret required",
-        text: "Provide the Google client secret.",
-      });
+      showError("Google client secret required", "Provide the Google client secret.");
       return;
     }
     if (oauthForm.value.microsoft.enabled && !oauthForm.value.microsoft.client_id.trim()) {
-      notify({
-        type: "error",
-        title: "Microsoft client ID required",
-        text: "Enter a Microsoft client ID or disable the provider.",
-      });
+      showError(
+        "Microsoft client ID required",
+        "Enter a Microsoft client ID or disable the provider.",
+      );
       return;
     }
     if (
@@ -223,11 +260,10 @@ async function saveOAuthSettings() {
       !oauthForm.value.microsoft.secretConfigured &&
       !oauthForm.value.microsoft.client_secret.trim()
     ) {
-      notify({
-        type: "error",
-        title: "Microsoft client secret required",
-        text: "Provide the Microsoft client secret.",
-      });
+      showError(
+        "Microsoft client secret required",
+        "Provide the Microsoft client secret.",
+      );
       return;
     }
   }
@@ -244,12 +280,13 @@ async function saveOAuthSettings() {
     await fetchOAuthSettings();
     await site.getInfo();
   } catch (error: any) {
-    console.error("Failed to update OAuth2 configuration", error);
-    notify({
-      type: "error",
-      title: "Unable to save OAuth2 settings",
-      text: error?.response?.data ?? "Check the server logs for more details.",
-    });
+    const resolved = resolveRequestError(
+      error,
+      "Unable to save OAuth2 settings",
+      "Check the server logs for more details.",
+    );
+    console.error(resolved.debugMessage);
+    showError(resolved.title, resolved.message);
   } finally {
     oauthSaving.value = false;
   }
@@ -259,6 +296,7 @@ function resetSsoSettings() {
   if (ssoSaving.value) {
     return;
   }
+  resetError();
   const latest = JSON.parse(ssoInitialSignature.value) as SsoConfiguration;
   ssoForm.value = toSsoEditable(latest);
 }
@@ -267,6 +305,7 @@ function resetOAuthSettings() {
   if (oauthSaving.value) {
     return;
   }
+  resetError();
   const latest = JSON.parse(oauthInitialSignature.value) as EditableOAuthConfiguration;
   oauthForm.value = latest;
 }
@@ -310,6 +349,67 @@ function defaultOAuthForm(): EditableOAuthConfiguration {
     casbin_policy: "",
     group_role_mappings: [],
   };
+}
+
+function resolveRequestError(
+  error: unknown,
+  fallbackTitle: string,
+  fallbackMessage: string,
+  conflictTitle?: string,
+  conflictMessage?: string,
+): { title: string; message: string; debugMessage: string } {
+  const fallback = {
+    title: fallbackTitle,
+    message: fallbackMessage,
+    debugMessage: typeof error === "string" ? error : JSON.stringify(error),
+  };
+
+  if (isAxiosError(error)) {
+    const status = error.response?.status;
+    const data = error.response?.data;
+    let payloadMessage: string | undefined;
+
+    if (typeof data === "string" && data.trim().length > 0) {
+      payloadMessage = data.trim();
+    } else if (typeof data === "object" && data !== null && "message" in data) {
+      const candidate = (data as { message?: unknown }).message;
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        payloadMessage = candidate.trim();
+      }
+    }
+
+    if (status === 409 && conflictTitle) {
+      return {
+        title: conflictTitle,
+        message: conflictMessage ?? payloadMessage ?? fallbackMessage,
+        debugMessage: JSON.stringify(error.toJSON?.() ?? error),
+      };
+    }
+
+    if (payloadMessage) {
+      return {
+        title: fallbackTitle,
+        message: payloadMessage,
+        debugMessage: JSON.stringify(error.toJSON?.() ?? error),
+      };
+    }
+
+    return {
+      title: fallbackTitle,
+      message: `Request failed${status ? ` with status ${status}` : ""}.`,
+      debugMessage: JSON.stringify(error.toJSON?.() ?? error),
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      title: fallbackTitle,
+      message: error.message,
+      debugMessage: error.stack ?? error.message,
+    };
+  }
+
+  return fallback;
 }
 
 function toSsoEditable(settings: SsoConfiguration): EditableSsoConfiguration {
@@ -478,6 +578,11 @@ function removeGroupMapping(id: string) {
 
 <template>
   <main class="systemSettings">
+    <FloatingErrorBanner
+      :visible="errorBanner.visible"
+      :title="errorBanner.title"
+      :message="errorBanner.message"
+      @close="resetError" />
     <h1>System Settings</h1>
 
     <section class="card">

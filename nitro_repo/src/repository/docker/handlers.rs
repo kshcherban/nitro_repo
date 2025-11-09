@@ -4,6 +4,8 @@
 //! Reference: https://docs.docker.com/registry/spec/api/
 
 use axum::{body::Body, response::Response};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
 use futures::StreamExt;
 use http::StatusCode;
@@ -543,7 +545,8 @@ async fn head_blob(
         .file_hash
         .sha2_256
         .as_ref()
-        .map(|hash| format!("sha256:{hash}"))
+        .and_then(|hash| normalize_sha256_digest(hash.as_str()))
+        .map(|hex| format!("sha256:{hex}"))
         .unwrap_or_else(|| digest.to_string());
 
     Ok(custom_response(
@@ -555,6 +558,25 @@ async fn head_blob(
         ],
         vec![],
     ))
+}
+
+fn normalize_sha256_digest(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let is_hex = trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex {
+        return Some(trimmed.to_ascii_lowercase());
+    }
+    if let Ok(bytes) = BASE64_STANDARD.decode(trimmed) {
+        if bytes.len() == 32 {
+            let mut hex = String::with_capacity(bytes.len() * 2);
+            for byte in bytes {
+                use std::fmt::Write;
+                let _ = write!(&mut hex, "{:02x}", byte);
+            }
+            return Some(hex);
+        }
+    }
+    None
 }
 
 /// PUT /v2/<name>/manifests/<reference> - Upload manifest

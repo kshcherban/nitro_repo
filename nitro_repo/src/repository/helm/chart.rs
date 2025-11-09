@@ -220,12 +220,17 @@ pub fn parse_chart_archive(
 
         let file_name = path.file_name().and_then(|name| name.to_str());
         if let Some(file_name) = file_name {
-            if file_name.eq_ignore_ascii_case("Chart.yaml") {
+            if file_name.eq_ignore_ascii_case("Chart.yaml")
+                && !path
+                    .components()
+                    .any(|component| component.as_os_str() == "charts")
+            {
                 let mut buffer = Vec::new();
                 entry
                     .read_to_end(&mut buffer)
                     .map_err(|err| ChartParseError::InvalidArchive(err.to_string()))?;
                 chart_yaml_bytes = Some(buffer);
+                break;
             }
         }
     }
@@ -441,6 +446,36 @@ dependencies:
         assert_eq!(parsed.metadata.tiller_version.as_deref(), None);
         assert_eq!(parsed.provenance, ChartProvenanceState::Missing);
         assert_eq!(parsed.archive_bytes, archive);
+    }
+
+    #[test]
+    fn parse_chart_archive_ignores_dependency_chart_yaml() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = Builder::new(&mut encoder);
+            append_file(
+                &mut builder,
+                "primary/Chart.yaml",
+                br#"apiVersion: v2
+name: primary
+version: 1.2.3
+"#,
+            );
+            append_file(
+                &mut builder,
+                "primary/charts/common/Chart.yaml",
+                br#"apiVersion: v2
+name: common
+version: 9.9.9
+"#,
+            );
+            builder.finish().unwrap();
+        }
+        let archive = encoder.finish().unwrap();
+
+        let parsed = parse_chart_archive(&archive, &default_options()).unwrap();
+        assert_eq!(parsed.metadata.name, "primary");
+        assert_eq!(parsed.metadata.version, Version::parse("1.2.3").unwrap());
     }
 
     #[test]

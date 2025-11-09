@@ -115,19 +115,31 @@ async fn handle_docker_v2_catchall(
             .unwrap());
     }
 
-    // Parse path as {storage}/{repository}/{*rest}
-    let parts: Vec<&str> = path.trim_start_matches('/').splitn(3, '/').collect();
-
-    if parts.len() < 2 {
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    if segments.is_empty() {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("Not Found"))
+            .unwrap());
+    }
+    let mut index = 0usize;
+    if segments.get(0) == Some(&"repositories") {
+        index += 1;
+    }
+    if segments.len() <= index + 1 {
         return Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::from("Not Found"))
             .unwrap());
     }
 
-    let storage = parts[0].to_string();
-    let repository = parts[1].to_string();
-    let rest = parts.get(2).map(|s| s.to_string()).unwrap_or_default();
+    let storage = segments[index].to_string();
+    let repository = segments[index + 1].to_string();
+    let rest = if segments.len() > index + 2 {
+        segments[index + 2..].join("/")
+    } else {
+        String::new()
+    };
 
     debug!(
         storage = %storage,

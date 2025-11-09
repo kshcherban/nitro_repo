@@ -13,8 +13,11 @@ pub mod configs;
 pub mod hosted;
 pub mod index;
 pub mod oci;
+pub mod types;
 
 pub use configs::*;
+pub use hosted::DeletePackageEntry;
+pub use types::HelmChartVersionExtra;
 
 use chart::ChartParseError;
 use hosted::HelmHosted;

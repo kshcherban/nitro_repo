@@ -26,21 +26,24 @@ export const siteStore = defineStore(
     /// The Site Info is pulled almost immediately after the store is created So this should be available
     /// However, to make typescript happy, we will default to a password rules object
     function getPasswordRulesOrDefault(): PasswordRules {
-      if (siteInfo.value?.password_rules === undefined) {
-        return {
-          min_length: 8,
-          require_uppercase: true,
-          require_lowercase: true,
-          require_number: true,
-          require_symbol: true,
-        };
+      const fallback: PasswordRules = {
+        min_length: 8,
+        require_uppercase: true,
+        require_lowercase: true,
+        require_number: true,
+        require_symbol: true,
+      };
+      const rules = siteInfo.value?.password_rules;
+      if (!rules) {
+        return fallback;
       }
-      const rules = siteInfo.value.password_rules;
-      const requireSymbol =
-        rules.require_symbol ?? rules.require_special ?? false;
       return {
-        ...rules,
-        require_symbol: requireSymbol,
+        min_length: rules.min_length ?? fallback.min_length,
+        require_uppercase: rules.require_uppercase ?? fallback.require_uppercase,
+        require_lowercase: rules.require_lowercase ?? fallback.require_lowercase,
+        require_number: rules.require_number ?? fallback.require_number,
+        require_symbol:
+          rules.require_symbol ?? rules.require_special ?? fallback.require_symbol,
       };
     }
     async function getInfo(): Promise<SiteInfo | undefined> {

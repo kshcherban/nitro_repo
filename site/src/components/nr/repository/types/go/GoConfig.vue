@@ -5,6 +5,7 @@
       :options="typeOptions"
       :required="true"
       :disabled="!isCreate"
+      class="form-field--medium"
     >
       Repository Type
     </DropDown>
@@ -301,6 +302,11 @@ onMounted(() => {
   gap: 1.5rem;
   width: 100%;
   max-width: none;
+}
+
+:deep(.form-field--medium) {
+  max-width: 320px;
+  width: 100%;
 }
 
 .proxy-configuration,
