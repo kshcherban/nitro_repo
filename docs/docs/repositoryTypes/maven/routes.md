@@ -431,4 +431,4 @@ Use these endpoints as a foundation for Maven client integration, build tool con
 
 ---
 
-*Complete reference for Maven repository HTTP routes. See [Maven Quick Reference](maven-quick-reference.md) for usage examples and configuration.*
+*Complete reference for Maven repository HTTP routes. See [Maven Quick Reference](reference.md) for usage examples and configuration.*

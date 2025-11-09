@@ -31,6 +31,7 @@ mod auth_config;
 pub mod commands;
 pub mod docker;
 pub mod go;
+pub mod helm;
 pub mod maven;
 pub mod npm;
 pub mod php;
@@ -163,6 +164,7 @@ pub trait Repository: Send + Sync + Clone + Debug {
 pub enum DynRepository {
     Docker(docker::DockerRegistry),
     Go(go::GoRepository),
+    Helm(helm::HelmRepository),
     Maven(maven::MavenRepository),
     NPM(npm::NPMRegistry),
     Python(python::PythonRepository),

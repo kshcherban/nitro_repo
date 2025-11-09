@@ -650,4 +650,4 @@ Use these endpoints as a foundation for Composer client integration, build tool 
 
 ---
 
-*Complete reference for PHP/Composer repository HTTP routes. See [PHP Quick Reference](php-quick-reference.md) for usage examples and configuration.*
+*Complete reference for PHP/Composer repository HTTP routes. See [PHP Quick Reference](reference.md) for usage examples and configuration.*

@@ -194,4 +194,4 @@ GOPROXY=https://your-nitro-repo.com go mod download -x
 
 ---
 
-*Quick reference for Go repository configuration and usage. See [Go Proxy Setup Guide](go-proxy-setup.md) for detailed documentation.*
+*Quick reference for Go repository configuration and usage. See [Go Proxy Setup Guide](proxy.md) for detailed documentation.*

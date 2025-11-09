@@ -472,4 +472,4 @@ black>=21.0.0
 
 ---
 
-*Quick reference for Python package repository configuration and usage. See [Python Route Reference](python-route-reference.md) for detailed API documentation.*
+*Quick reference for Python package repository configuration and usage. See [Python Route Reference](routes.md) for detailed API documentation.*

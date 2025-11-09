@@ -214,4 +214,4 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-*Quick reference for Docker registry configuration and usage. See [Docker Route Reference](docker-route-reference.md) for detailed API documentation.*
+*Quick reference for Docker registry configuration and usage. See [Docker Route Reference](routes.md) for detailed API documentation.*

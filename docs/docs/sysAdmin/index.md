@@ -1,12 +1,12 @@
 # How to setup Nitro_Repo
 ## Pre Install Tasks
-1. Install MySQL. For more information click [here](https://nitro-repo.kingtux.dev/knowledge/InternalWorkings.html#users).
+1. Install MySQL. For more information click [here](https://repo-docs.sudoers.dev/knowledge/InternalWorkings.html#users).
 2. Create a database. For nitro_repo to use
 ## Getting your build
 Please use one of the following options for your build
-1. Latest [Release](https://github.com/wherkamp/nitro_repo/releases) on Github
-2. Latest [Build](https://github.com/wherkamp/nitro_repo/actions/workflows/push.yml) on Github
-3. Build yourself. Instructions are [here](https://nitro-repo.kingtux.dev/compiling.html).  
+1. Latest [Release](https://github.com/kshcherban/nitro_repo/releases) on Github
+2. Latest [Build](https://github.com/kshcherban/nitro_repo/actions/workflows/push.yml) on Github
+3. Build yourself. Instructions are [here](https://repo-docs.sudoers.dev/compiling.html).  
    **Linux build prerequisites:** install `pkg-config` and the OpenSSL development headers (`libssl-dev` on Debian/Ubuntu, `openssl-devel` on Fedora/RHEL) before running `cargo build`.
 
 ## Setup

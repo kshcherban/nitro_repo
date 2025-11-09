@@ -426,4 +426,4 @@ my-package/
 
 ---
 
-*Quick reference for NPM registry configuration and usage. See [NPM Route Reference](npm-route-reference.md) for detailed API documentation.*
+*Quick reference for NPM registry configuration and usage. See [NPM Route Reference](routes.md) for detailed API documentation.*

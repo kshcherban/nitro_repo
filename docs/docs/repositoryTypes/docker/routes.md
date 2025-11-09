@@ -342,4 +342,4 @@ Use these endpoints as a foundation for Docker client integration, CI/CD pipelin
 
 ---
 
-*Complete reference for Docker registry HTTP routes. See [Docker Quick Reference](docker-quick-reference.md) for usage examples and configuration.*
+*Complete reference for Docker registry HTTP routes. See [Docker Quick Reference](reference.md) for usage examples and configuration.*

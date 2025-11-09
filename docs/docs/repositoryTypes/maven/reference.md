@@ -386,4 +386,4 @@ com/
 
 ---
 
-*Quick reference for Maven repository configuration and usage. See [Maven Route Reference](maven-route-reference.md) for detailed API documentation.*
+*Quick reference for Maven repository configuration and usage. See [Maven Route Reference](routes.md) for detailed API documentation.*

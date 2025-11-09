@@ -59,6 +59,7 @@ use crate::{
         StagingConfig,
         docker::{DockerPushRulesConfigType, DockerRegistryConfigType, DockerRepositoryType},
         go::{GoRepositoryConfigType, GoRepositoryType},
+        helm::{HelmRepositoryConfigType, HelmRepositoryType},
         maven::{MavenPushRulesConfigType, MavenRepositoryConfigType, MavenRepositoryType},
         npm::{NPMRegistryConfigType, NpmRegistryType},
         php::{PhpRepositoryConfigType, PhpRepositoryType},
@@ -1070,6 +1071,7 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &DockerRegistryConfigType,
     &DockerPushRulesConfigType,
     &GoRepositoryConfigType,
+    &HelmRepositoryConfigType,
     &MavenRepositoryConfigType,
     &MavenPushRulesConfigType,
     &NPMRegistryConfigType,
@@ -1080,6 +1082,7 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
 pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
     &DockerRepositoryType,
     &GoRepositoryType,
+    &HelmRepositoryType,
     &MavenRepositoryType,
     &NpmRegistryType,
     &PythonRepositoryType,

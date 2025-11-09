@@ -1,0 +1,18 @@
+services:
+  nitro-docs:
+    image: nginx:alpine
+    container_name: nitro-docs
+    restart: unless-stopped
+    volumes:
+      - ./docs/.vitepress/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.frontend.rule=Host:nitro-docs.sudoers.dev"
+      - "traefik.port=80"
+    network_mode: "bridge"
+
+networks:
+  default:
+    external: true
+    name: bridge

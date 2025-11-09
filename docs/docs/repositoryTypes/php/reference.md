@@ -589,4 +589,4 @@ composer config --global process-timeout 600
 
 ---
 
-*Quick reference for PHP/Composer repository configuration and usage. See [PHP Route Reference](php-route-reference.md) for detailed API documentation.*
+*Quick reference for PHP/Composer repository configuration and usage. See [PHP Route Reference](routes.md) for detailed API documentation.*

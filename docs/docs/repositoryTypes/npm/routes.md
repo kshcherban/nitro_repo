@@ -515,4 +515,4 @@ Use these endpoints as a foundation for NPM client integration, package managers
 
 ---
 
-*Complete reference for NPM registry HTTP routes. See [NPM Quick Reference](npm-quick-reference.md) for usage examples and configuration.*
+*Complete reference for NPM registry HTTP routes. See [NPM Quick Reference](reference.md) for usage examples and configuration.*

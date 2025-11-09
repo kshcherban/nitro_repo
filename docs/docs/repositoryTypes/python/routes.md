@@ -605,4 +605,4 @@ Use these endpoints as a foundation for pip client integration, build tool confi
 
 ---
 
-*Complete reference for Python package repository HTTP routes. See [Python Quick Reference](python-quick-reference.md) for usage examples and configuration.*
+*Complete reference for Python package repository HTTP routes. See [Python Quick Reference](reference.md) for usage examples and configuration.*

@@ -87,6 +87,9 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
                 base: Some("packages/"),
             },
         },
+        DynRepository::Helm(_) => PackageStrategy::PackagesDirectory {
+            base: Some("charts/"),
+        },
         DynRepository::Docker(_) => PackageStrategy::Docker,
         DynRepository::Go(go_repo) => match go_repo {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::PackagesDirectory {
