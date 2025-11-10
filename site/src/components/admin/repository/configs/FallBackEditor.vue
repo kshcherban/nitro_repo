@@ -1,19 +1,26 @@
 <template>
-  <div
+  <v-card
     v-if="form && model"
-    class="editorBox">
-    <h2 class="settingHeader">Generic Config Editor: {{ settingName }}</h2>
-
-    <JsonSchemaForm
-      :form="form"
-      v-model="model" />
-    <button
-      type="submit"
-      class="nr-button nr-button--primary"
-      @click="save">
-      Save Configuration
-    </button>
-  </div>
+    class="editor-box"
+    variant="outlined">
+    <v-card-title class="editor-box__header">
+      Generic Config Editor: {{ settingName }}
+    </v-card-title>
+    <v-card-text class="editor-box__content">
+      <JsonSchemaForm
+        :form="form"
+        v-model="model" />
+    </v-card-text>
+    <v-divider />
+    <v-card-actions class="justify-end">
+      <SubmitButton
+        :block="false"
+        data-testid="generic-config-save"
+        @click="save">
+        Save Configuration
+      </SubmitButton>
+    </v-card-actions>
+  </v-card>
 </template>
 <script setup lang="ts">
 import http from "@/http";
@@ -21,6 +28,7 @@ import { computed, ref, type PropType } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import JsonSchemaForm from "@/components/form/JsonSchemaForm.vue";
 import { createForm, type RootSchema } from "nitro-jsf";
+import SubmitButton from "@/components/form/SubmitButton.vue";
 
 const schema = ref<RootSchema | undefined>(undefined);
 const form = computed(() => {
@@ -92,22 +100,21 @@ async function save() {
 load();
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/buttons.scss";
+@use "@/assets/styles/theme.scss" as *;
 
-.editorBox {
+.editor-box {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 0;
+  overflow: hidden;
 }
 
-.settingHeader {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 500;
+.editor-box__header {
+  font-size: 1.125rem;
+  font-weight: 600;
 }
 
-.nr-button {
-  align-self: flex-start;
-  min-width: 10rem;
+.editor-box__content {
+  padding-top: 0;
 }
 </style>

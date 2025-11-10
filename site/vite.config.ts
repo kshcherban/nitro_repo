@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import vueJsx from "@vitejs/plugin-vue-jsx";
+import vuetify from "vite-plugin-vuetify";
 import fs from "fs";
 import browserslistToEsbuild from "browserslist-to-esbuild";
 import { ViteEjsPlugin } from "vite-plugin-ejs";
@@ -16,6 +17,7 @@ export default defineConfig(async ({ command }): Promise<UserConfig> => {
   const plugins: PluginOption[] = [
     vue(),
     vueJsx(),
+    vuetify({ autoImport: true }),
     ViteEjsPlugin(),
   ];
 

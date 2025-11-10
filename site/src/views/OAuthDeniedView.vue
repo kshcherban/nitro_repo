@@ -45,7 +45,7 @@ const reasonMessage = computed(() => {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 .page {
   min-height: 100vh;
   display: flex;

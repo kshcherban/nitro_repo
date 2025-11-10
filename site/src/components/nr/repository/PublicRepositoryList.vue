@@ -4,21 +4,19 @@
       <h2>Repositories</h2>
       <div class="search-container">
         <div class="search-container__input">
-          <input
-            type="text"
-            id="nameSearch"
+          <v-text-field
             v-model="searchValue"
-            autofocus
+            data-testid="repository-search-input"
+            class="repository-search"
             placeholder="Search packages or repositories"
-            aria-label="Search repositories or packages" />
-          <button
-            v-if="trimmedSearch"
-            type="button"
-            class="search-clear-button"
-            @click="clearTopLevelSearch"
-            aria-label="Clear search">
-            ×
-          </button>
+            aria-label="Search repositories or packages"
+            variant="outlined"
+            density="comfortable"
+            clearable
+            hide-details
+            autofocus
+            prepend-inner-icon="mdi-magnify"
+            @click:clear="clearTopLevelSearch" />
         </div>
         <button
           type="button"
@@ -440,7 +438,7 @@ function isAdvancedQuery(value: string): boolean {
 }
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 #headerBar {
   display: flex;
   justify-content: space-between;
@@ -458,31 +456,14 @@ function isAdvancedQuery(value: string): boolean {
 
 .search-container__input {
   position: relative;
-  flex: 1 1 auto;
-  max-width: 24rem;
+  flex: 1 1 40rem;
+  max-width: 48rem;
+  min-width: 24rem;
 }
 
-.search-container__input input {
-  width: 24rem;
-  max-width: 100%;
-}
-
-.search-clear-button {
-  position: absolute;
-  top: 50%;
-  right: 0.5rem;
-  transform: translateY(-50%);
-  border: none;
-  background: transparent;
-  color: var(--text-secondary, #6c757d);
-  font-size: 1.2rem;
-  cursor: pointer;
-  line-height: 1;
-}
-
-.search-clear-button:hover,
-.search-clear-button:focus-visible {
-  color: $accent;
+.repository-search {
+  width: 100%;
+  max-width: none;
 }
 
 .search-help-button {
@@ -649,8 +630,9 @@ function isAdvancedQuery(value: string): boolean {
 }
 
 @media screen and (max-width: 1200px) {
-  .search-container__input input {
-    width: 18rem;
+  .search-container__input {
+    max-width: none;
+    min-width: 0;
   }
 }
 
@@ -662,8 +644,8 @@ function isAdvancedQuery(value: string): boolean {
   .search-container {
     width: 100%;
   }
-  .search-container__input,
-  .search-container__input input {
+  .search-container__input {
+    flex: 1 1 100%;
     width: 100%;
   }
 }

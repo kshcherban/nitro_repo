@@ -148,7 +148,7 @@ watch(repositoryId, () => {
 fetchProject();
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 main {
   margin: 0 auto;
   padding: 1rem;

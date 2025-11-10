@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { defineComponent } from "vue";
 
 vi.mock("@/http", () => ({
   default: {
@@ -35,6 +36,33 @@ const repositories: RepositoryWithStorageName[] = [
   },
 ];
 
+const vuetifyStubs = {
+  "v-text-field": defineComponent({
+    props: {
+      modelValue: {
+        type: String,
+        default: "",
+      },
+    },
+    emits: ["update:modelValue"],
+    setup(props, { emit, slots }) {
+      const onInput = (event: Event) => {
+        emit("update:modelValue", (event.target as HTMLInputElement).value);
+      };
+      return { props, slots, onInput };
+    },
+    template: `
+      <label class="v-text-field">
+        <span v-if="$slots.label"><slot name="label" /></span>
+        <input
+          data-testid="repository-search-input"
+          :value="modelValue"
+          @input="onInput" />
+      </label>
+    `,
+  }),
+};
+
 describe("PublicRepositoryList.vue", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -46,9 +74,12 @@ describe("PublicRepositoryList.vue", () => {
 
     const wrapper = mount(PublicRepositoryList, {
       props: { repositories },
+      global: {
+        stubs: vuetifyStubs,
+      },
     });
 
-    await wrapper.find("#nameSearch").setValue("type:n");
+    await wrapper.get('input[data-testid="repository-search-input"]').setValue("type:n");
     await vi.runAllTimersAsync();
     await flushPromises();
 
@@ -67,6 +98,9 @@ describe("PublicRepositoryList.vue", () => {
   it("opens the search help modal when the help button is clicked", async () => {
     const wrapper = mount(PublicRepositoryList, {
       props: { repositories },
+      global: {
+        stubs: vuetifyStubs,
+      },
     });
 
     expect(wrapper.find('[data-testid="search-help-modal"]').exists()).toBe(false);
@@ -77,12 +111,16 @@ describe("PublicRepositoryList.vue", () => {
   it("applies example queries from the help modal", async () => {
     const wrapper = mount(PublicRepositoryList, {
       props: { repositories },
+      global: {
+        stubs: vuetifyStubs,
+      },
     });
 
     await wrapper.get('[data-testid="search-help-button"]').trigger("click");
     await wrapper.get('[data-testid="search-example-basic"]').trigger("click");
 
-    expect(wrapper.find<HTMLInputElement>("#nameSearch").element.value).toBe("gin");
+    const input = wrapper.get('input[data-testid="repository-search-input"]').element as HTMLInputElement;
+    expect(input.value).toBe("gin");
     expect(wrapper.find('[data-testid="search-help-modal"]').exists()).toBe(false);
   });
 });

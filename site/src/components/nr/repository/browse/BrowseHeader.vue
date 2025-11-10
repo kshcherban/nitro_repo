@@ -66,7 +66,7 @@ watch(
 buildPath();
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 .browsePath {
   display: flex;
   gap: 0.5rem;

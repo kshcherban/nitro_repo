@@ -22,26 +22,36 @@
           v-model="route.name"
           placeholder="Optional label"
         >Display Name</TextInput>
-        <button
-          class="nr-button nr-button--danger"
+        <v-btn
+          color="error"
+          variant="text"
+          class="text-none"
           type="button"
           @click="removeRoute(index)"
-        >Remove</button>
+        >Remove</v-btn>
       </div>
-      <button class="nr-button" type="button" @click="addRoute">Add Route</button>
+      <v-btn
+        color="primary"
+        variant="tonal"
+        class="text-none align-self-start"
+        type="button"
+        @click="addRoute">
+        Add Route
+      </v-btn>
     </div>
 
-    <button
+    <SubmitButton
       v-if="!isCreate"
-      class="nr-button nr-button--primary"
-      type="submit"
-    >Save</button>
+      :block="false">
+      Save
+    </SubmitButton>
   </form>
 </template>
 <script setup lang="ts">
 import { computed, defineProps, onMounted, ref, watch } from "vue";
 import DropDown from "@/components/form/dropdown/DropDown.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
+import SubmitButton from "@/components/form/SubmitButton.vue";
 import http from "@/http";
 import { defaultProxy, type NPMConfigType } from "./npm";
 
@@ -141,7 +151,7 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/buttons.scss";
+@use "@/assets/styles/theme.scss" as *;
 
 .npm-config {
   display: flex;
@@ -158,5 +168,9 @@ onMounted(() => {
   gap: 0.5rem;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   align-items: end;
+
+  :deep(.v-btn) {
+    justify-self: flex-start;
+  }
 }
 </style>

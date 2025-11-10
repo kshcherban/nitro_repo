@@ -32,7 +32,6 @@ const isOpen = computed(() => {
 });
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
 .subBarParent {
   .subBar {
     padding-left: 1rem;

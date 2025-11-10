@@ -27,7 +27,7 @@ function copyURL() {
 </script>
 
 <style lang="scss" scoped>
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 .copyURL {
   margin: 1rem;
 }

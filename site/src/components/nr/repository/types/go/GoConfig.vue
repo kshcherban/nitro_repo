@@ -30,13 +30,14 @@
             <h5>Upstream Proxy Routes</h5>
             <p class="routes-description">Configure upstream Go module proxies in priority order</p>
           </div>
-          <button
-            class="nr-button nr-button--small"
+          <v-btn
+            color="primary"
+            variant="tonal"
+            class="text-none"
             type="button"
-            @click="addRoute"
-          >
+            @click="addRoute">
             Add Route
-          </button>
+          </v-btn>
         </div>
 
         <div v-if="proxyConfig.routes.length === 0" class="no-routes">
@@ -75,14 +76,15 @@
             Priority
           </NumberInput>
 
-          <button
-            class="nr-button nr-button--danger nr-button--small"
+          <v-btn
+            color="error"
+            variant="text"
+            class="text-none"
             type="button"
             @click="removeRoute(index)"
-            :disabled="proxyConfig.routes.length <= 1"
-          >
+            :disabled="proxyConfig.routes.length <= 1">
             Remove
-          </button>
+          </v-btn>
         </div>
       </div>
 
@@ -114,14 +116,13 @@
       </div>
     </div>
 
-    <button
+    <SubmitButton
       v-if="!isCreate"
-      class="nr-button nr-button--primary"
-      type="submit"
+      :block="false"
       :disabled="hasErrors"
-    >
+      class="go-config__submit">
       Save Configuration
-    </button>
+    </SubmitButton>
   </form>
 </template>
 
@@ -130,6 +131,7 @@ import { computed, defineProps, onMounted, ref, watch } from "vue";
 import DropDown from "@/components/form/dropdown/DropDown.vue";
 import NumberInput from "@/components/form/NumberInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
+import SubmitButton from "@/components/form/SubmitButton.vue";
 import http from "@/http";
 import type { GoConfigType, GoProxyConfigType, GoProxyRoute } from "./go";
 import { defaultProxy, validateGoConfig, validateProxyRoute } from "./go";
@@ -296,7 +298,7 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/buttons.scss";
+@use "@/assets/styles/theme.scss" as *;
 
 .go-config {
   display: flex;
@@ -337,6 +339,10 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.5rem;
+
+  :deep(.v-btn) {
+    min-height: 40px;
+  }
 
   div {
     h5 {
@@ -437,9 +443,17 @@ onMounted(() => {
     }
   }
 
-  :deep(.nr-button) {
+  :deep(.v-btn) {
     min-height: 40px;
     white-space: nowrap;
+  }
+}
+
+.go-config__submit {
+  align-self: flex-start;
+
+  :deep(.submit-button) {
+    min-width: 12rem;
   }
 }
 

@@ -1,27 +1,32 @@
 <template>
   <section
     :id="id + '-section'"
-    class="inputWithRequirements"
+    class="validatable-text-field"
     :data-valid="isValid">
-    <label :for="id">
-      <slot />
-    </label>
-    <input
-      :type="type ?? 'text'"
-      @focusin="isFocused = true"
-      @focusout="isFocused = false"
-      @keypress="keyPress"
+    <v-text-field
       :id="id"
+      :type="type ?? 'text'"
       v-model="internalValue"
-      v-bind="$attrs" />
+      variant="outlined"
+      density="comfortable"
+      :error="showError"
+      v-bind="$attrs"
+      @focus="isFocused = true"
+      @blur="isFocused = false"
+      @keydown="handleDeniedKey">
+      <template v-if="$slots.default" #label>
+        <slot />
+      </template>
+    </v-text-field>
     <InputRequirements
       :show="isFocused"
       :validations="validations"
       :results="validationResults" />
   </section>
 </template>
+
 <script setup lang="ts">
-import { ref, watch, type PropType } from "vue";
+import { computed, ref, watch, type PropType } from "vue";
 import { checkValidations, type KeyPressAction, type ValidationType } from "./validations";
 import InputRequirements from "./InputRequirements.vue";
 
@@ -45,25 +50,6 @@ const props = defineProps({
   },
 });
 
-function keyPress(event: KeyboardEvent) {
-  if (props.deniedKeys) {
-    for (const deniedKey of props.deniedKeys) {
-      if (typeof deniedKey === "string") {
-        if (event.key === deniedKey) {
-          event.preventDefault();
-          return;
-        }
-      } else {
-        if (deniedKey.badKey === event.key) {
-          event.preventDefault();
-          // Add the replacement character
-          internalValue.value += deniedKey.replacedKey;
-          return;
-        }
-      }
-    }
-  }
-}
 const isFocused = ref(false);
 const validationResults = ref<Record<string, boolean>>({});
 
@@ -94,14 +80,31 @@ if (props.originalValue) {
 
   isValid.value = true;
 }
-</script>
-<style lang="scss" scoped>
-@import "@/assets/styles/form.scss";
-@import "@/assets/styles/theme.scss";
 
-.inputWithRequirements[data-valid="false"] {
-  input {
-    border-color: $invalid-form-field;
+const showError = computed(() => !isValid.value && internalValue.value.length > 0);
+
+function handleDeniedKey(event: KeyboardEvent) {
+  if (!props.deniedKeys) {
+    return;
   }
+  for (const deniedKey of props.deniedKeys) {
+    if (typeof deniedKey === "string") {
+      if (event.key === deniedKey) {
+        event.preventDefault();
+        return;
+      }
+    } else if (deniedKey.badKey === event.key) {
+      event.preventDefault();
+      internalValue.value += deniedKey.replacedKey;
+      return;
+    }
+  }
+}
+</script>
+<style scoped lang="scss">
+.validatable-text-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 </style>

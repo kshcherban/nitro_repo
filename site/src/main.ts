@@ -44,6 +44,7 @@ import {
 import { sessionStore } from "./stores/session";
 import { autoAnimatePlugin } from "@formkit/auto-animate/vue";
 import { applyThemeTokens } from "@/utils/themeTokens";
+import vuetify from "./plugins/vuetify";
 
 const app = createApp(App);
 const vfm = createVfm();
@@ -97,6 +98,7 @@ const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
 app.use(createMetaManager());
 app.use(pinia);
+app.use(vuetify);
 app.component("font-awesome-icon", FontAwesomeIcon);
 app.use(Notifications);
 app.use(autoAnimatePlugin);

@@ -1,24 +1,24 @@
 <template>
-  <div class="formBox">
-    <label :for="id">
+  <v-text-field
+    :id="id"
+    type="email"
+    autocomplete="email"
+    variant="outlined"
+    density="comfortable"
+    v-model="value"
+    v-bind="$attrs">
+    <template v-if="$slots.default" #label>
       <slot />
-    </label>
-    <input
-      type="email"
-      :id="id"
-      v-model="value"
-      v-bind="$attrs"
-      autocomplete="email" />
-  </div>
+    </template>
+  </v-text-field>
 </template>
+
 <script setup lang="ts">
-import "@/assets/styles/form.scss";
 defineProps<{
   id: string;
 }>();
+
 const value = defineModel<string>({
   required: true,
 });
 </script>
-
-<style scoped lang="scss"></style>

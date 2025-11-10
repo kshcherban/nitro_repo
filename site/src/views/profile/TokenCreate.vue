@@ -1,47 +1,114 @@
 <template>
-  <main v-if="!newResponseTokenResponse">
-    <h1>Token Create</h1>
-    <form @submit.prevent="createToken">
-      <div id="regularProperties">
-        <div class="column">
-          <TextInput
-            id="tokenName"
-            v-model="newToken.tokenName"
-            >Token Name</TextInput
-          >
-          <TextInput
-            id="tokenDescription"
-            v-model="newToken.tokenDescription">
-            Token Description
-          </TextInput>
+  <v-container class="py-6">
+    <v-card v-if="!newResponseTokenResponse">
+      <v-card-title class="d-flex align-center justify-space-between">
+        <div>
+          <div class="text-h6">Create Access Token</div>
+          <div class="text-body-2 text-medium-emphasis">
+            Generate a personal token for CLI and automation workflows.
+          </div>
         </div>
-        <div class="column">
-          <TextInput
-            id="tokenExpiration"
-            v-model="newToken.tokenExpiration"
-            :disabled="true"
-            placeholder="Not implemented"
-            >Token Expiration</TextInput
-          >
+      </v-card-title>
+
+      <v-card-text>
+        <v-form @submit.prevent="createToken">
+          <v-row dense>
+            <v-col cols="12" md="6">
+              <TextInput
+                id="tokenName"
+                v-model="newToken.tokenName"
+                required>
+                Token Name
+              </TextInput>
+            </v-col>
+            <v-col cols="12" md="6">
+              <TextInput
+                id="tokenDescription"
+                v-model="newToken.tokenDescription">
+                Description
+              </TextInput>
+            </v-col>
+            <v-col cols="12" md="6">
+              <TextInput
+                id="tokenExpiration"
+                v-model="newToken.tokenExpiration"
+                disabled
+                placeholder="Not implemented">
+                Expiration
+              </TextInput>
+            </v-col>
+          </v-row>
+
+          <v-divider class="my-4" />
+
+          <section class="mt-4">
+            <header class="section-header">
+              <div>
+                <div class="text-subtitle-1 font-weight-medium">Repository Scopes</div>
+                <div class="text-body-2 text-medium-emphasis">
+                  Limit this token to specific repositories and actions.
+                </div>
+              </div>
+            </header>
+            <RepositoryToActionList v-model="repositoryScopes" />
+          </section>
+
+          <v-divider class="my-4" />
+
+          <section class="mt-4">
+            <header class="section-header">
+              <div>
+                <div class="text-subtitle-1 font-weight-medium">Role Scopes</div>
+                <div class="text-body-2 text-medium-emphasis">
+                  Optional platform-wide scopes such as admin or read-only access.
+                </div>
+              </div>
+            </header>
+            <ScopesSelector v-model="scopes" />
+          </section>
+
+          <div class="d-flex justify-end mt-6">
+            <SubmitButton
+              color="primary"
+              :loading="isSubmitting"
+              :disabled="isSubmitting">
+              <span v-if="isSubmitting">Creating…</span>
+              <span v-else>Create Token</span>
+            </SubmitButton>
+          </div>
+        </v-form>
+      </v-card-text>
+    </v-card>
+
+    <v-card
+      v-else
+      class="token-result-card">
+      <v-card-title>
+        <div>
+          <div class="text-h6">Token Created</div>
+          <div class="text-body-2 text-medium-emphasis">
+            Copy and store this token securely. You will not be able to view it again.
+          </div>
         </div>
-      </div>
-      <h2>Repository Scopes</h2>
-      <div>
-        <RepositoryToActionList v-model="repositoryScopes" />
-      </div>
-      <h2>Scopes</h2>
-      <div>
-        <ScopesSelector v-model="scopes" />
-      </div>
-      <SubmitButton>Create Token</SubmitButton>
-    </form>
-  </main>
-  <main v-else>
-    <CopyCode :code="newResponseTokenResponse.token"
-      >Your Token. Save not or its gone forever</CopyCode
-    >
-  </main>
+      </v-card-title>
+      <v-card-text>
+        <CopyCode
+          data-testid="token-output"
+          :code="newResponseTokenResponse.token" />
+        <div class="d-flex justify-end mt-4">
+          <v-btn
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-key-plus"
+            @click="resetForm">
+            Create Another Token
+          </v-btn>
+        </div>
+      </v-card-text>
+    </v-card>
+  </v-container>
 </template>
+
 <script setup lang="ts">
 import CopyCode from "@/components/core/code/CopyCode.vue";
 import ScopesSelector from "@/components/form/ScopesSelector.vue";
@@ -54,96 +121,77 @@ import type { RepositoryToActions } from "@/types/repository";
 import { type NewAuthTokenResponse } from "@/types/user/token";
 import { notify } from "@kyvg/vue3-notification";
 import { ref } from "vue";
+
 const newToken = ref({
   tokenName: "",
   tokenDescription: "",
   tokenExpiration: "",
 });
+const isSubmitting = ref(false);
 const newResponseTokenResponse = ref<NewAuthTokenResponse | undefined>(undefined);
 const repositoryScopes = ref<Array<RepositoryToActions>>([]);
 const scopes = ref<Array<ScopeDescription>>([]);
+
+function resetForm() {
+  newResponseTokenResponse.value = undefined;
+  newToken.value = {
+    tokenName: "",
+    tokenDescription: "",
+    tokenExpiration: "",
+  };
+  repositoryScopes.value = [];
+  scopes.value = [];
+}
+
 async function createToken() {
-  const repositoryScopesRequest = [] as Array<{
-    repository_string: string;
-    actions: Array<RepositoryActions>;
-  }>;
-  for (const repositoryScope of repositoryScopes.value) {
-    repositoryScopesRequest.push({
+  if (isSubmitting.value) {
+    return;
+  }
+  isSubmitting.value = true;
+  try {
+    const repositoryScopesRequest = repositoryScopes.value.map((repositoryScope) => ({
       repository_string: repositoryScope.repositoryId,
       actions: repositoryScope.actions.asArray(),
+    }));
+
+    const scopesRequest = scopes.value.map((scope) => scope.key);
+
+    const request = {
+      name: newToken.value.tokenName,
+      description: newToken.value.tokenDescription,
+      repository_scopes: repositoryScopesRequest,
+      scopes: scopesRequest,
+    };
+
+    const response = await http.post<NewAuthTokenResponse>("/api/user/token/create", request);
+    newResponseTokenResponse.value = response.data;
+    notify({
+      type: "success",
+      title: "Token Created",
+      text: "Copy the token now. It will not be shown again.",
     });
+  } catch (error) {
+    console.error(error);
+    notify({
+      type: "error",
+      title: "Error Creating Token",
+      text: "An error occurred while creating the token.",
+    });
+  } finally {
+    isSubmitting.value = false;
   }
-  const scopesRequest = scopes.value.map((scope) => scope.key);
-  console.log(`Creating Token with Repository scopes ${JSON.stringify(repositoryScopesRequest)}`);
-  console.log(`Creating Token with Scopes ${JSON.stringify(scopesRequest)}`);
-  const request = {
-    name: newToken.value.tokenName,
-    description: newToken.value.tokenDescription,
-    repository_scopes: repositoryScopesRequest,
-    scopes: scopesRequest,
-  };
-  console.log(`Creating Token with Request ${JSON.stringify(request)}`);
-  await http
-    .post<NewAuthTokenResponse>("/api/user/token/create", request)
-    .then((response) => {
-      console.log(response.data);
-      newResponseTokenResponse.value = response.data;
-      notify({
-        type: "success",
-        title: "Token Created",
-        text: "The token has been created.",
-      });
-    })
-    .catch((error) => {
-      console.error(error);
-      notify({
-        type: "error",
-        title: "Error Creating Token",
-        text: "An error occurred while creating the token.",
-      });
-    });
 }
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
-
-#repositoryScopes {
-  .row {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
-  }
-  .actionButton {
-    background-color: $primary;
-    color: white;
-    border: none;
-    padding: 0.5rem;
-    border-radius: 0.5rem;
-    cursor: pointer;
-    &:disabled {
-      background-color: $primary-50;
-      cursor: not-allowed;
-    }
-  }
-  #header {
-    border-bottom: 1px solid $primary-50;
-    padding: 1rem 0rem;
-    .col {
-      font-weight: bold;
-    }
-  }
-  .row {
-    padding: 1rem;
-    padding-top: 0.5rem;
-  }
-}
-#regularProperties {
+.section-header {
   display: flex;
-  gap: 1rem;
-  .column {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.token-result-card {
+  text-align: left;
 }
 </style>

@@ -384,7 +384,7 @@ function resolveUserOperationError(
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 .admin-user-page {
   display: flex;
   flex-direction: column;

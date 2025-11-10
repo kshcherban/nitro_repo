@@ -682,13 +682,14 @@ function removeGroupMapping(id: string) {
             title="Save SSO configuration">
             Save Changes
           </SubmitButton>
-          <button
-            class="secondary"
-            type="button"
+          <span class="actions__spacer" />
+          <v-btn
+            variant="outlined"
+            color="primary"
             :disabled="ssoSaving"
             @click="resetSsoSettings">
             Reset to Defaults
-          </button>
+          </v-btn>
         </footer>
       </form>
     </section>
@@ -921,19 +922,21 @@ function removeGroupMapping(id: string) {
               placeholder="read/write, admin">
               Nitro roles (comma separated)
             </TextInput>
-            <button
-              type="button"
-              class="secondary"
+            <v-btn
+              variant="text"
+              color="error"
+              :disabled="!oauthForm.enabled"
               @click="removeGroupMapping(mapping.id)">
               Remove
-            </button>
+            </v-btn>
           </div>
-          <button
-            type="button"
-            class="secondary"
+          <v-btn
+            variant="outlined"
+            color="primary"
+            :disabled="!oauthForm.enabled"
             @click="addGroupMapping">
             Add mapping
-          </button>
+          </v-btn>
         </div>
 
         <footer class="actions">
@@ -943,13 +946,14 @@ function removeGroupMapping(id: string) {
             title="Save OAuth2 configuration">
             Save Changes
           </SubmitButton>
-          <button
-            class="secondary"
-            type="button"
+          <span class="actions__spacer" />
+          <v-btn
+            variant="outlined"
+            color="primary"
             :disabled="oauthSaving"
             @click="resetOAuthSettings">
             Reset to Saved Values
-          </button>
+          </v-btn>
         </footer>
         <datalist :id="roleOptionsId">
           <option
@@ -963,32 +967,44 @@ function removeGroupMapping(id: string) {
 </template>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
-
 .systemSettings {
-  max-width: 900px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 2rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  color: var(--nr-text-primary);
 
   h1 {
-    margin-bottom: 1rem;
+    margin-bottom: 0.5rem;
     text-align: center;
   }
 }
 
 .card {
-  background: $background-70;
-  border-radius: 1rem;
-  padding: 1.5rem;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.25);
-}
-
-.ssoForm {
+  background: var(--nr-surface);
+  border: 1px solid var(--nr-border-color);
+  border-radius: var(--nr-radius-lg);
+  padding: 1.75rem;
+  box-shadow: var(--nr-shadow-2);
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+
+  header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+
+    p {
+      margin: 0;
+      color: var(--nr-text-secondary, rgba(0, 0, 0, 0.6));
+    }
+  }
 }
 
+.ssoForm,
 .oauthForm {
   display: flex;
   flex-direction: column;
@@ -997,7 +1013,7 @@ function removeGroupMapping(id: string) {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 1rem 1.5rem;
 }
 
@@ -1005,68 +1021,66 @@ function removeGroupMapping(id: string) {
   display: flex;
   gap: 1rem;
   align-items: center;
+  justify-content: flex-end;
 }
 
-.actions .secondary {
-  background: transparent;
-  color: $text;
-  border: 1px solid $text-50;
-  border-radius: 0.5rem;
-  padding: 0.75rem 1.5rem;
-  cursor: pointer;
-}
-
-.actions .secondary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.actions__spacer {
+  flex: 1 1 auto;
 }
 
 .providerSection {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 0.75rem;
+  border: 1px solid var(--nr-border-color);
+  border-radius: var(--nr-radius-lg);
   padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  background: $background-70;
+  background-color: var(--nr-surface-variant);
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+  }
 }
 
 .casbinEditors {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem 1.5rem;
+  gap: 1.25rem;
 }
 
 .textareaLabel {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-}
 
-.textareaLabel textarea {
-  width: 100%;
-  min-height: 200px;
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: $background-70;
-  color: $text;
-  font-family: inherit;
-  resize: vertical;
-}
+  textarea {
+    width: 100%;
+    min-height: 200px;
+    padding: 0.75rem;
+    border-radius: var(--nr-radius-md);
+    border: 1px solid var(--nr-input-border);
+    background: var(--nr-input-background);
+    color: var(--nr-text-primary);
+    font-family: inherit;
+    resize: vertical;
 
-.providerSection header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+    &:hover {
+      border-color: var(--nr-input-border-hover);
+    }
 
-.providerSection h3 {
-  margin: 0;
+    &:focus {
+      outline: none;
+      border: 1px solid var(--nr-input-border-hover);
+      box-shadow: var(--nr-focus-ring);
+    }
+  }
 }
 
 .hint {
-  color: $text-50;
+  color: var(--nr-text-secondary, rgba(0, 0, 0, 0.6));
   font-size: 0.9rem;
   margin: 0;
 }
@@ -1075,59 +1089,81 @@ function removeGroupMapping(id: string) {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-}
 
-.roleMappings__header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
+  &__header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
 
-.roleMappings__header h3 {
-  margin: 0;
+    h3 {
+      margin: 0;
+    }
+  }
+
+  .emptyState {
+    padding: 0.75rem 1rem;
+    border-radius: var(--nr-radius-md);
+    border: 1px dashed var(--nr-border-color);
+    background: var(--nr-surface);
+    color: var(--nr-text-secondary, rgba(0, 0, 0, 0.6));
+  }
 }
 
 .mappingRow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1rem;
-  align-items: end;
+  align-items: center;
+
+  select {
+    width: 100%;
+    padding: 0.75rem;
+    border-radius: var(--nr-radius-md);
+    border: 1px solid var(--nr-input-border);
+    background: var(--nr-input-background);
+    color: var(--nr-text-primary);
+
+    &:hover {
+      border-color: var(--nr-input-border-hover);
+    }
+
+    &:focus {
+      outline: none;
+      border: 1px solid var(--nr-input-border-hover);
+      box-shadow: var(--nr-focus-ring);
+    }
+  }
 }
 
-.mappingRow select {
-  width: 100%;
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: $background-70;
-  color: $text;
-}
-
-.emptyState {
-  padding: 0.75rem 1rem;
-  border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.05);
-  color: $text-50;
-}
-
-.actions .secondary:not(:disabled):hover {
-  background: $text-50;
-  color: $background;
-}
-
-header p {
+.providerSection .grid {
   margin-top: 0.5rem;
-  color: $text-50;
 }
 
-@media (max-width: 600px) {
-  .systemSettings {
-    padding: 1rem 0.5rem;
-  }
-  .card {
-    padding: 1rem;
-  }
+.roles-field {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.mappingRow .v-btn {
+  align-self: flex-start;
+}
+
+.group-mappings > .v-btn {
+  align-self: flex-start;
+}
+
+.actions > .v-btn {
+  min-width: 160px;
+}
+
+@media (max-width: 720px) {
   .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .roles-field {
     flex-direction: column;
     align-items: stretch;
   }

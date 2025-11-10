@@ -1,40 +1,23 @@
 <template>
-  <section :id="id + '-section'">
-    <label :for="id">
+  <v-text-field
+    :id="id"
+    :type="type"
+    :label="label"
+    :error-messages="error"
+    :clearable="haveClearButton"
+    v-model="value"
+    v-bind="$attrs"
+    variant="outlined"
+    density="comfortable">
+    <template v-if="$slots.default" #label>
       <slot />
-    </label>
-    <span
-      class="error"
-      v-if="error"
-      >{{ error }}</span
-    >
-    <div
-      v-if="haveClearButton"
-      class="input-container">
-      <input
-        :type="type"
-        :id="haveClearButton ? id : undefined"
-        v-model="value"
-        v-bind="$attrs" />
-      <button>
-        <font-awesome-icon
-          v-if="value"
-          @click="value = ''"
-          icon="x" />
-      </button>
-    </div>
-    <input
-      v-else
-      :type="type"
-      :id="haveClearButton ? undefined : id"
-      v-model="value"
-      v-bind="$attrs" />
-  </section>
+    </template>
+  </v-text-field>
 </template>
 <script setup lang="ts">
-import "@/assets/styles/form.scss";
-import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   id: String,
   haveClearButton: {
     type: Boolean,
@@ -48,36 +31,17 @@ defineProps({
     type: String,
     default: "text",
   },
+  label: {
+    type: String,
+    required: false,
+  },
 });
+
 const value = defineModel<string | undefined>({
   required: true,
 });
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
-@import "@/assets/styles/form.scss";
-
-.input-container {
-  position: relative;
-  display: inline-block;
-  width: 100%;
-
-  input {
-    width: 100%;
-  }
-
-  button {
-    position: absolute;
-    right: 10px;
-    top: 50%;
-    transform: translateY(-25%);
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    font-size: 16px;
-    color: $text;
-    transition: color 0.3s ease;
-  }
-}
+/* Vuetify handles styling */
 </style>

@@ -182,7 +182,7 @@ function resolveStorageError(error: unknown): {
 }
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/tokens.scss" as *;
 form {
   display: flex;
   flex-direction: column;
@@ -193,7 +193,7 @@ form {
 }
 .storageConfig {
   padding: 1rem;
-  border: 1px solid $secondary;
+  border: 1px solid var(--nr-border-color);
   border-radius: 0.5rem;
 }
 @media screen and (max-width: 1200px) {

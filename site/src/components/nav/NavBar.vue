@@ -38,7 +38,7 @@ defineProps({
 </script>
 
 <style lang="scss" scoped>
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 nav {
   display: flex;
   gap: 1rem;
@@ -62,6 +62,10 @@ nav {
   gap: 0.5rem;
   // Box
   border-radius: 0.5rem;
+  &:hover,
+  &:focus-visible {
+    text-decoration: none;
+  }
 }
 .right {
   margin-left: auto;

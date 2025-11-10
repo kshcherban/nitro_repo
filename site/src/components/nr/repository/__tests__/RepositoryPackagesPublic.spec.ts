@@ -1,4 +1,5 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { config, flushPromises, mount } from "@vue/test-utils";
+import { defineComponent, h } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/http", () => ({
@@ -43,6 +44,67 @@ function createLocalStorageStub() {
   };
 }
 
+const vBtnStub = defineComponent({
+    name: "VBtnStub",
+    emits: ["click"],
+    setup(_, { slots, emit }) {
+      return () =>
+        h(
+          "button",
+          {
+            "data-stub": "v-btn",
+            type: "button",
+            onClick: (event: Event) => emit("click", event),
+          },
+          slots.default?.(),
+        );
+    },
+  });
+
+const vSelectStub = defineComponent({
+    name: "VSelectStub",
+    props: {
+      modelValue: {
+        type: [String, Number, Array, Object],
+        default: undefined,
+      },
+      items: {
+        type: Array,
+        default: () => [],
+      },
+    },
+    emits: ["update:modelValue"],
+    setup(props, { emit }) {
+      return () =>
+        h(
+          "select",
+          {
+            "data-stub": "v-select",
+            value: props.modelValue as any,
+            onChange: (event: Event) => {
+              const target = event.target as HTMLSelectElement;
+              emit("update:modelValue", target.value);
+            },
+          },
+          (props.items as any[]).map((item) =>
+            h("option", { value: item }, item),
+          ),
+        );
+    },
+  });
+
+const vuetifyStubs = {
+  "v-btn": vBtnStub,
+  VBtn: vBtnStub,
+  "v-select": vSelectStub,
+  VSelect: vSelectStub,
+};
+
+config.global.stubs = {
+  ...config.global.stubs,
+  ...vuetifyStubs,
+};
+
 describe("RepositoryPackagesPublic.vue", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -59,6 +121,9 @@ describe("RepositoryPackagesPublic.vue", () => {
     mount(RepositoryPackagesPublic, {
       props: {
         repositoryId: "repo-123",
+      },
+      global: {
+        stubs: vuetifyStubs,
       },
     });
 
@@ -108,6 +173,9 @@ describe("RepositoryPackagesPublic.vue", () => {
         repositoryType: "python",
         repositoryKind: "proxy",
       },
+      global: {
+        stubs: vuetifyStubs,
+      },
     });
 
     await flushPromises();
@@ -154,6 +222,9 @@ describe("RepositoryPackagesPublic.vue", () => {
         repositoryType: "python",
         repositoryKind: "proxy",
       },
+      global: {
+        stubs: vuetifyStubs,
+      },
     });
 
     await flushPromises();
@@ -185,6 +256,9 @@ describe("RepositoryPackagesPublic.vue", () => {
         repositoryId: "repo-ABC",
         repositoryType: "python",
         repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
       },
     });
 

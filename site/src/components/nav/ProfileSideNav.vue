@@ -40,5 +40,5 @@ import SideNavElement from "./sideNav/SideNavElement.vue";
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+// ProfileSideNav uses the new SideNav component which already handles proper theming
 </style>

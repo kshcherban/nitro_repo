@@ -1,21 +1,27 @@
 <template>
-  <header>
-    <NavBar :user="user" />
-  </header>
-  <div
-    class="contentWithSideBar"
-    v-if="hasSideBar">
-    <component :is="router.currentRoute.value.meta.sideBar" />
-    <RouterView />
-  </div>
-  <RouterView v-else />
-  <Notifications />
+  <v-app>
+    <AppBar :user="user" />
+    <v-main>
+      <div
+        class="contentWithSideBar"
+        v-if="hasSideBar">
+        <component :is="router.currentRoute.value.meta.sideBar" />
+        <v-slide-x-transition mode="out-in">
+          <RouterView />
+        </v-slide-x-transition>
+      </div>
+      <v-slide-x-transition mode="out-in" v-else>
+        <RouterView />
+      </v-slide-x-transition>
+    </v-main>
+    <Notifications />
+  </v-app>
 </template>
 <script setup lang="ts">
 import { RouterView } from "vue-router";
 import { siteStore } from "./stores/site";
 import router from "./router";
-import NavBar from "./components/nav/NavBar.vue";
+import AppBar from "./components/layout/AppBar.vue";
 import { sessionStore } from "./stores/session";
 import { computed } from "vue";
 import { Notifications } from "@kyvg/vue3-notification";

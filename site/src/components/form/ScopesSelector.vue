@@ -70,7 +70,7 @@ getScopeDescriptions();
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 .groupName {
   font-size: 1.5rem;
   margin: 1rem;

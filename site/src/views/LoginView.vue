@@ -1,67 +1,126 @@
 <template>
-  <main>
-    <h1>Login Page</h1>
-    <section
-      v-if="primaryFederated"
-      class="ssoLogin">
-      <button
-        type="button"
-        class="ssoButton"
-        @click="federatedHandler(primaryFederated)">
-        {{ primaryFederated.label }}
-      </button>
-      <p
-        class="ssoHelp"
-        v-if="showAutoProvisionMessage">
-        Your account will be created automatically on first login.
-      </p>
-    </section>
-    <section
-      v-if="secondaryProviders.length > 0"
-      class="oauthLogin">
-      <button
-        v-for="provider in secondaryProviders"
-        :key="provider.provider"
-        type="button"
-        class="oauthButton"
-        @click="startOAuth(provider.provider)">
-        Sign in with {{ providerLabel(provider.provider) }}
-      </button>
-    </section>
-    <div
-      v-if="hasFederatedLogin"
-      class="separator">
-      <span>or</span>
-    </div>
-    <form @submit.prevent="login">
-      <h4 v-if="failedLogin">Invalid username or password</h4>
-      <TextInput
-        id="username"
-        v-model="input.email_or_username"
-        autocomplete="username"
-        autocapitalize="false"
-        required
-        autofocus
-        placeholder="Username or Email">
-        Username or Email
-      </TextInput>
-      <PasswordInput
-        id="password"
-        v-model="input.password"
-        required
-        >Password</PasswordInput
-      >
-      <div class="forgotPassword">
-        <router-link to="/forgot-password">Forgot Password?</router-link>
-      </div>
-      <SubmitButton title="Login">Login</SubmitButton>
-    </form>
-  </main>
+  <v-container class="login-container">
+    <v-row justify="center" align="center">
+      <v-col cols="12" sm="8" md="6" lg="4" xl="3">
+        <v-card class="elevation-4" max-width="450">
+          <v-card-title class="text-center pa-6">
+            <div class="d-flex flex-column align-center">
+              <v-avatar
+                :image="'/icon-128.png'"
+                size="64"
+                class="mb-4" />
+              <span class="text-h4 font-weight-medium text-primary">Nitro Repository</span>
+              <span class="text-body-1 text-medium-emphasis mt-1">Sign in to your account</span>
+            </div>
+          </v-card-title>
+
+          <v-card-text class="pa-6 pt-0">
+            <!-- Primary Federated Login (SSO or first OAuth) -->
+            <div
+              v-if="primaryFederated"
+              class="mb-4">
+              <v-btn
+                block
+                size="large"
+                color="primary"
+                variant="flat"
+                @click="federatedHandler(primaryFederated)"
+                class="text-none">
+                <v-icon start>mdi-login</v-icon>
+                {{ primaryFederated.label }}
+              </v-btn>
+              <p
+                v-if="showAutoProvisionMessage"
+                class="text-center text-caption text-medium-emphasis mt-2">
+                Your account will be created automatically on first login.
+              </p>
+            </div>
+
+            <!-- Secondary OAuth Providers -->
+            <div
+              v-if="secondaryProviders.length > 0"
+              class="mb-4">
+              <v-btn
+                v-for="provider in secondaryProviders"
+                :key="provider.provider"
+                block
+                size="large"
+                color="secondary"
+                variant="outlined"
+                @click="startOAuth(provider.provider)"
+                class="text-none mb-2">
+                <v-icon start>mdi-account-circle</v-icon>
+                Sign in with {{ providerLabel(provider.provider) }}
+              </v-btn>
+            </div>
+
+            <!-- Separator -->
+            <div
+              v-if="hasFederatedLogin"
+              class="my-6">
+              <v-divider>
+                <span class="text-caption text-medium-emphasis px-2">or</span>
+              </v-divider>
+            </div>
+
+            <!-- Local Login Form -->
+            <v-form @submit.prevent="login" class="login-form">
+              <v-alert
+                v-if="failedLogin"
+                type="error"
+                variant="tonal"
+                class="mb-4">
+                Invalid username or password
+              </v-alert>
+
+              <v-text-field
+                v-model="input.email_or_username"
+                label="Username or Email"
+                autocomplete="username"
+                autocapitalize="false"
+                variant="outlined"
+                prepend-inner-icon="mdi-account"
+                required
+                autofocus
+                class="mb-4" />
+
+              <v-text-field
+                v-model="input.password"
+                label="Password"
+                :type="showPassword ? 'text' : 'password'"
+                autocomplete="current-password"
+                variant="outlined"
+                prepend-inner-icon="mdi-lock"
+                :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
+                @click:append-inner="showPassword = !showPassword"
+                required
+                class="mb-4" />
+
+              <div class="text-end mb-4">
+                <router-link
+                  to="/forgot-password"
+                  class="text-primary text-decoration-none">
+                  Forgot Password?
+                </router-link>
+              </div>
+
+              <v-btn
+                type="submit"
+                block
+                size="large"
+                color="primary"
+                variant="flat"
+                class="text-none">
+                Login
+              </v-btn>
+            </v-form>
+          </v-card-text>
+        </v-card>
+      </v-col>
+    </v-row>
+  </v-container>
 </template>
 <script setup lang="ts">
-import SubmitButton from "@/components/form/SubmitButton.vue";
-import PasswordInput from "@/components/form/text/PasswordInput.vue";
-import TextInput from "@/components/form/text/TextInput.vue";
 import http from "@/http";
 import router from "@/router";
 import { sessionStore } from "@/stores/session";
@@ -71,6 +130,7 @@ import type { InstanceOAuth2Provider } from "@/types/base";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 const failedLogin = ref(false);
+const showPassword = ref(false);
 const input = ref({
   email_or_username: "",
   password: "",
@@ -217,82 +277,26 @@ onMounted(async () => {
 });
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
-main {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
+.login-container {
+  min-height: 100vh;
+  background-color: rgb(var(--v-theme-background));
 }
-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+
+// Ensure proper color contrast for links
+:deep(.v-btn .v-btn__content) {
+  color: rgb(var(--v-theme-on-primary));
 }
-.ssoLogin {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin-bottom: 1.5rem;
-}
-.ssoButton {
-  background-color: $primary-70;
-  color: $background;
-  padding: 0.75rem 1.5rem;
-  border: none;
-  border-radius: 0.5rem;
-  font-size: 1.1rem;
-  cursor: pointer;
-}
-.ssoButton:hover {
-  background-color: $primary-90;
-}
-.oauthLogin {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-}
-.oauthButton {
-  background-color: $secondary;
-  color: $text;
-  padding: 0.75rem 1.5rem;
-  border: none;
-  border-radius: 0.5rem;
-  font-size: 1.05rem;
-  cursor: pointer;
-}
-.oauthButton:hover {
-  background-color: $secondary-70;
-}
-.ssoHelp {
-  margin-top: 0.5rem;
-  font-size: 0.9rem;
-  color: $text-50;
-  text-align: center;
-}
-.separator {
-  margin: 1.5rem 0;
-  display: flex;
-  align-items: center;
-  color: $text-50;
-  gap: 0.5rem;
-  &::before,
-  &::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: $text-50;
-  }
-}
-.forgotPassword {
-  text-align: right;
-  color: $text;
-  a {
-    color: $text;
-    text-decoration: none;
+
+// Style the login form for better appearance
+.login-form {
+  .v-text-field {
+    .v-field__outline {
+      border-color: rgba(var(--v-theme-outline-variant), 0.5);
+    }
+
+    &:focus-within .v-field__outline {
+      border-color: rgb(var(--v-theme-primary));
+    }
   }
 }
 </style>

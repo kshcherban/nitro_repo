@@ -1,38 +1,50 @@
 <template>
-  <section class="firstPasswordInput">
-    <label :for="id">
-      <slot />
-    </label>
-    <input
-      @focusin="isFocused = true"
-      @focusout="isFocused = false"
-      type="password"
+  <section class="password-section">
+    <v-text-field
       :id="id"
+      :type="showPassword ? 'text' : 'password'"
       autocomplete="new-password"
       v-model="internalValue.value"
-      v-bind="$attrs" />
+      variant="outlined"
+      density="comfortable"
+      :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
+      @click:append-inner="showPassword = !showPassword"
+      v-bind="$attrs"
+      @focus="isFocused = true"
+      @blur="isFocused = false">
+      <template v-if="$slots.default" #label>
+        <slot />
+      </template>
+    </v-text-field>
     <InputRequirements
       :show="isFocused"
       :validations="validations"
       :results="validationResults" />
   </section>
-  <section>
-    <label
-      :for="id + '-confirm'"
-      class="confirmPassword">
-      Confirm Password
-      <span v-if="passwordsMatchMessage">
-        <font-awesome-icon :icon="passwordsMatchMessage.icon" />
-        {{ passwordsMatchMessage.message }}
-      </span>
-    </label>
 
-    <input
-      type="password"
+  <section class="password-section">
+    <v-text-field
       :id="id + '-confirm'"
+      :type="showConfirmPassword ? 'text' : 'password'"
       autocomplete="new-password"
       v-model="internalValue.confirmValue"
-      v-bind="$attrs" />
+      variant="outlined"
+      density="comfortable"
+      :append-inner-icon="showConfirmPassword ? 'mdi-eye-off' : 'mdi-eye'"
+      @click:append-inner="showConfirmPassword = !showConfirmPassword"
+      :error="showMismatchError"
+      :hint="undefined"
+      :persistent-hint="false"
+      v-bind="$attrs">
+      <template #label>Confirm Password</template>
+    </v-text-field>
+    <div
+      v-if="passwordsMatchMessage"
+      class="password-status"
+      :data-valid="passwordsMatch">
+      <font-awesome-icon :icon="passwordsMatchMessage.icon" />
+      <span>{{ passwordsMatchMessage.message }}</span>
+    </div>
   </section>
 </template>
 <script setup lang="ts">
@@ -63,6 +75,8 @@ const actualPasswordRules = computed(() => {
 const passwordsMatch = ref(false);
 const isFocused = ref(false);
 const isValid = ref(false);
+const showPassword = ref(false);
+const showConfirmPassword = ref(false);
 const passwordsMatchMessage = computed(() => {
   if (internalValue.value.value === "" && internalValue.value.confirmValue === "") {
     return undefined;
@@ -81,6 +95,7 @@ const internalValue = ref({
   value: "",
   confirmValue: "",
 });
+
 const validationResults = ref<Record<string, boolean>>({});
 const value = defineModel<string | undefined>({
   required: true,
@@ -129,32 +144,31 @@ watch(
   },
   { deep: true },
 );
+
+const showMismatchError = computed(
+  () =>
+    !passwordsMatch.value &&
+    internalValue.value.confirmValue.length > 0 &&
+    internalValue.value.value.length > 0,
+);
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/form.scss";
-@import "@/assets/styles/theme.scss";
-
-.inputs {
+.password-section {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  label {
-    width: 100%;
-    text-align: left;
-  }
-  input {
-    width: 100%;
-  }
+  gap: 0.5rem;
 }
-.firstPasswordInput {
-  margin: 1rem 0;
-}
-.confirmPassword {
+
+.password-status {
   display: flex;
-  flex-direction: row;
-  gap: 1rem;
-  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  &[data-valid="true"] {
+    color: rgb(var(--v-theme-success));
+  }
+  &[data-valid="false"] {
+    color: rgb(var(--v-theme-error));
+  }
 }
 </style>

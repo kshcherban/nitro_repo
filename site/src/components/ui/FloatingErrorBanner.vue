@@ -1,24 +1,36 @@
 <template>
-  <transition name="floating-error-fade">
-    <div
-      v-if="visible"
-      class="floating-error"
-      role="alertdialog"
-      aria-live="assertive"
-      aria-modal="false">
-      <h3 class="floating-error__title">{{ title }}</h3>
-      <p class="floating-error__message">{{ message }}</p>
-      <div class="floating-error__actions">
-        <button type="button" @click="$emit('close')" aria-label="Dismiss error">
+  <v-dialog
+    v-model="dialogVisible"
+    max-width="420"
+    persistent
+    scrim="true">
+    <v-card>
+      <v-card-title class="d-flex align-center gap-3">
+        <v-icon color="error" size="24">mdi-alert-circle</v-icon>
+        <span class="text-h6">{{ title }}</span>
+      </v-card-title>
+
+      <v-card-text>
+        <div class="text-body-1 whitespace-pre-wrap">{{ message }}</div>
+      </v-card-text>
+
+      <v-card-actions class="justify-end pa-4">
+        <v-btn
+          color="primary"
+          variant="text"
+          @click="$emit('close')"
+          class="text-none">
           Dismiss
-        </button>
-      </div>
-    </div>
-  </transition>
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 
 <script setup lang="ts">
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   visible: {
     type: Boolean,
     default: false,
@@ -36,68 +48,21 @@ defineProps({
 defineEmits<{
   (e: "close"): void;
 }>();
+
+const dialogVisible = computed({
+  get: () => props.visible,
+  set: (value) => {
+    if (!value) {
+      // Emit close when the dialog is being closed
+      // This handles both programmatic closing and user interaction
+    }
+  }
+});
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
-
-.floating-error {
-  position: fixed;
-  top: 25%;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: 420px;
-  width: calc(100% - 2rem);
-  background-color: $background-90;
-  border-radius: 1rem;
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  border: 1px solid $secondary-70;
-  z-index: 1200;
-}
-
-.floating-error__title {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: $text;
-}
-
-.floating-error__message {
-  color: $text-50;
-  line-height: 1.5;
+.whitespace-pre-wrap {
   white-space: pre-wrap;
-}
-
-.floating-error__actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.floating-error__actions button {
-  background: transparent;
-  border: none;
-  color: $primary;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0.25rem 0.75rem;
-  border-radius: 0.5rem;
-}
-
-.floating-error__actions button:hover,
-.floating-error__actions button:focus-visible {
-  background-color: $primary-30;
-}
-
-.floating-error-fade-enter-active,
-.floating-error-fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.floating-error-fade-enter-from,
-.floating-error-fade-leave-to {
-  opacity: 0;
+  line-height: 1.5;
 }
 </style>

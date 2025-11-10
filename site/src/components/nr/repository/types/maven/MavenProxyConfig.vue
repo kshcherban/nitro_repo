@@ -1,86 +1,158 @@
 <template>
-  <ul
-    v-auto-animate
-    class="proxyConfig">
-    <li
-      class="proxyRoute"
-      v-for="route in value?.routes"
-      :key="route.url">
-      <input v-model="route.url" />
-      <input v-model="route.name" />
-      <button
-        class="actionButton"
-        @click="removeRoute(route)">
-        Remove
-      </button>
-    </li>
-    <li class="proxyRoute add">
-      <input
-        v-model="newRoute.url"
-        placeholder="https://repo1.maven.org/maven2/" />
-      <input
-        v-model="newRoute.name"
-        placeholder="Maven Central" />
-      <button
-        class="actionButton"
-        @click="addRoute">
-        Add
-      </button>
-    </li>
-  </ul>
+  <section class="maven-proxy">
+    <div class="maven-proxy__header">
+      <h3 class="text-subtitle-1 font-weight-medium mb-2">Upstream Routes</h3>
+      <p class="text-body-2 text-medium-emphasis">
+        Routes are tried in order to fetch artifacts from remote Maven repositories.
+      </p>
+    </div>
+
+    <v-divider />
+
+    <div class="maven-proxy__routes" v-auto-animate>
+      <div
+        v-for="(route, index) in value.routes"
+        :key="`${route.url}-${index}`"
+        class="maven-proxy__route">
+        <v-row dense>
+          <v-col cols="12" md="7">
+            <TextInput
+              v-model="route.url"
+              required
+              placeholder="https://repo1.maven.org/maven2/">
+              Upstream URL
+            </TextInput>
+          </v-col>
+          <v-col cols="12" md="4">
+            <TextInput
+              v-model="route.name"
+              placeholder="Maven Central">
+              Display Name
+            </TextInput>
+          </v-col>
+          <v-col
+            cols="12"
+            md="1"
+            class="d-flex align-end justify-end">
+            <v-btn
+              color="error"
+              variant="text"
+              class="text-none"
+              :disabled="value.routes.length <= 1"
+              @click="removeRoute(index)">
+              Remove
+            </v-btn>
+          </v-col>
+        </v-row>
+      </div>
+    </div>
+
+    <div class="maven-proxy__add mt-4">
+      <v-row dense>
+        <v-col cols="12" md="7">
+          <TextInput
+            v-model="draft.url"
+            placeholder="https://repo1.maven.org/maven2/"
+            required>
+            Upstream URL
+          </TextInput>
+        </v-col>
+        <v-col cols="12" md="4">
+          <TextInput
+            v-model="draft.name"
+            placeholder="Maven Central">
+            Display Name
+          </TextInput>
+        </v-col>
+        <v-col
+          cols="12"
+          md="1"
+          class="d-flex align-end justify-end">
+          <v-btn
+            color="primary"
+            variant="tonal"
+            class="text-none"
+            :disabled="!draft.url.trim()"
+            @click="addRoute">
+            Add
+          </v-btn>
+        </v-col>
+      </v-row>
+    </div>
+  </section>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
-import { type MavenProxyRoute, type MavenProxyConfigType } from "./maven";
+import { reactive } from "vue";
 import { notify } from "@kyvg/vue3-notification";
-const newRoute = ref<MavenProxyRoute>({
-  url: "",
-  name: "",
-});
+import TextInput from "@/components/form/text/TextInput.vue";
+import { type MavenProxyRoute, type MavenProxyConfigType } from "./maven";
 
 const value = defineModel<MavenProxyConfigType>({
   required: true,
 });
-function removeRoute(route: MavenProxyRoute) {
-  value.value.routes = value.value.routes.filter((r) => r !== route);
+
+if (!value.value || !Array.isArray(value.value.routes)) {
+  value.value = {
+    routes: Array.isArray(value.value?.routes) ? value.value.routes : [],
+  };
 }
+
+const draft = reactive<MavenProxyRoute>({
+  url: "",
+  name: "",
+});
+
+function removeRoute(index: number) {
+  if (index < 0 || index >= value.value.routes.length) {
+    return;
+  }
+  value.value.routes.splice(index, 1);
+}
+
 function addRoute() {
+  const trimmedUrl = draft.url.trim();
+  if (!trimmedUrl) {
+    return;
+  }
   try {
-    new URL(newRoute.value.url);
-  } catch (e) {
-    console.error("Invalid URL", e);
+    // Validate URL format
+    new URL(trimmedUrl);
+  } catch (error) {
+    console.error("Invalid Maven proxy URL", error);
     notify({
       type: "error",
       title: "Invalid URL",
-      text: "Please enter a valid URL",
+      text: "Provide a valid upstream Maven repository URL.",
     });
     return;
   }
-
   value.value.routes.push({
-    url: newRoute.value.url,
-    name: newRoute.value.name,
+    url: trimmedUrl,
+    name: (draft.name ?? "").trim() || undefined,
   });
-  newRoute.value.url = "";
-  newRoute.value.name = "";
+  draft.url = "";
+  draft.name = "";
 }
 </script>
 
-<style lang="scss" scoped>
-@import "@/assets/styles/theme.scss";
-.proxyRoute {
+<style scoped lang="scss">
+.maven-proxy {
   display: flex;
-  margin: 0.5rem;
-  input {
-    margin-right: 0.5rem;
+  flex-direction: column;
+  gap: 1rem;
+
+  &__routes {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
   }
-}
-.actionButton {
-  margin-left: 0.5rem;
-}
-.proxyConfig {
-  list-style-type: none;
-  padding: 0;
+
+  &__route,
+  &__add {
+    padding: 1rem 0;
+    border-radius: 12px;
+    background-color: transparent;
+  }
 }
 </style>

@@ -264,7 +264,7 @@ async function save() {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 .row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr 1fr;

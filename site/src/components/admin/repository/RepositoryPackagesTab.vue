@@ -1,202 +1,111 @@
 <template>
   <section class="packages">
-    <header class="packages__header">
-      <div class="packages__title-row">
-        <h2>{{ headerTitle }}</h2>
-        <div
-          class="packages__search"
-          v-if="!isLoading && totalPackages > 0">
-          <input
-            type="search"
-            :placeholder="`Search ${headerTitle.toLowerCase()}…`"
-            v-model="searchTerm"
-            aria-label="Search packages" />
-        </div>
-      </div>
-      <div
-        v-if="!isLoading"
-        class="packages__header-meta">
-        <div class="packages__counts">
-          <span>{{ totalPackages }} package(s)</span>
-          <span v-if="visiblePackages.length"> Showing {{ visiblePackages.length }} file(s) </span>
-        </div>
-        <div class="packages__actions">
-          <span v-if="selectedCount > 0">{{ selectedCount }} selected</span>
-          <button
-            class="nr-button nr-button--danger"
-            type="button"
-            @click="deleteSelected"
-            :disabled="selectedCount === 0 || isDeleting">
-            Delete Selected
-          </button>
-        </div>
-      </div>
-    </header>
+    <v-card>
+      <v-card-title class="d-flex align-center pa-4">
+        <span class="text-h6">{{ headerTitle }}</span>
+        <v-spacer />
+        <v-text-field
+          v-if="!isLoading && totalPackages > 0"
+          v-model="searchTerm"
+          :placeholder="`Search ${headerTitle.toLowerCase()}…`"
+          prepend-inner-icon="mdi-magnify"
+          variant="outlined"
+          density="compact"
+          hide-details
+          style="max-width: 300px;"
+          aria-label="Search packages" />
+      </v-card-title>
 
-    <div
-      v-if="isLoading"
-      class="packages__state">
-      Loading packages...
-    </div>
-    <div
-      v-else-if="error"
-      class="packages__state packages__state--error">
-      Failed to load packages: {{ error }}
-    </div>
-    <div
-      v-else-if="totalPackages === 0"
-      class="packages__state">
-      {{ emptyRepositoryMessage }}
-    </div>
-    <div
-      v-else-if="visiblePackages.length === 0"
-      class="packages__state">
-      No packages match your search on this page. Try a different page or clear the filters.
-    </div>
-    <div
-      v-else
-      class="packages__table-container">
-      <table class="packages__table">
-        <thead>
-          <tr>
-            <th
-              class="packages__checkbox"
-              data-column="checkbox">
-              <input
-                type="checkbox"
-                :checked="allSelected"
-                :indeterminate.prop="isIndeterminate"
-                @change="toggleSelectAll"
-                :disabled="isDeleting" />
-            </th>
-            <th
-              :style="{ width: columnWidths.package + 'px' }"
-              class="resizable"
-              data-column="package"
-              @mousedown="startResize($event, 'package')">
-              <div class="column-header">
-                {{ packageColumnTitle }}
-                <div class="resize-handle"></div>
-              </div>
-            </th>
-            <th
-              :style="{ width: columnWidths.name + 'px' }"
-              class="resizable"
-              data-column="name"
-              @mousedown="startResize($event, 'name')">
-              <div class="column-header">
-                {{ nameColumnTitle }}
-                <div class="resize-handle"></div>
-              </div>
-            </th>
-            <th
-              :style="{ width: columnWidths.size + 'px' }"
-              class="resizable"
-              data-column="size"
-              @mousedown="startResize($event, 'size')">
-              <div class="column-header">
-                Size
-                <div class="resize-handle"></div>
-              </div>
-            </th>
-            <th
-              :style="{ width: columnWidths.path + 'px' }"
-              class="resizable"
-              data-column="path"
-              @mousedown="startResize($event, 'path')">
-              <div class="column-header">
-                {{ pathColumnTitle }}
-                <div class="resize-handle"></div>
-              </div>
-            </th>
-            <th
-              :style="{ width: columnWidths.timestamp + 'px' }"
-              class="resizable"
-              data-column="timestamp"
-              @mousedown="startResize($event, 'timestamp')">
-              <div class="column-header">
-                {{ timestampColumnTitle }}
-                <div class="resize-handle"></div>
-              </div>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="pkg in visiblePackages"
-            :key="pkg.cachePath">
-            <td class="packages__checkbox">
-              <input
-                type="checkbox"
-                :value="pkg.cachePath"
-                v-model="selected"
-                :disabled="isDeleting" />
-            </td>
-            <td class="package-cell">
-              <div
-                class="cell-content"
-                :title="pkg.package">
-                {{ pkg.package }}
-              </div>
-            </td>
-            <td class="name-cell">
-              <div
-                class="cell-content"
-                :title="pkg.name">
-                {{ pkg.name }}
-              </div>
-            </td>
-            <td class="size-cell">
-              <div class="cell-content">{{ formatBytes(pkg.size) }}</div>
-            </td>
-            <td class="path-cell">
-              <div class="cell-content">
-                <code :title="pkg.cachePath">{{ pkg.cachePath }}</code>
-              </div>
-            </td>
-            <td class="timestamp-cell">
-              <div
-                class="cell-content"
-                :title="new Date(pkg.modified).toLocaleString()">
-                {{ new Date(pkg.modified).toLocaleString() }}
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <div
-      v-if="totalPackages > 0"
-      class="packages__pager">
-      <button
-        class="nr-button"
-        type="button"
-        @click="prevPage"
-        :disabled="currentPage === 1">
-        Previous
-      </button>
-      <span>{{ pageLabel }}</span>
-      <button
-        class="nr-button"
-        type="button"
-        @click="nextPage"
-        :disabled="currentPage >= totalPages">
-        Next
-      </button>
-      <label class="packages__pager-select">
-        Per page
-        <select
-          :value="perPage"
-          @change="updatePerPage">
-          <option
-            v-for="option in perPageOptions"
-            :key="option"
-            :value="option">
-            {{ option }}
-          </option>
-        </select>
-      </label>
-    </div>
+      <v-card-subtitle v-if="!isLoading" class="pa-4 pt-0">
+        <div class="d-flex align-center justify-space-between flex-wrap">
+          <div class="text-body-2 text-medium-emphasis">
+            {{ totalPackages }} package(s)
+            <span v-if="visiblePackages.length"> · Showing {{ visiblePackages.length }} file(s)</span>
+          </div>
+          <div class="d-flex align-center gap-3">
+            <span v-if="selectedCount > 0" class="text-body-2">{{ selectedCount }} selected</span>
+            <v-btn
+              color="error"
+              variant="flat"
+              prepend-icon="mdi-delete"
+              :disabled="selectedCount === 0 || isDeleting"
+              :loading="isDeleting"
+              @click="deleteSelected">
+              Delete Selected
+            </v-btn>
+          </div>
+        </div>
+      </v-card-subtitle>
+
+      <v-data-table
+        v-if="!isLoading && !error && totalPackages > 0 && visiblePackages.length > 0"
+        :headers="headers"
+        :items="tableItems"
+        :search="searchTerm"
+        :loading="isDeleting"
+        item-value="cachePath"
+        v-model="selected"
+        show-select
+        class="elevation-0">
+
+        <template v-slot:item.size="{ value }">
+          <div class="text-end">{{ formatBytes(value) }}</div>
+        </template>
+
+        <template v-slot:item.cachePath="{ value }">
+          <v-code class="text-caption">{{ value }}</v-code>
+        </template>
+
+        <template v-slot:item.modified="{ value }">
+          <div class="text-no-wrap">
+            {{ new Date(value).toLocaleString() }}
+          </div>
+        </template>
+
+        <template v-slot:no-data>
+          <div class="pa-4 text-center text-medium-emphasis">
+            No packages match your search. Try different search terms.
+          </div>
+        </template>
+      </v-data-table>
+
+      <v-card-text v-else-if="isLoading" class="text-center py-8">
+        <v-progress-circular indeterminate color="primary" size="48" />
+        <div class="mt-4 text-medium-emphasis">Loading packages...</div>
+      </v-card-text>
+
+      <v-card-text v-else-if="error" class="text-center py-8">
+        <v-icon color="error" size="48" class="mb-2">mdi-alert-circle</v-icon>
+        <div class="text-error">Failed to load packages: {{ error }}</div>
+      </v-card-text>
+
+      <v-card-text v-else-if="totalPackages === 0" class="text-center py-8">
+        <v-icon color="medium-emphasis" size="48" class="mb-2">mdi-package-variant</v-icon>
+        <div class="text-medium-emphasis">{{ emptyRepositoryMessage }}</div>
+      </v-card-text>
+
+      <v-card-text v-else-if="visiblePackages.length === 0" class="text-center py-8">
+        <v-icon color="medium-emphasis" size="48" class="mb-2">mdi-magnify</v-icon>
+        <div class="text-medium-emphasis">No packages match your search on this page. Try a different page or clear the filters.</div>
+      </v-card-text>
+
+      <v-card-actions v-if="totalPackages > 0" class="pa-4">
+        <v-spacer />
+        <v-pagination
+          v-model="currentPage"
+          :length="totalPages"
+          :disabled="isDeleting" />
+        <v-spacer />
+        <v-select
+          v-model="perPage"
+          :items="perPageOptions"
+          variant="outlined"
+          density="compact"
+          hide-details
+          label="Per page"
+          style="max-width: 120px;" />
+      </v-card-actions>
+    </v-card>
   </section>
 </template>
 
@@ -225,23 +134,10 @@ const error = ref<string | null>(null);
 const currentPage = ref(1);
 const perPage = ref(50);
 const totalPackages = ref(0);
-const perPageOptions = [25, 50, 100];
+const perPageOptions = [25, 50, 100, 200];
 const selected = ref<string[]>([]);
 const isDeleting = ref(false);
 const searchTerm = ref("");
-
-// Column resizing state
-const columnWidths = ref({
-  package: 150,
-  name: 200,
-  size: 80,
-  path: 300,
-  timestamp: 180,
-});
-const isResizing = ref(false);
-const resizingColumn = ref<string | null>(null);
-const startX = ref(0);
-const startWidth = ref(0);
 
 onMounted(loadPackages);
 watch(
@@ -264,8 +160,45 @@ watch([currentPage, perPage], () => {
   loadPackages();
 });
 
-watch(searchTerm, () => {
-  currentPage.value = 1;
+// Define table headers based on repository type
+const headers = computed(() => [
+  {
+    title: packageColumnTitle.value,
+    key: 'package',
+    sortable: true,
+  },
+  {
+    title: nameColumnTitle.value,
+    key: 'name',
+    sortable: true,
+  },
+  {
+    title: 'Size',
+    key: 'size',
+    sortable: true,
+    align: 'end' as const,
+  },
+  {
+    title: pathColumnTitle.value,
+    key: 'cachePath',
+    sortable: true,
+  },
+  {
+    title: timestampColumnTitle.value,
+    key: 'modified',
+    sortable: true,
+  },
+]);
+
+// Convert packages to v-data-table format
+const tableItems = computed(() => {
+  return packages.value.map((pkg) => ({
+    package: pkg.package,
+    name: pkg.name,
+    size: pkg.size,
+    cachePath: pkg.cachePath,
+    modified: pkg.modified,
+  }));
 });
 
 const totalPages = computed(() => {
@@ -273,16 +206,6 @@ const totalPages = computed(() => {
     return 1;
   }
   return Math.max(1, Math.ceil(totalPackages.value / perPage.value));
-});
-
-const pageLabel = computed(() => {
-  if (totalPackages.value === 0) {
-    return "Page 1 of 1";
-  }
-  const start = (currentPage.value - 1) * perPage.value + 1;
-  const end =
-    visiblePackages.value.length === 0 ? start - 1 : start + visiblePackages.value.length - 1;
-  return `Page ${currentPage.value} of ${totalPages.value} · Showing ${Math.max(start, 0)}-${Math.max(end, 0)}`;
 });
 
 const normalizedSearchTerm = computed(() => searchTerm.value.trim().toLowerCase());
@@ -299,18 +222,6 @@ const visiblePackages = computed(() => {
 });
 
 const selectedCount = computed(() => selected.value.length);
-const allSelected = computed(() => {
-  return (
-    visiblePackages.value.length > 0 &&
-    visiblePackages.value.every((pkg) => selected.value.includes(pkg.cachePath))
-  );
-});
-const isIndeterminate = computed(() => {
-  const visibleSelected = visiblePackages.value.filter((pkg) =>
-    selected.value.includes(pkg.cachePath),
-  ).length;
-  return visibleSelected > 0 && visibleSelected < visiblePackages.value.length;
-});
 
 const derivedHostedFromPackages = computed(() => {
   if (packages.value.length === 0) {
@@ -438,47 +349,6 @@ async function deleteSelected() {
   }
 }
 
-function toggleSelectAll(event: Event) {
-  const target = event.target as HTMLInputElement;
-  if (target.checked) {
-    const visibleKeys = visiblePackages.value.map((pkg) => pkg.cachePath);
-    const current = new Set(selected.value);
-    visibleKeys.forEach((key) => current.add(key));
-    selected.value = Array.from(current);
-  } else {
-    const visibleKeys = new Set(visiblePackages.value.map((pkg) => pkg.cachePath));
-    selected.value = selected.value.filter((value) => !visibleKeys.has(value));
-  }
-}
-
-function startResize(event: MouseEvent, column: string) {
-  event.preventDefault();
-  isResizing.value = true;
-  resizingColumn.value = column;
-  startX.value = event.clientX;
-  startWidth.value = columnWidths.value[column as keyof typeof columnWidths.value];
-
-  // Add global mouse event listeners
-  document.addEventListener("mousemove", handleResize);
-  document.addEventListener("mouseup", stopResize);
-}
-
-function handleResize(event: MouseEvent) {
-  if (!isResizing.value || !resizingColumn.value) return;
-
-  const diff = event.clientX - startX.value;
-  const newWidth = Math.max(50, startWidth.value + diff); // Minimum width of 50px
-  columnWidths.value[resizingColumn.value as keyof typeof columnWidths.value] = newWidth;
-}
-
-function stopResize() {
-  isResizing.value = false;
-  resizingColumn.value = null;
-
-  // Remove global mouse event listeners
-  document.removeEventListener("mousemove", handleResize);
-  document.removeEventListener("mouseup", stopResize);
-}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) {
@@ -490,231 +360,56 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(idx === 0 ? 0 : 2)} ${units[idx]}`;
 }
 
-function nextPage() {
-  if (currentPage.value < totalPages.value) {
-    currentPage.value += 1;
-  }
-}
-
-function prevPage() {
-  if (currentPage.value > 1) {
-    currentPage.value -= 1;
-  }
-}
-
-function updatePerPage(event: Event) {
-  const target = event.target as HTMLSelectElement;
-  const value = Number.parseInt(target.value, 10);
-  if (!Number.isNaN(value) && perPage.value !== value) {
-    perPage.value = value;
-    currentPage.value = 1;
-  }
-}
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
-
 .packages {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
   padding: 1rem;
 }
 
-.packages__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.packages__title-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.packages__header-meta {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-}
-
-.packages__search input {
-  border: 1px solid var(--nr-input-border, rgba(0, 0, 0, 0.25));
-  border-radius: 6px;
-  padding: 0.35rem 0.6rem;
-  min-width: 220px;
-  background: var(--nr-input-background, rgba(26, 33, 58, 0.92));
-  color: var(--nr-text-color, #f8f9fa);
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-  &::placeholder {
-    color: var(--nr-input-placeholder, rgba(226, 230, 246, 0.55));
-  }
-  &:focus {
-    outline: none;
-    border-color: var(--nr-primary-color, #8aa3db);
-    box-shadow: 0 0 0 2px var(--nr-focus-ring, rgba(138, 163, 219, 0.35));
-  }
-}
-
-.packages__counts {
-  display: flex;
-  gap: 0.75rem;
-  color: var(--nr-text-secondary, #6c757d);
-  font-size: 0.9rem;
-}
-
-.packages__actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.packages__state {
-  color: var(--nr-text-secondary, #6c757d);
-}
-
-.packages__state--error {
-  color: var(--error-color, #d9534f);
-}
-
-.packages__table-container {
-  width: 100%;
-  overflow-x: auto;
-  border: 1px solid var(--nr-border-color, rgba(0, 0, 0, 0.15));
-  border-radius: 6px;
-  background: var(--nr-background-secondary, #f8f9fa);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
-}
-
-.packages__table {
-  width: 100%;
-  min-width: 800px; /* Minimum width before horizontal scroll */
-  border-collapse: collapse;
-  table-layout: fixed;
-  color: var(--nr-text-color, inherit);
-
-  th,
-  td {
-    padding: 0.5rem;
-    text-align: left;
-    border-bottom: 1px solid var(--nr-border-color, rgba(0, 0, 0, 0.1));
-    overflow: hidden;
-  }
-
-  th {
-    background: var(--nr-background-tertiary, #f8f9fa);
-    font-weight: 600;
-    position: relative;
-    user-select: none;
-    color: var(--nr-text-color, inherit);
-    border-bottom: 2px solid var(--nr-border-color, rgba(0, 0, 0, 0.15));
-  }
-  tbody tr {
-    background: var(--nr-background-primary, transparent);
-    transition: background-color 0.2s ease;
-  }
-  tbody tr:hover {
-    background: var(--nr-table-row-hover, rgba(138, 163, 219, 0.08));
-  }
-
-  .packages__checkbox {
-    width: 40px;
-    text-align: center;
-    min-width: 40px;
-    max-width: 40px;
-  }
-
-  .resizable {
-    cursor: col-resize;
-  }
-
-  .column-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 100%;
-    padding-right: 8px;
-  }
-
-  .resize-handle {
-    width: 4px;
-    height: 100%;
-    background: transparent;
-    cursor: col-resize;
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    transition: background-color 0.2s;
-  }
-
-  .resize-handle:hover {
-    background: var(--nr-primary-color, #007bff);
-  }
-
-  .resizable:hover .resize-handle {
-    background: var(--nr-primary-color, #007bff);
-  }
-
-  code {
-    font-size: 0.85rem;
-    background: var(--nr-background-tertiary, #f8f9fa);
-    color: var(--nr-text-color, inherit);
-    padding: 2px 4px;
-    border-radius: 3px;
-    display: inline-block;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    border: 1px solid var(--nr-border-color, rgba(0, 0, 0, 0.1));
-  }
-
-  /* Cell styling for better text handling */
-  .cell-content {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    line-height: 1.4;
-    color: var(--nr-text-color, inherit);
-  }
-
-  .package-cell .cell-content {
+// Ensure v-data-table respects theme colors and add animations
+:deep(.v-data-table) {
+  .v-data-table__th {
+    color: var(--nr-text-primary);
+    background-color: var(--nr-table-header-background);
     font-weight: 500;
+    transition: all 0.2s ease;
   }
 
-  .size-cell .cell-content {
-    text-align: right;
+  .v-data-table__td {
+    color: var(--nr-text-primary);
+    transition: all 0.2s ease;
   }
 
-  .timestamp-cell .cell-content {
-    font-size: 0.9rem;
+  .v-data-table__tr {
+    transition: all 0.2s ease;
+
+    &:hover {
+      background-color: var(--nr-table-row-hover);
+      transform: scale(1.001);
+    }
   }
 
-  // Ensure table cells inherit proper colors
-  td {
-    color: var(--nr-text-color, inherit);
-    background: transparent;
+  // Responsive improvements
+  @media (max-width: 960px) {
+    .v-data-table__th,
+    .v-data-table__td {
+      padding: 8px 12px;
+      font-size: 0.875rem;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .v-data-table__th,
+    .v-data-table__td {
+      padding: 6px 8px;
+      font-size: 0.8rem;
+    }
   }
 }
 
-.packages__pager {
-  margin-top: 1rem;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.packages__pager-select select {
-  margin-left: 0.35rem;
+// Add smooth card transitions
+.v-card {
+  transition: all 0.3s ease;
 }
 </style>

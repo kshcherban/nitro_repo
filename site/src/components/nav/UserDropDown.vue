@@ -36,7 +36,7 @@ const session = sessionStore();
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 .dropDown-button {
   background-color: inherit;
   border-radius: 0.5rem;
@@ -70,6 +70,7 @@ const session = sessionStore();
     display: block;
     &:hover {
       background-color: $secondary;
+      text-decoration: none;
     }
   }
 }

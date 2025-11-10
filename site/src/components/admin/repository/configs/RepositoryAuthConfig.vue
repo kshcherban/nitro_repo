@@ -1,23 +1,34 @@
 <template>
-  <section class="auth-config">
-    <label class="toggle">
-      <input type="checkbox" v-model="enabled" :disabled="isSaving" />
-      <span>Require authentication for repository access</span>
-    </label>
-    <p class="hint">
-      When enabled, clients must authenticate using a Nitro Repo user/password or token before
-      accessing this repository.
-    </p>
-    <p v-if="!isCreate" class="status" :class="{ 'status--error': error }">
-      <template v-if="error">Failed to save: {{ error }}</template>
-      <template v-else-if="isSaving">Saving…</template>
-      <template v-else-if="hasLoaded">Saved</template>
-    </p>
- </section>
+  <v-card
+    class="auth-config"
+    variant="outlined"
+    data-testid="auth-config-card">
+    <v-card-text class="auth-config__content">
+      <SwitchInput
+        v-model="enabled"
+        id="repository-auth-toggle"
+        :disabled="isSaving">
+        Require authentication for repository access
+        <template #comment>
+          Clients must authenticate using a Nitro Repo user/password or token before accessing this repository.
+        </template>
+      </SwitchInput>
+
+      <v-alert
+        v-if="!isCreate"
+        density="comfortable"
+        :type="alertState.type"
+        variant="tonal"
+        class="auth-config__status">
+        {{ alertState.message }}
+      </v-alert>
+    </v-card-text>
+  </v-card>
 </template>
 
 <script setup lang="ts">
 import http from "@/http";
+import SwitchInput from "@/components/form/SwitchInput.vue";
 import { computed, onMounted, ref, watch } from "vue";
 
 const props = defineProps<{
@@ -37,6 +48,19 @@ const enabled = computed({
   set: (value: boolean) => {
     model.value = { ...model.value, enabled: value };
   },
+});
+
+const alertState = computed(() => {
+  if (error.value) {
+    return { type: "error" as const, message: `Failed to save: ${error.value}` };
+  }
+  if (isSaving.value) {
+    return { type: "info" as const, message: "Saving…" };
+  }
+  if (hasLoaded.value) {
+    return { type: "success" as const, message: "Authentication settings saved." };
+  }
+  return { type: "info" as const, message: "Loading…" };
 });
 
 onMounted(load);
@@ -88,34 +112,15 @@ async function load() {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme.scss" as *;
 
-.auth-config {
+.auth-config__content {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 600;
-}
-
-.hint {
-  color: $secondary;
-  font-size: 0.9rem;
-  margin: 0;
-}
-
-.status {
-  margin: 0;
-  font-size: 0.85rem;
-  color: $secondary;
-}
-
-.status--error {
-  color: var(--error-color, #d9534f);
+.auth-config__status {
+  margin-top: 0.5rem;
 }
 </style>

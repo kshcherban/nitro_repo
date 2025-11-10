@@ -37,7 +37,7 @@ const highlight = computed((): string => {
 });
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/scroll.scss";
+@use "@/assets/styles/scroll.scss" as *;
 
 pre {
   height: 10rem;

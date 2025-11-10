@@ -1,36 +1,39 @@
 <template>
-  <TabsElement
-    :defaultTab="defaultTab"
-    :justifyBetween="false">
-    <template #header>
-      <TabElement
-        :id="snippet.key"
+  <v-card
+    variant="flat"
+    class="code-menu">
+    <v-tabs
+      v-model="activeTab"
+      density="compact"
+      class="code-menu__tabs">
+      <v-tab
         v-for="snippet in snippets"
-        :key="snippet.key">
+        :key="snippet.key"
+        :value="snippet.key">
         {{ snippet.name }}
-      </TabElement>
-    </template>
-    <template #content>
-      <TabContent
+      </v-tab>
+    </v-tabs>
+
+    <v-window
+      v-model="activeTab"
+      class="code-menu__window">
+      <v-window-item
         v-for="snippet in snippets"
-        :tabId="snippet.key"
-        :key="snippet.key">
+        :key="snippet.key"
+        :value="snippet.key">
         <CodeCard :code="snippet" />
-      </TabContent>
-    </template>
-  </TabsElement>
+      </v-window-item>
+    </v-window>
+  </v-card>
 </template>
 
 <script setup lang="ts">
-import type { PropType } from "vue";
+import { ref, watch, type PropType } from "vue";
 import type { CodeSnippet } from "./code";
 
 import CodeCard from "./CodeCard.vue";
-import TabContent from "../tabs/TabContent.vue";
-import TabsElement from "../tabs/TabsElement.vue";
-import TabElement from "../tabs/TabElement.vue";
 
-defineProps({
+const props = defineProps({
   snippets: {
     type: Array as PropType<CodeSnippet[]>,
     required: true,
@@ -40,11 +43,30 @@ defineProps({
     required: true,
   },
 });
+
+const activeTab = ref(props.defaultTab);
+
+watch(
+  () => props.snippets,
+  (snippets) => {
+    if (snippets.length === 0) {
+      activeTab.value = "";
+      return;
+    }
+    if (!snippets.some((snippet) => snippet.key === activeTab.value)) {
+      activeTab.value = snippets[0]?.key ?? "";
+    }
+  },
+  { immediate: true },
+);
 </script>
-<style lang="scss">
-@media screen and (max-width: 600px) {
-  .tabs {
-    max-width: 99%;
-  }
+
+<style scoped lang="scss">
+.code-menu__tabs {
+  background-color: var(--v-theme-surface);
+}
+
+.code-menu__window {
+  padding-top: 0.5rem;
 }
 </style>

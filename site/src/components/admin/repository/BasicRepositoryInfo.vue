@@ -1,67 +1,81 @@
 <template>
-  <div
+  <v-card
     v-if="repository"
-    id="repository">
-    <h2>Repository Info</h2>
-    <div id="content">
-      <div class="repositoryInfo">
-        <div class="twoBy">
-          <div class="keyValue">
-            <label>Repository Name</label>
-            <span class="value">{{ repository.name }}</span>
-          </div>
-          <div class="keyValue">
-            <label>Repository Type</label>
-            <span class="value">{{ repository.repository_type }}</span>
-          </div>
-        </div>
-        <div class="twoBy">
-          <div class="keyValue">
-            <label>Storage Name</label>
-            <span class="value">{{ repository.storage_name }}</span>
-          </div>
-          <div class="keyValue">
-            <label>Storage Id Type</label>
-            <span class="value">{{ repository.storage_id }}</span>
-          </div>
-          <div class="keyValue">
-            <label>Authentication</label>
-            <span class="value">{{ repository.auth_enabled ? "Enabled" : "Disabled" }}</span>
-          </div>
-          <div class="keyValue">
-            <label>Storage Usage</label>
-            <span class="value">{{ formatBytes(repository.storage_usage_bytes) }}</span>
-          </div>
-          <div class="keyValue">
-            <label>Usage Updated</label>
-            <span class="value">{{ formatUpdatedAt(repository.storage_usage_updated_at) }}</span>
-          </div>
-        </div>
-      </div>
-      <div id="enableDisable">
-        <h3>Repository Status {{ repositoryStatus }}</h3>
-        <button
-          class="disable"
-          @click="notify('This feature is not implemented yet')"
-          v-if="repository.active">
-          Disable
-        </button>
-        <button
-          class="enable"
-          @click="notify('This feature is not implemented yet')"
-          v-else>
-          Enable
-        </button>
-      </div>
+    data-testid="repository-info-card"
+    class="repository-info-card">
+    <v-card-title class="repository-info-card__header">
       <div>
-        <button
-          id="deleteRepository"
-          @click="deleteRepository()">
-          Delete Repository
-        </button>
+        <div class="text-h6">Repository Info</div>
+        <div class="text-body-2 text-medium-emphasis">
+          Operational details and current usage metrics.
+        </div>
       </div>
-    </div>
-  </div>
+      <v-chip
+        size="small"
+        class="text-uppercase font-weight-medium"
+        :color="statusChip.color"
+        variant="tonal"
+        data-testid="repository-status-chip">
+        {{ statusChip.label }}
+      </v-chip>
+    </v-card-title>
+
+    <v-card-text>
+      <v-row
+        class="repository-info-card__grid"
+        dense
+        data-testid="repository-meta-grid">
+        <v-col
+          v-for="item in metaItems"
+          :key="item.label"
+          cols="12"
+          md="6"
+          lg="4">
+          <div
+            class="meta-tile"
+            data-testid="repository-meta-item">
+            <span class="meta-tile__label">{{ item.label }}</span>
+            <span class="meta-tile__value">{{ item.value }}</span>
+          </div>
+        </v-col>
+      </v-row>
+
+      <v-divider class="my-6" />
+
+      <div class="repository-info-card__actions">
+        <div class="repository-info-card__auth">
+          <span class="text-subtitle-2">Repository Authentication</span>
+          <span class="text-body-2 text-medium-emphasis">
+            {{ repository.auth_enabled ? "Enabled" : "Disabled" }}
+          </span>
+        </div>
+        <div class="repository-info-card__buttons">
+          <v-btn
+            :color="toggleButton.color"
+            variant="tonal"
+            class="text-none"
+            data-testid="repository-toggle"
+            @click="notify('This feature is not implemented yet')">
+            <v-icon
+              class="mr-2"
+              icon="mdi-toggle-switch" />
+            {{ toggleButton.label }}
+          </v-btn>
+          <v-btn
+            color="error"
+            variant="flat"
+            class="text-none"
+            data-testid="repository-delete"
+            @click="deleteRepository">
+            <v-icon
+              class="mr-2"
+              icon="mdi-delete-outline" />
+            Delete Repository
+          </v-btn>
+        </div>
+      </div>
+    </v-card-text>
+  </v-card>
 </template>
 <script setup lang="ts">
 import http from "@/http";
@@ -69,16 +83,62 @@ import router from "@/router";
 import type { RepositoryWithStorageName } from "@/types/repository";
 import { notify } from "@kyvg/vue3-notification";
 import { computed, type PropType } from "vue";
+
 const props = defineProps({
   repository: {
     type: Object as PropType<RepositoryWithStorageName>,
     required: true,
   },
 });
-const repositoryStatus = computed(() => {
-  if (!props.repository) return "No Repository";
-  return props.repository.active ? "Active" : "Inactive";
+
+const statusChip = computed(() => {
+  if (!props.repository) {
+    return { label: "Unavailable", color: "warning" as const };
+  }
+  return props.repository.active
+    ? { label: "Active", color: "success" as const }
+    : { label: "Inactive", color: "warning" as const };
 });
+
+const toggleButton = computed(() => {
+  if (!props.repository || props.repository.active) {
+    return { label: "Disable Repository", color: "warning" as const };
+  }
+  return { label: "Enable Repository", color: "primary" as const };
+});
+
+const metaItems = computed(() => {
+  if (!props.repository) {
+    return [];
+  }
+  return [
+    {
+      label: "Repository Name",
+      value: props.repository.name,
+    },
+    {
+      label: "Repository Type",
+      value: props.repository.repository_type,
+    },
+    {
+      label: "Storage Name",
+      value: props.repository.storage_name,
+    },
+    {
+      label: "Storage Identifier",
+      value: props.repository.storage_id,
+    },
+    {
+      label: "Storage Usage",
+      value: formatBytes(props.repository.storage_usage_bytes),
+    },
+    {
+      label: "Usage Updated",
+      value: formatUpdatedAt(props.repository.storage_usage_updated_at),
+    },
+  ];
+});
+
 function formatBytes(bytes?: number | null): string {
   if (bytes === null || bytes === undefined) {
     return "Unknown";
@@ -114,59 +174,67 @@ async function deleteRepository() {
 }
 </script>
 <style lang="scss" scoped>
-@import "@/assets/styles/theme.scss";
-#repository {
+@use "@/assets/styles/theme.scss" as *;
+
+.repository-info-card {
+  &__header {
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  &__grid {
+    row-gap: 1rem;
+  }
+
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  &__auth {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  &__buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    justify-content: flex-end;
+  }
+}
+
+.meta-tile {
   display: flex;
   flex-direction: column;
-}
-#content {
-  // Make it all the same size spans
-  display: flex;
-  flex-direction: row;
-  gap: 20px;
-}
-#enableDisable {
-  button {
-    padding: 10px;
-    border-radius: 5px;
-    border: none;
-    cursor: pointer;
-    background-color: $primary;
-    &:hover {
-      background-color: $primary-50;
-      transition: background-color 0.5s;
-    }
+  gap: 0.35rem;
+  padding: 0.75rem 1rem;
+  background-color: rgba($primary, 0.07);
+  border-radius: 12px;
+
+  &__label {
+    font-size: 0.8125rem;
+    letter-spacing: 0.02em;
+    font-weight: 600;
+    color: $text-50;
+    text-transform: uppercase;
+  }
+
+  &__value {
+    font-size: 1rem;
+    color: $text;
+    word-break: break-word;
   }
 }
-.twoBy {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-}
-.keyValue {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 10px;
-  width: 100%;
-  .value {
-    display: block;
-    border: 2px solid $secondary-50;
-    padding: 5px;
-    border-radius: 5px;
-    background-color: $secondary;
-  }
-  // Make it look like a input
-  label {
-    font-weight: bold;
-  }
-}
-#deleteRepository {
-  padding: 10px;
-  border-radius: 5px;
-  border: none;
-  cursor: pointer;
-  &:hover {
-    transition: background 0.5s;
+
+@media (max-width: 960px) {
+  .repository-info-card__header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

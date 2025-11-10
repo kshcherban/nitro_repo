@@ -5,7 +5,7 @@
 <script setup lang="ts"></script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 
 .loader,
 .loader:before,

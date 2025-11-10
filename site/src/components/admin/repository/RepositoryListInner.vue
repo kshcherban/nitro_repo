@@ -125,7 +125,7 @@ const filteredTable = computed(() => {
 });
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 #headerBar {
   display: flex;
   justify-content: space-between;

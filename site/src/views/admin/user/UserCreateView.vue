@@ -1,58 +1,95 @@
 <template>
-  <main>
-    <FloatingErrorBanner
-      :visible="errorBanner.visible"
-      :title="errorBanner.title"
-      :message="errorBanner.message"
-      @close="resetError" />
-    <h1>User Create</h1>
-    <p>Create a new user here.</p>
-    <form @submit.prevent="create">
-      <TextInput
-        v-model="user.name"
-        :disabled="isSubmitting"
-        required>
-        Name
-      </TextInput>
-      <ValidatableTextBox
-        id="email"
-        type="email"
-        :validations="EMAIL_VALIDATIONS"
-        v-model="user.email"
-        :disabled="isSubmitting"
-        @validity="emailValid = $event">
-        Email
-      </ValidatableTextBox>
-      <ValidatableTextBox
-        id="username"
-        :validations="USERNAME_VALIDATIONS"
-        :deniedKeys="URL_SAFE_BAD_CHARS"
-        v-model="user.username"
-        :disabled="isSubmitting"
-        @validity="usernameValid = $event">
-        Username
-      </ValidatableTextBox>
-      <SwitchInput
-        id="setPassword"
-        v-model="setPassword"
-        :disabled="isSubmitting"
-        >Set Password</SwitchInput
-      >
-  <div v-if="setPassword">
-    <NewPasswordInput
-      id="password"
-      :passwordRules="passwordRules"
-      v-model="password"
-      :disabled="isSubmitting" />
-  </div>
-      <SubmitButton
-        class="primary-action"
-        :disabled="!formIsValid || isSubmitting">
-        <span v-if="isSubmitting">Creating…</span>
-        <span v-else>Create User</span>
-      </SubmitButton>
-    </form>
-  </main>
+  <v-container class="py-6">
+    <v-alert
+      v-if="errorBanner.visible"
+      type="error"
+      variant="tonal"
+      class="mb-4"
+      closable
+      @click:close="resetError">
+      <div class="text-subtitle-1 font-weight-medium mb-1">{{ errorBanner.title }}</div>
+      <div>{{ errorBanner.message }}</div>
+    </v-alert>
+
+    <v-card data-testid="user-create-card">
+      <v-card-title class="d-flex align-center justify-space-between">
+        <div>
+          <div class="text-h6">Create User</div>
+          <div class="text-body-2 text-medium-emphasis">
+            Provision an account and optionally set an initial password.
+          </div>
+        </div>
+      </v-card-title>
+
+      <v-card-text>
+        <v-form @submit.prevent="create">
+          <v-row dense>
+            <v-col cols="12" md="6">
+              <TextInput
+                v-model="user.name"
+                :disabled="isSubmitting"
+                required>
+                Name
+              </TextInput>
+            </v-col>
+            <v-col cols="12" md="6">
+              <ValidatableTextBox
+                id="email"
+                type="email"
+                :validations="EMAIL_VALIDATIONS"
+                v-model="user.email"
+                :disabled="isSubmitting"
+                @validity="emailValid = $event">
+                Email
+              </ValidatableTextBox>
+            </v-col>
+            <v-col cols="12" md="6">
+              <ValidatableTextBox
+                id="username"
+                :validations="USERNAME_VALIDATIONS"
+                :deniedKeys="URL_SAFE_BAD_CHARS"
+                v-model="user.username"
+                :disabled="isSubmitting"
+                @validity="usernameValid = $event">
+                Username
+              </ValidatableTextBox>
+            </v-col>
+          </v-row>
+
+          <v-divider class="my-4" />
+
+          <SwitchInput
+            id="setPassword"
+            v-model="setPassword"
+            :disabled="isSubmitting">
+            Set Password
+            <template #comment>
+              Disable to send the user an invite email instead.
+            </template>
+          </SwitchInput>
+
+          <v-expand-transition>
+            <div v-if="setPassword" class="mt-2">
+              <NewPasswordInput
+                id="password"
+                :passwordRules="passwordRules"
+                v-model="password"
+                :disabled="isSubmitting" />
+            </div>
+          </v-expand-transition>
+
+          <div class="d-flex justify-end mt-6">
+            <SubmitButton
+              :disabled="!formIsValid || isSubmitting"
+              :loading="isSubmitting">
+              <span v-if="isSubmitting">Creating…</span>
+              <span v-else>Create User</span>
+            </SubmitButton>
+          </div>
+        </v-form>
+      </v-card-text>
+    </v-card>
+  </v-container>
 </template>
 <script lang="ts" setup>
 import SubmitButton from "@/components/form/SubmitButton.vue";
@@ -60,7 +97,6 @@ import SwitchInput from "@/components/form/SwitchInput.vue";
 import NewPasswordInput from "@/components/form/text/NewPasswordInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import ValidatableTextBox from "@/components/form/text/ValidatableTextBox.vue";
-import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
 import {
   EMAIL_VALIDATIONS,
   URL_SAFE_BAD_CHARS,
@@ -108,10 +144,10 @@ watch(
     user.value.name,
     user.value.email,
     user.value.username,
-    setPassword.value,
-    password.value,
-    emailValid.value,
-    usernameValid.value,
+  setPassword.value,
+  password.value,
+  emailValid.value,
+  usernameValid.value,
   ],
   () => {
     if (errorBanner.value.visible) {
@@ -285,7 +321,7 @@ function resolveUserCreateError(error: unknown): {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/tokens.scss" as *;
 
 main {
   display: flex;

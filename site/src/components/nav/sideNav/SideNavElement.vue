@@ -25,25 +25,27 @@ const isActive = computed(() => {
 });
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
 .navLink {
   text-decoration: none;
-  color: $text;
-  font-weight: bold;
+  color: var(--nr-text-primary);
+  font-weight: 500;
   padding: 0.5rem;
-  // Align text vertically
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  // Box
   border-radius: 0.5rem;
+  transition: background-color 0.2s ease;
+
   &:hover {
-    background-color: $primary-70;
-    transition: background-color 0.3s ease;
+    background-color: var(--nr-table-row-hover);
+    color: var(--nr-primary);
   }
 }
+
 .navLink[data-active="true"] {
-  background-color: $primary-70;
+  background-color: rgba(30, 136, 229, 0.12);
+  color: var(--nr-primary);
+
   &:hover {
     cursor: default;
   }

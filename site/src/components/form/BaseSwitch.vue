@@ -44,7 +44,7 @@ watch(innerValue, (newValue) => {
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 
 .switchBox > label {
   margin-right: 1rem;

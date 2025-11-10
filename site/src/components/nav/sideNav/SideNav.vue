@@ -4,14 +4,14 @@
   </nav>
 </template>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
 nav {
   margin: 0.5rem;
   margin-right: 0.5rem;
   border-top-right-radius: 8px;
   border-bottom-right-radius: 8px;
   width: 200px;
-  background-color: $primary-50;
+  background-color: var(--nr-surface);
+  border: 1px solid var(--nr-border-color);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -23,7 +23,7 @@ nav {
     height: 2rem;
   }
   span {
-    color: $text;
+    color: var(--nr-text-primary);
   }
 }
 .bottom {

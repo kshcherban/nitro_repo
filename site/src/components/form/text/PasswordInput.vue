@@ -1,74 +1,36 @@
 <template>
-  <section
-    class="formBox"
-    :id="sectionId">
-    <label :for="id">
+  <v-text-field
+    :id="id"
+    :type="showPassword ? 'text' : 'password'"
+    v-model="value"
+    v-bind="$attrs"
+    autocomplete="current-password"
+    variant="outlined"
+    density="comfortable"
+    :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
+    @click:append-inner="showPassword = !showPassword">
+    <template v-if="$slots.default" #label>
       <slot />
-    </label>
-
-    <div class="input-container">
-      <input
-        :type="passwordType"
-        :id="id"
-        v-model="value"
-        v-bind="$attrs"
-        autocomplete="current-password" />
-      <button
-        @click="togglePasswordVisibility"
-        type="button">
-        <font-awesome-icon
-          icon="fa-solid fa-eye-slash"
-          v-if="showPassword" />
-        <font-awesome-icon
-          icon="fa-solid fa-eye"
-          v-else />
-      </button>
-    </div>
-  </section>
+    </template>
+  </v-text-field>
 </template>
 <script setup lang="ts">
-import "@/assets/styles/form.scss";
-import { computed, ref } from "vue";
-const props = defineProps({
+import { ref } from "vue";
+
+defineProps({
   id: {
     type: String,
     required: true,
   },
 });
-const sectionId = computed(() => `section-${props.id}`);
 
 const value = defineModel<string>({
   required: true,
 });
+
 const showPassword = ref(false);
-const passwordType = computed(() => (showPassword.value ? "text" : "password"));
-function togglePasswordVisibility() {
-  showPassword.value = !showPassword.value;
-}
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
-.input-container {
-  position: relative;
-  display: inline-block;
-  width: 100%;
-
-  input {
-    width: 100%;
-  }
-
-  button {
-    position: absolute;
-    right: 10px;
-    top: 35%;
-    transform: translateY(-25%);
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    font-size: 16px;
-    color: $text;
-    transition: color 0.3s ease;
-  }
-}
+/* Vuetify handles styling */
 </style>

@@ -1,4 +1,4 @@
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 .browseItem {
   color: $text;
 

@@ -12,6 +12,7 @@ import HelmConfig from "@/components/nr/repository/types/helm/HelmConfig.vue";
 import http from "@/http";
 
 const modelStub = defineComponent({
+  name: "FormFieldStub",
   props: {
     modelValue: {
       type: [String, Number, Boolean, Object],
@@ -53,6 +54,45 @@ describe("HelmConfig.vue", () => {
     vi.resetAllMocks();
   });
 
+  it("renders helm config form using themed controls and actions", async () => {
+    (http.get as vi.Mock).mockResolvedValueOnce({
+      data: {
+        overwrite: true,
+        index_cache_ttl: 600,
+        mode: "hybrid",
+        public_base_url: "https://charts.example.com/repo",
+        max_chart_size: 10485760,
+        max_file_count: 128,
+      },
+    });
+
+    const wrapper = mount(HelmConfig, {
+      props: {
+        repository: "repo-123",
+        settingName: "helm",
+      },
+      global: {
+        stubs: {
+          DropDown: modelStub,
+          SwitchInput: modelStub,
+          TextInput: modelStub,
+          SubmitButton: defineComponent({
+            name: "SubmitButton",
+            setup(_, { slots }) {
+              return () => h("button", { "data-testid": "submit-button-stub" }, slots.default?.());
+            },
+          }),
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="helm-config-container"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="helm-config-save"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="helm-config-field"]').length).toBeGreaterThan(0);
+  });
+
   it("saves the Helm config and refreshes values after persistence", async () => {
     (http.get as vi.Mock).mockResolvedValueOnce({
       data: {
@@ -86,6 +126,12 @@ describe("HelmConfig.vue", () => {
           DropDown: modelStub,
           SwitchInput: modelStub,
           TextInput: modelStub,
+          SubmitButton: defineComponent({
+            name: "SubmitButton",
+            setup(_, { slots }) {
+              return () => h("button", {}, slots.default?.());
+            },
+          }),
         },
       },
     });

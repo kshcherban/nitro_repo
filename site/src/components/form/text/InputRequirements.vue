@@ -46,7 +46,7 @@ function isValid(validation: BaseValidationType): boolean {
 }
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 
 .requirements-enter-active,
 .requirements-leave-active {

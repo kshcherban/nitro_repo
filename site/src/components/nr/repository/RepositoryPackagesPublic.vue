@@ -169,34 +169,32 @@
     <div
       v-if="totalPackages > 0"
       class="packages__pager">
-      <button
-        class="nr-button"
-        type="button"
+      <v-btn
+        variant="tonal"
+        color="primary"
+        class="text-none"
         @click="prevPage"
         :disabled="currentPage === 1">
         Previous
-      </button>
-      <span>{{ pageLabel }}</span>
-      <button
-        class="nr-button"
-        type="button"
+      </v-btn>
+      <span class="packages__pager-label">{{ pageLabel }}</span>
+      <v-btn
+        variant="tonal"
+        color="primary"
+        class="text-none"
         @click="nextPage"
         :disabled="currentPage >= totalPages">
         Next
-      </button>
-      <label class="packages__pager-select">
-        Per page
-        <select
-          :value="perPage"
-          @change="updatePerPage">
-          <option
-            v-for="option in perPageOptions"
-            :key="option"
-            :value="option">
-            {{ option }}
-          </option>
-        </select>
-      </label>
+      </v-btn>
+      <v-select
+        class="packages__pager-select"
+        label="Per page"
+        :items="perPageOptions"
+        v-model="perPageModel"
+        variant="outlined"
+        density="compact"
+        hide-details
+        style="max-width: 140px" />
     </div>
   </section>
 </template>
@@ -241,6 +239,18 @@ const isConfigOpen = ref(false);
 const hiddenColumns = ref<Set<ColumnKey>>(new Set<ColumnKey>());
 const lastRequestToken = ref<symbol | null>(null);
 const packageSearchTerm = ref("");
+
+const perPageModel = computed({
+  get: () => perPage.value,
+  set: (value: number | null) => {
+    if (typeof value === "number" && perPageOptions.includes(value)) {
+      if (perPage.value !== value) {
+        perPage.value = value;
+        currentPage.value = 1;
+      }
+    }
+  },
+});
 
 const storageKey = computed(() =>
   props.repositoryId ? `nr-packages-public:${props.repositoryId}` : null,
@@ -466,15 +476,6 @@ function toggleColumn(key: ColumnKey) {
   hiddenColumns.value = next;
 }
 
-function updatePerPage(event: Event) {
-  const target = event.target as HTMLSelectElement;
-  const value = Number.parseInt(target.value, 10);
-  if (!Number.isNaN(value) && perPage.value !== value) {
-    perPage.value = value;
-    currentPage.value = 1;
-  }
-}
-
 function nextPage() {
   if (currentPage.value < totalPages.value) {
     currentPage.value += 1;
@@ -631,7 +632,7 @@ watch(
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+@use "@/assets/styles/theme" as *;
 
 .sr-only {
   position: absolute;
@@ -832,7 +833,7 @@ watch(
 
 .packages__sort-button:hover,
 .packages__sort-button--active {
-  background: var(--nr-table-row-hover, rgba(138, 163, 219, 0.08));
+  background: var(--nr-table-row-hover, rgba(30, 136, 229, 0.08));
 }
 
 .packages__sort-button--numeric {

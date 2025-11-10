@@ -74,7 +74,7 @@ const snippets = createProjectSnippets(props.project, version.value);
 </script>
 
 <style lang="scss" scoped>
-@import "@/assets/styles/theme.scss";
+@use "@/assets/styles/theme.scss" as *;
 
 .mavenProject {
   margin: 0 auto;

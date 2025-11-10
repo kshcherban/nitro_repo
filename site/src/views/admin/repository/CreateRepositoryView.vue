@@ -1,58 +1,84 @@
 <template>
-  <main>
-    <FloatingErrorBanner
-      :visible="errorBanner.visible"
-      :title="errorBanner.title"
-      :message="errorBanner.message"
-      @close="resetError" />
-    <h1>Repository Create</h1>
-    <div v-if="currentRepositoryType">
-      <h2>{{ currentRepositoryType.description }}</h2>
-    </div>
+  <v-container class="py-6">
+    <v-alert
+      v-if="errorBanner.visible"
+      type="error"
+      variant="tonal"
+      class="mb-4"
+      closable
+      @click:close="resetError">
+      <div class="text-subtitle-1 font-weight-medium mb-1">{{ errorBanner.title }}</div>
+      <div>{{ errorBanner.message }}</div>
+    </v-alert>
 
-    <form
-      @submit.prevent="createRepository()"
+    <v-card
+      data-testid="repository-create-card"
       :class="{ 'go-repository-form': selectedRepositoryType === 'go' }">
-      <TwoByFormBox>
-        <TextInput
-          id="repositoryName"
-          v-model="input.name"
-          autocomplete="none"
-          required
-          placeholder="Repository Name"
-          >Repository Name</TextInput
-        >
-        <DropDown
-          id="repositoryType"
-          v-model="selectedRepositoryType"
-          :options="repositoryTypeOptions"
-          required
-          class="form-field--medium"
-          >Repository Type</DropDown
-        >
-        <DropDown
-          id="storage"
-          v-model="input.storage"
-          :options="storageItemOptions"
-          required
-          class="form-field--medium"
-          >Storage</DropDown
-        >
-      </TwoByFormBox>
-      <div
-        v-for="config in requiredConfigComponents"
-        :key="config.component.name">
-        <component
-          :is="config.component"
-          v-bind="config.props"
-          v-model="requiredConfigValues[config.configName]" />
-      </div>
+      <v-card-title class="d-flex align-center justify-space-between">
+        <div>
+          <div class="text-h6">Create Repository</div>
+          <div class="text-body-2 text-medium-emphasis" v-if="currentRepositoryType">
+            {{ currentRepositoryType.description }}
+          </div>
+        </div>
+      </v-card-title>
 
-      <div class="form-actions">
-        <SubmitButton class="primary-action">Create</SubmitButton>
-      </div>
-    </form>
-  </main>
+      <v-card-text>
+        <v-form @submit.prevent="createRepository()">
+          <v-row dense>
+            <v-col cols="12" md="6">
+              <TextInput
+                id="repositoryName"
+                v-model="input.name"
+                autocomplete="off"
+                required
+                placeholder="Repository Name">
+                Repository Name
+              </TextInput>
+            </v-col>
+            <v-col cols="12" md="6">
+              <DropDown
+                id="repositoryType"
+                v-model="selectedRepositoryType"
+                :options="repositoryTypeOptions"
+                required>
+                Repository Type
+              </DropDown>
+            </v-col>
+            <v-col cols="12" md="6">
+              <DropDown
+                id="storage"
+                v-model="input.storage"
+                :options="storageItemOptions"
+                required>
+                Storage
+              </DropDown>
+            </v-col>
+          </v-row>
+
+          <div
+            v-for="config in requiredConfigComponents"
+            :key="config.configName"
+            class="mt-6">
+            <component
+              :is="config.component"
+              v-bind="config.props"
+              v-model="requiredConfigValues[config.configName]" />
+          </div>
+
+          <div class="d-flex justify-end mt-6">
+            <SubmitButton
+              color="primary"
+              :loading="isSubmitting"
+              :disabled="isSubmitting">
+              <span v-if="isSubmitting">Creating…</span>
+              <span v-else>Create</span>
+            </SubmitButton>
+          </div>
+        </v-form>
+      </v-card-text>
+    </v-card>
+  </v-container>
 </template>
 
 <script lang="ts" setup>
@@ -61,7 +87,6 @@ import DropDown from "@/components/form/dropdown/DropDown.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import type { StorageItem } from "@/components/nr/storage/storageTypes";
-import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
 import http from "@/http";
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
@@ -102,6 +127,7 @@ const errorBanner = ref({
   title: "",
   message: "",
 });
+const isSubmitting = ref(false);
 const resetError = () => {
   errorBanner.value.visible = false;
   errorBanner.value.title = "";
@@ -113,9 +139,6 @@ watch(
     if (newValue === old) {
       return;
     }
-    console.log(
-      `Changed repository type to ${newValue} from '${old}'. Resetting required configs`,
-    );
     resetError();
     requiredConfigValues.value = {} as Record<string, any>;
     for (const config of currentRepositoryType.value?.required_configs || []) {
@@ -129,15 +152,12 @@ watch(
     }
   },
 );
-watch(requiredConfigValues, () => {
-  console.log(requiredConfigValues.value);
-});
 const requiredConfigComponents = computed(() => {
   if (!currentRepositoryType.value) {
     return [];
   }
 
-  const configs = currentRepositoryType.value?.required_configs.map((config) => {
+  return currentRepositoryType.value.required_configs.map((config) => {
     const component = getConfigType(config);
     if (component) {
       return {
@@ -154,8 +174,6 @@ const requiredConfigComponents = computed(() => {
       };
     }
   });
-  console.log(configs);
-  return configs;
 });
 
 async function load() {
@@ -168,7 +186,7 @@ async function load() {
   });
 }
 
-load();
+void load();
 
 async function createRepository() {
   const request = {
@@ -177,11 +195,10 @@ async function createRepository() {
     configs: {} as any,
   };
   for (const [key, value] of Object.entries(requiredConfigValues.value)) {
-    console.log(`${key} = ${JSON.stringify(value)}`);
     request.configs[key] = value;
   }
   resetError();
-  console.log(JSON.stringify(request));
+  isSubmitting.value = true;
   await http
     .post(`/api/repository/new/${selectedRepositoryType.value}`, request)
     .then((response) => {
@@ -201,6 +218,9 @@ async function createRepository() {
       errorBanner.value.title = resolved.title;
       errorBanner.value.message = resolved.message;
       console.error(resolved.debugMessage);
+    })
+    .finally(() => {
+      isSubmitting.value = false;
     });
 }
 
@@ -268,56 +288,9 @@ function resolveRepositoryError(error: unknown): {
 }
 </script>
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
-
-main {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  position: relative;
-  align-items: flex-start;
-  width: 100%;
-}
-
-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  width: 100%;
-  max-width: 960px;
-  padding: 1.5rem 0;
-
-  &.go-repository-form {
-    width: 100%;
-    max-width: none;
-    padding: 1.5rem 0;
-  }
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-start;
-}
-
-:deep(.primary-action) {
-  width: auto;
-  min-width: 160px;
-  padding-inline: 1.75rem;
-  align-self: flex-start;
-}
-
-:deep(.form-field--medium) {
-  max-width: 320px;
-  width: 100%;
-}
-
-:deep(.form-field--medium select) {
-  width: 100%;
-}
-
-@media screen and (max-width: 1200px) {
-  form {
-    width: 100%;
+.go-repository-form {
+  :deep(.v-row) {
+    gap: 1.5rem 0;
   }
 }
 </style>

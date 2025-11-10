@@ -1,10 +1,29 @@
 <template>
-  <div>
-    <form @submit.prevent="">
-      <TextInput v-model="value.type" disabled>Repository Type</TextInput>
-    </form>
-  </div>
+  <v-card
+    class="config-card"
+    data-testid="php-config-card">
+    <v-card-text class="px-0">
+      <v-row dense>
+        <v-col cols="12" md="6">
+          <TextInput
+            v-model="value.type"
+            disabled
+            id="php-repository-type">
+            Repository Type
+          </TextInput>
+        </v-col>
+      </v-row>
+      <v-alert
+        variant="tonal"
+        type="info"
+        class="mt-4"
+        density="comfortable">
+        PHP repositories currently operate in Hosted mode; no additional configuration is required.
+      </v-alert>
+    </v-card-text>
+  </v-card>
 </template>
+
 <script setup lang="ts">
 import { onMounted } from "vue";
 import TextInput from "@/components/form/text/TextInput.vue";
@@ -24,13 +43,24 @@ const value = defineModel<PhpConfigType>({
 });
 
 onMounted(async () => {
-  if (props.repository) {
-    try {
-      const response = await http.get(`/api/repository/${props.repository}/config/php`);
+  if (!props.repository) {
+    return;
+  }
+  try {
+    const response = await http.get(`/api/repository/${props.repository}/config/php`);
+    if (response?.data) {
       value.value = response.data;
-    } catch (error) {
-      console.error(error);
     }
+  } catch (error) {
+    console.error("Failed to load PHP config", error);
   }
 });
 </script>
+
+<style scoped lang="scss">
+.config-card {
+  border: none;
+  box-shadow: none;
+  background-color: transparent;
+}
+</style>

@@ -1,40 +1,184 @@
 <template>
-  <main>
-    <section
-      v-if="!error"
-      class="usageToolbar">
-      <div class="status">
-        <strong>Storage usage cache:</strong>
-        <span>{{ usageStatusText }}</span>
+  <v-container class="py-6 admin-repository-page">
+    <div class="page-header">
+      <div>
+        <h1 class="text-h5 mb-1">Repositories</h1>
+        <p class="text-body-2 text-medium-emphasis">
+          Monitor repository cache usage and manage repositories within this instance.
+        </p>
       </div>
-      <button
-        class="refreshButton"
-        type="button"
-        :disabled="refreshing || loading"
-        @click="refreshUsage">
-        {{ refreshing ? "Refreshing…" : "Refresh storage usage" }}
-      </button>
-    </section>
-    <p v-if="loading && !error" class="infoText">Loading repositories…</p>
-    <p v-else-if="error" class="errorText">{{ error }}</p>
-    <div v-else-if="repositories.length >= 1">
-      <RepositoryListInner :repositories="repositories" />
+      <v-btn
+        color="primary"
+        prepend-icon="mdi-plus"
+        :to="{ name: 'AdminCreateRepository' }"
+        variant="flat">
+        Create Repository
+      </v-btn>
     </div>
-    <p v-else class="infoText">No repositories found.</p>
-  </main>
+
+    <v-alert
+      v-if="error"
+      type="error"
+      variant="tonal"
+      class="mb-6"
+      prominent>
+      {{ error }}
+    </v-alert>
+
+    <v-row v-else class="gy-6">
+      <v-col cols="12">
+        <v-card variant="outlined">
+          <v-card-text class="d-flex flex-wrap align-center justify-space-between">
+            <div>
+              <div class="text-body-1 font-weight-medium">Storage Usage Cache</div>
+              <div class="text-caption text-medium-emphasis">{{ usageStatusText }}</div>
+            </div>
+            <v-btn
+              color="primary"
+              variant="flat"
+              :loading="refreshing"
+              :disabled="loading"
+              prepend-icon="mdi-refresh"
+              @click="refreshUsage">
+              {{ refreshing ? "Refreshing…" : "Refresh Storage Usage" }}
+            </v-btn>
+          </v-card-text>
+        </v-card>
+      </v-col>
+
+      <v-col cols="12">
+        <v-card v-if="loading" class="text-center py-8" variant="flat">
+          <v-progress-circular indeterminate color="primary" size="48" />
+          <div class="mt-4 text-medium-emphasis">Loading repositories…</div>
+        </v-card>
+
+        <v-card v-else-if="repositories.length >= 1" class="elevation-0">
+          <v-data-table
+            :headers="headers"
+            :items="tableItems"
+            :loading="refreshing"
+            item-value="id"
+            @click:row="handleRowClick"
+            class="elevation-0 repository-table">
+            <template v-slot:item.auth_enabled="{ value }">
+              <v-chip
+                :color="value ? 'success' : 'default'"
+                :variant="value ? 'flat' : 'outlined'"
+                size="small">
+                {{ value ? 'On' : 'Off' }}
+              </v-chip>
+            </template>
+
+            <template v-slot:item.storage_usage_bytes="{ value }">
+              <span class="text-no-wrap">{{ formatBytes(value) }}</span>
+            </template>
+
+            <template v-slot:item.storage_usage_updated_at="{ value }">
+              <span class="text-caption text-medium-emphasis">
+                {{ formatUpdatedAt(value) }}
+              </span>
+            </template>
+
+            <template v-slot:no-data>
+              <div class="pa-4 text-center text-medium-emphasis">
+                No repositories found.
+              </div>
+            </template>
+          </v-data-table>
+        </v-card>
+
+        <v-card
+          v-else
+          class="text-center py-8"
+          variant="outlined">
+          <v-icon color="medium-emphasis" size="48" class="mb-2">mdi-package-variant</v-icon>
+          <div class="text-h6 text-medium-emphasis mb-2">No repositories found</div>
+          <div class="text-body-2 text-medium-emphasis mb-4">
+            Create your first repository to get started.
+          </div>
+          <v-btn
+            color="primary"
+            prepend-icon="mdi-plus"
+            :to="{ name: 'AdminCreateRepository' }"
+            variant="flat">
+            Create Repository
+          </v-btn>
+        </v-card>
+      </v-col>
+    </v-row>
+  </v-container>
 </template>
 
 <script setup lang="ts">
-import RepositoryListInner from "@/components/admin/repository/RepositoryListInner.vue";
+import { useRouter } from "vue-router";
 import http from "@/http";
 import { computed, ref } from "vue";
-
 import type { RepositoryWithStorageName } from "@/types/repository";
 
+const router = useRouter();
 const repositories = ref<RepositoryWithStorageName[]>([]);
 const loading = ref(true);
 const refreshing = ref(false);
 const error = ref<string | null>(null);
+
+// Define table headers
+const headers = [
+  {
+    title: 'ID #',
+    key: 'id',
+    sortable: true,
+  },
+  {
+    title: 'Name',
+    key: 'name',
+    sortable: true,
+  },
+  {
+    title: 'Storage Name',
+    key: 'storage_name',
+    sortable: true,
+  },
+  {
+    title: 'Repository Type',
+    key: 'repository_type',
+    sortable: true,
+  },
+  {
+    title: 'Auth',
+    key: 'auth_enabled',
+    sortable: true,
+  },
+  {
+    title: 'Storage',
+    key: 'storage_usage_bytes',
+    sortable: true,
+    align: 'end' as const,
+  },
+  {
+    title: 'Active',
+    key: 'active',
+    sortable: true,
+  },
+  {
+    title: 'Usage Updated',
+    key: 'storage_usage_updated_at',
+    sortable: true,
+  },
+];
+
+// Convert repositories to v-data-table format
+const tableItems = computed(() => {
+  return repositories.value.map((repo) => ({
+    id: repo.id,
+    name: repo.name,
+    storage_name: repo.storage_name,
+    repository_type: repo.repository_type,
+    auth_enabled: repo.auth_enabled,
+    storage_usage_bytes: repo.storage_usage_bytes,
+    active: repo.active,
+    storage_usage_updated_at: repo.storage_usage_updated_at,
+  }));
+});
 
 async function fetchRepositories(options: { refresh?: boolean } = {}) {
   if (options.refresh) {
@@ -68,6 +212,46 @@ function refreshUsage() {
   void fetchRepositories({ refresh: true });
 }
 
+// Handle row click navigation
+type DataTableRow = { item: { id?: string | number } | { raw?: { id?: string | number } } };
+
+function handleRowClick(_event: MouseEvent, row: DataTableRow) {
+  const candidate = (row.item as { raw?: { id?: string | number }; id?: string | number }) ?? {};
+  const id = candidate.raw?.id ?? candidate.id;
+  if (!id) {
+    return;
+  }
+  router.push({
+    name: 'AdminViewRepository',
+    params: { id },
+  });
+}
+
+// Utility functions
+function formatBytes(bytes?: number | null): string {
+  if (bytes === null || bytes === undefined) {
+    return "—";
+  }
+  if (bytes === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+}
+
+function formatUpdatedAt(timestamp?: string | null): string {
+  if (!timestamp) {
+    return "—";
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+  return date.toLocaleString();
+}
+
 const latestUsageUpdate = computed(() => {
   const timestamps = repositories.value
     .map((repo) => repo.storage_usage_updated_at)
@@ -80,6 +264,12 @@ const latestUsageUpdate = computed(() => {
 });
 
 const usageStatusText = computed(() => {
+  if (loading.value) {
+    return "Loading repository information…";
+  }
+  if (refreshing.value) {
+    return "Refreshing usage totals…";
+  }
   if (repositories.value.length === 0) {
     return "No repositories yet.";
   }
@@ -97,58 +287,55 @@ void fetchRepositories();
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme.scss";
+// Ensure v-data-table respects theme colors and add cursor pointer for rows
+:deep(.v-data-table) {
+  .v-data-table__th {
+    color: var(--nr-text-primary);
+    background-color: var(--nr-table-header-background);
+  }
 
-.usageToolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-  padding: 1rem 1.25rem;
-  border-radius: 0.75rem;
-  background: $background-50;
-  border: 1px solid $primary-50;
+  .v-data-table__td {
+    color: var(--nr-text-primary);
+  }
 
-  .status {
-    display: flex;
-    flex-direction: column;
-    font-size: 0.95rem;
+  .v-data-table__tr {
+    cursor: pointer;
 
-    span {
-      color: $text-50;
+    &:hover {
+      background-color: var(--nr-table-row-hover);
     }
   }
 }
 
-.refreshButton {
-  border: none;
-  border-radius: 0.6rem;
-  padding: 0.6rem 1.2rem;
-  font-weight: 600;
-  cursor: pointer;
-  background: $primary-70;
-  color: $background;
-  transition: background 0.2s ease-in-out;
-
-  &:hover:not(:disabled) {
-    background: $primary-90;
-  }
-
-  &:disabled {
-    cursor: not-allowed;
-    background: $primary-30;
-    color: $text-50;
+// Repository table specific styling
+.repository-table {
+  tbody tr:hover {
+    cursor: pointer;
   }
 }
 
-.infoText,
-.errorText {
-  margin: 0;
-  padding: 1rem 0;
+.admin-repository-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
-.errorText {
-  color: $accent;
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.page-header > div {
+  max-width: 640px;
+}
+
+@media (max-width: 600px) {
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>

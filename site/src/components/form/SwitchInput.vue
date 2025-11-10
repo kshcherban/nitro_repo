@@ -1,116 +1,65 @@
 <template>
-  <div class="switchBox">
-    <label
-      :for="id"
-      class="switchBoxText">
-      <slot />
-    </label>
-    <span
-      v-if="$slots.comment"
-      class="comment">
-      <slot name="comment"></slot>
-    </span>
-    <BaseSwitch
+  <div class="switch-wrapper">
+    <v-switch
       :id="id"
-      v-model="value" />
+      v-model="value"
+      color="primary"
+      hide-details>
+      <template #label>
+        <div class="switch-label-content">
+          <span class="switch-label-text">
+            <slot />
+          </span>
+          <span v-if="$slots.comment" class="switch-comment">
+            <slot name="comment" />
+          </span>
+        </div>
+      </template>
+    </v-switch>
   </div>
 </template>
 <script setup lang="ts">
 import { watch } from "vue";
-import BaseSwitch from "./BaseSwitch.vue";
+
 defineProps({
   id: {
     type: String,
     required: true,
   },
 });
+
 const value = defineModel<boolean>({
   required: true,
 });
+
 const emit = defineEmits<{
   (e: "change", newValue: boolean): void;
 }>();
+
 watch(value, (newValue) => {
   emit("change", newValue);
 });
 </script>
 
 <style scoped lang="scss">
-@import "@/assets/styles/theme";
+.switch-wrapper {
+  margin: 1rem 0;
+}
 
-.switchBox {
-  margin: 1rem 2rem;
+.switch-label-content {
   display: flex;
   flex-direction: column;
-  align-items: left;
-  justify-content: space-between;
 }
 
-.switchBox > label {
-  margin-right: 1rem;
+.switch-label-text {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--nr-text-primary);
 }
 
-.switchBoxText {
-  font-size: 1.5rem;
-  margin: auto 0;
-  padding-bottom: 0;
-}
-
-.switch {
-  position: relative;
-  display: inline-block;
-  width: 60px;
-  height: 34px;
-}
-
-/* Hide default HTML checkbox */
-.switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-/* The slider */
-.slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: red;
-  transition: 0.4s;
-}
-
-.slider:before {
-  position: absolute;
-  content: "";
-  height: 26px;
-  width: 26px;
-  left: 4px;
-  bottom: 4px;
-  background-color: green;
-  transition: 0.4s;
-}
-
-.slider[data-checked="true"] {
-  background-color: blue;
-}
-
-input:focus + .slider {
-  box-shadow: 0 0 1px blue;
-}
-
-input:checked + .slider:before {
-  transform: translateX(26px);
-}
-
-/* Rounded sliders */
-.slider {
-  border-radius: 34px;
-}
-
-.slider:before {
-  border-radius: 50%;
+.switch-comment {
+  font-size: 0.875rem;
+  color: var(--nr-text-secondary);
+  margin-top: 0.25rem;
 }
 </style>
