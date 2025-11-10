@@ -51,6 +51,14 @@
 - Prompt: "Check MEMORY.md docs/docs/repositoryTypes/helm/index.md ... Fix SQL 42601 on helm manifest push, make overwrite toggle persist, and align Helm config Save button styling. Verify with ./dev.sh then helm push."
 - Summary: Added regression tests for project version updates and Helm runtime state, fixed SQL update builder to filter by version id, introduced reloadable Helm runtime state, implemented repository reload to apply new configs, refreshed Helm admin form styles, and added Vitest coverage ensuring save triggers reload. Verified end-to-end with `./dev.sh`, `helm push`, cargo unit tests, and vitest.
 
+## 2025-11-09 – Public repository browse packages UI refresh
+- Prompt: "Polish main page repositories browse view in UI. It should look similar to Admin -> Repositories -> <repo-name> -> Packages tab and present a paginated table (100 packages by default) with sortable columns, meaningful columns, configurable view, etc."
+- Summary: Rebuilt the public repository packages widget with a shared-table look and feel: default 100-row pagination, client-side sorting, configurable column visibility persisted per repository, and responsive styling aligned with the admin packages tab. Added Vitest coverage for pagination defaults, sorting toggles, and preference persistence, and wired BrowseView to pass repository metadata for dynamic labels.
+
+## 2025-11-09 – Global search revamp
+- Prompt: "Work on search-todo.md plan, I want to have rewamped search that is a pleasure to use instead of current semi-working one."
+- Summary: Implemented structured search with a real query parser supporting field filters, semantic version constraints, and repository/type/storage scoping. Added dedicated search strategies for Go modules and database-backed repositories so Maven/Helm/hosted Python results come from metadata rather than directory scans, and covered the new logic with unit tests. Refreshed the public repository browse view to expose an interactive search help modal, advanced query examples, and filter-aware package fetching so colon-prefixed filters no longer trip the 2-character guardrail. Frontend vitest suite now validates advanced query dispatch, modal UX, and example application.
+
 ## Nitro Repo Platform Notes
 
 - **Async/Blocking rules**

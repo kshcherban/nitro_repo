@@ -38,6 +38,7 @@ export interface RepositoryWithStorageName {
   storage_id: string;
   name: string;
   repository_type: string;
+  repository_kind?: string | null;
   active: boolean;
   visibility: Visibility;
   updated_at: string;
@@ -60,42 +61,42 @@ export interface ConfigType {
 export const configTypes: ConfigType[] = [
   {
     name: "maven",
-    title: "Maven",
+    title: "Maven Repository Config",
     component: MavenConfig,
   },
   {
     name: "python",
-    title: "Python",
+    title: "Python Repository Config",
     component: PythonConfig,
   },
   {
     name: "page",
-    title: "Page",
+    title: "Repository Page",
     component: RepositoryPageEditor,
   },
   {
     name: "auth",
-    title: "Authentication",
+    title: "Repository Authentication",
     component: RepositoryAuthConfig,
   },
   {
     name: "npm",
-    title: "NPM",
+    title: "NPM Repository Config",
     component: NPMConfig,
   },
   {
     name: "php",
-    title: "Composer",
+    title: "PHP Repository Config",
     component: PhpConfig,
   },
   {
     name: "go",
-    title: "Go",
+    title: "Go Repository Config",
     component: GoConfig,
   },
   {
     name: "helm",
-    title: "Helm",
+    title: "Helm Repository Config",
     component: HelmConfig,
   },
 ];

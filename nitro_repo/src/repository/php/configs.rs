@@ -44,8 +44,8 @@ impl RepositoryConfigType for PhpRepositoryConfigType {
 
     fn get_description(&self) -> ConfigDescription {
         ConfigDescription {
-            name: "Composer Repository Config",
-            description: Some("Handles the type of Composer repository."),
+            name: "PHP Repository Config",
+            description: Some("Handles the type of PHP (Composer) repository."),
             documentation_link: Some("https://nitro-repo.kingtux.dev/repositoryTypes/php/configs/"),
             ..Default::default()
         }

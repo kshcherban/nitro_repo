@@ -22,6 +22,13 @@ use crate::{
     utils::ResponseBuilder,
 };
 
+mod database;
+mod go;
+mod query_parser;
+mod version_constraint;
+
+use self::query_parser::{SearchQuery, parse_search_query};
+
 #[derive(OpenApi)]
 #[openapi(paths(search_packages), components(schemas(PackageSearchResult)))]
 pub struct SearchApi;
@@ -43,10 +50,22 @@ struct PackageSearchQuery {
 enum SearchStrategy {
     PackagesDirectory,
     Docker,
+    GoModules,
+    Database,
 }
 
 const fn default_limit() -> usize {
     25
+}
+
+fn determine_search_strategy(repository_type: &str) -> Option<SearchStrategy> {
+    match repository_type.to_lowercase().as_str() {
+        "python" | "npm" | "php" => Some(SearchStrategy::PackagesDirectory),
+        "docker" => Some(SearchStrategy::Docker),
+        "go" => Some(SearchStrategy::GoModules),
+        "helm" | "maven" => Some(SearchStrategy::Database),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -61,7 +80,7 @@ pub struct PackageSearchResult {
     pub modified: DateTime<FixedOffset>,
 }
 
-struct RepositorySummary {
+pub(crate) struct RepositorySummary {
     repository_id: Uuid,
     repository_name: String,
     storage_name: String,
@@ -79,8 +98,18 @@ async fn search_packages(
     State(site): State<NitroRepo>,
     Query(params): Query<PackageSearchQuery>,
 ) -> Result<Response, InternalError> {
-    let query = params.q.trim().to_lowercase();
-    if query.len() < 2 {
+    let raw_query = params.q.trim();
+    if raw_query.is_empty() {
+        let empty: [PackageSearchResult; 0] = [];
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+    let parsed_query = match parse_search_query(raw_query) {
+        Ok(query) => query,
+        Err(err) => {
+            return Ok(ResponseBuilder::bad_request().body(err.to_string()));
+        }
+    };
+    if !parsed_query.has_filters() && !parsed_query.terms.iter().any(|term| term.len() >= 2) {
         let empty: [PackageSearchResult; 0] = [];
         return Ok(ResponseBuilder::ok().json(&empty));
     }
@@ -93,10 +122,8 @@ async fn search_packages(
         }
 
         let repo_type = repository.get_type();
-        let strategy = match repo_type {
-            "python" | "npm" => SearchStrategy::PackagesDirectory,
-            "docker" => SearchStrategy::Docker,
-            _ => continue,
+        let Some(strategy) = determine_search_strategy(repo_type) else {
+            continue;
         };
 
         let Some(info) =
@@ -109,22 +136,38 @@ async fn search_packages(
             continue;
         }
 
+        let repo_name = repository.name();
         let summary = RepositorySummary {
             repository_id,
-            repository_name: repository.name(),
+            repository_name: repo_name,
             storage_name: info.storage_name.to_string(),
             repository_type: info.repository_type,
         };
 
-        let storage = repository.get_storage();
-        let repo_results = search_repository_storage(
-            &storage,
-            &summary,
-            strategy,
-            &query,
-            min(limit.saturating_sub(results.len()), limit),
-        )
-        .await?;
+        if !parsed_query.matches_repository(
+            &summary.repository_name,
+            &summary.storage_name,
+            &summary.repository_type,
+        ) {
+            continue;
+        }
+
+        let remaining = min(limit.saturating_sub(results.len()), limit);
+        let repo_results = match strategy {
+            SearchStrategy::Database => {
+                database::search_database_packages(&site, &summary, &parsed_query, remaining)
+                    .await?
+            }
+            SearchStrategy::GoModules => {
+                let storage = repository.get_storage();
+                go::search_go_modules(&storage, &summary, &parsed_query, remaining).await?
+            }
+            _ => {
+                let storage = repository.get_storage();
+                search_repository_storage(&storage, &summary, strategy, &parsed_query, remaining)
+                    .await?
+            }
+        };
         results.extend(repo_results);
     }
 
@@ -135,7 +178,7 @@ async fn search_repository_storage(
     storage: &DynStorage,
     summary: &RepositorySummary,
     strategy: SearchStrategy,
-    query: &str,
+    query: &SearchQuery,
     limit: usize,
 ) -> Result<Vec<PackageSearchResult>, InternalError> {
     match strategy {
@@ -143,13 +186,16 @@ async fn search_repository_storage(
             search_packages_directory(storage, summary, query, limit).await
         }
         SearchStrategy::Docker => search_docker_manifests(storage, summary, query, limit).await,
+        SearchStrategy::GoModules | SearchStrategy::Database => unreachable!(
+            "Go module and database searches handled before delegating to storage search"
+        ),
     }
 }
 
 async fn search_packages_directory(
     storage: &DynStorage,
     summary: &RepositorySummary,
-    query: &str,
+    query: &SearchQuery,
     limit: usize,
 ) -> Result<Vec<PackageSearchResult>, InternalError> {
     if limit == 0 {
@@ -188,10 +234,10 @@ async fn search_packages_directory(
                     if should_ignore(&entry_name) {
                         continue;
                     }
-                    if !entry_name.to_lowercase().contains(query) {
+                    let path = join_file_path(&directory, &entry_name);
+                    if !matches_directory_entry(query, &entry_name, &path) {
                         continue;
                     }
-                    let path = join_file_path(&directory, &entry_name);
                     matches.push(PackageSearchResult {
                         repository_id: summary.repository_id,
                         repository_name: summary.repository_name.clone(),
@@ -213,7 +259,7 @@ async fn search_packages_directory(
 async fn search_docker_manifests(
     storage: &DynStorage,
     summary: &RepositorySummary,
-    query: &str,
+    query: &SearchQuery,
     limit: usize,
 ) -> Result<Vec<PackageSearchResult>, InternalError> {
     if limit == 0 {
@@ -231,9 +277,14 @@ async fn search_docker_manifests(
             break;
         }
 
-        let repo_lower = entry.repository.to_lowercase();
-        let reference_lower = entry.reference.to_lowercase();
-        if !repo_lower.contains(query) && !reference_lower.contains(query) {
+        let repo_refs: Vec<&str> = if entry.repository.is_empty() {
+            Vec::new()
+        } else {
+            vec![entry.repository.as_str()]
+        };
+        if query.package_filter.is_some()
+            && (repo_refs.is_empty() || !query.matches_package_names(&repo_refs))
+        {
             continue;
         }
 
@@ -242,6 +293,18 @@ async fn search_docker_manifests(
         } else {
             format!("{}:{}", entry.repository, entry.reference)
         };
+
+        if !query.matches_terms(&[
+            entry.repository.as_str(),
+            entry.reference.as_str(),
+            file_name.as_str(),
+        ]) {
+            continue;
+        }
+
+        if !query.matches_version(entry.reference.as_str()) {
+            continue;
+        }
 
         matches.push(PackageSearchResult {
             repository_id: summary.repository_id,
@@ -256,6 +319,56 @@ async fn search_docker_manifests(
     }
 
     Ok(matches)
+}
+
+fn matches_directory_entry(query: &SearchQuery, name: &str, path: &str) -> bool {
+    if query.package_filter.is_some() && !query.matches_package_names(&[name]) {
+        return false;
+    }
+
+    if !query.matches_terms(&[name, path]) {
+        return false;
+    }
+
+    if let Some(_) = query.version_constraint {
+        let mut candidates = extract_version_candidates(name);
+        candidates.extend(extract_version_candidates(path));
+        if candidates.is_empty() {
+            candidates.push(name.to_string());
+        }
+        if !candidates
+            .iter()
+            .any(|candidate| query.matches_version(candidate))
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn extract_version_candidates(value: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for segment in value.split(|c: char| matches!(c, '/' | '\\' | '-' | '_' | '@' | ' ')) {
+        if !segment.chars().any(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let cleaned = segment
+            .trim_matches(|ch: char| {
+                (!ch.is_ascii_alphanumeric() && ch != '.' && ch != '+' && ch != '-') || ch == '"'
+            })
+            .trim_matches('.');
+        if cleaned.is_empty() {
+            continue;
+        }
+        candidates.push(cleaned.to_string());
+        if let Some(stripped) = cleaned.strip_prefix('v') {
+            if !stripped.is_empty() {
+                candidates.push(stripped.to_string());
+            }
+        }
+    }
+    candidates
 }
 
 fn join_dir_path(parent: &str, child: &str) -> String {
@@ -285,8 +398,34 @@ mod tests {
     use bytes::Bytes;
     use nr_storage::{FileContent, Storage};
 
+    use super::query_parser::SearchQuery;
     use super::*;
     use crate::repository::test_helpers::test_storage;
+
+    fn simple_query(term: &str) -> SearchQuery {
+        SearchQuery {
+            terms: vec![term.to_lowercase()],
+            ..SearchQuery::default()
+        }
+    }
+
+    #[test]
+    fn determine_search_strategy_includes_database_repos() {
+        let result = super::determine_search_strategy("maven");
+        assert!(matches!(result, Some(SearchStrategy::Database)));
+    }
+
+    #[test]
+    fn determine_search_strategy_includes_go_modules() {
+        let result = super::determine_search_strategy("go");
+        assert!(matches!(result, Some(SearchStrategy::GoModules)));
+    }
+
+    #[test]
+    fn determine_search_strategy_supports_php() {
+        let result = super::determine_search_strategy("php");
+        assert!(matches!(result, Some(SearchStrategy::PackagesDirectory)));
+    }
 
     #[tokio::test]
     async fn search_repository_storage_finds_packages() {
@@ -314,7 +453,7 @@ mod tests {
             &storage,
             &summary,
             SearchStrategy::PackagesDirectory,
-            "parallel",
+            &simple_query("parallel"),
             10,
         )
         .await
@@ -357,7 +496,7 @@ mod tests {
             &storage,
             &summary,
             SearchStrategy::PackagesDirectory,
-            "artifact",
+            &simple_query("artifact"),
             10,
         )
         .await
@@ -392,7 +531,7 @@ mod tests {
             &storage,
             &summary,
             SearchStrategy::PackagesDirectory,
-            "package",
+            &simple_query("package"),
             2,
         )
         .await
@@ -443,7 +582,7 @@ mod tests {
             &storage,
             &summary,
             SearchStrategy::Docker,
-            "nginx",
+            &simple_query("nginx"),
             10,
         )
         .await

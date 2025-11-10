@@ -3,7 +3,9 @@
     <BrowseHeader :repository="repository" />
     <RepositoryPackagesPublic
       v-if="showPackages"
-      :repository-id="repository.id" />
+      :repository-id="repository.id"
+      :repository-type="repository.repository_type"
+      :repository-kind="repository.repository_kind ?? null" />
     <div v-if="files">
       <div class="browse">
         <BrowseList
@@ -82,8 +84,11 @@ async function loadRepository() {
 const numberOfFiles = ref(0);
 
 const supportsPackageListing = computed(() => {
-  const type = repository.value?.repository_type;
-  return type === "python" || type === "npm";
+  const type = repository.value?.repository_type?.toLowerCase();
+  if (!type) {
+    return false;
+  }
+  return ["python", "npm", "maven", "docker", "go", "helm"].includes(type);
 });
 
 const isRootPath = computed(() => catchAll.value === "" || catchAll.value === "/");

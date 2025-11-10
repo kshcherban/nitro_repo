@@ -296,6 +296,8 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
+@import "@/assets/styles/buttons.scss";
+
 .go-config {
   display: flex;
   flex-direction: column;

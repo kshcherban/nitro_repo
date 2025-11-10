@@ -120,7 +120,7 @@ impl RepositoryConfigType for MavenPushRulesConfigType {
     }
     fn get_description(&self) -> ConfigDescription {
         ConfigDescription {
-            name: "Push Rules",
+            name: "Maven Push Rules",
             description: Some("Rules for pushing to a maven repository"),
             documentation_link: None,
             ..Default::default()

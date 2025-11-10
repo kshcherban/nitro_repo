@@ -55,7 +55,7 @@ impl RepositoryConfigType for NPMRegistryConfigType {
     }
     fn get_description(&self) -> ConfigDescription {
         ConfigDescription {
-            name: "NPM Registry Config",
+            name: "NPM Repository Config",
             description: Some("Handles the type of NPM Registry"),
             documentation_link: None,
             ..Default::default()

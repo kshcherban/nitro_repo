@@ -163,6 +163,7 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @import "@/assets/styles/theme.scss";
+@import "@/assets/styles/buttons.scss";
 
 .helm-config {
   display: flex;

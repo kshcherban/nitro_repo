@@ -1,4 +1,7 @@
-use std::{cmp::min, collections::HashSet};
+use std::{
+    cmp::min,
+    collections::{BTreeMap, HashSet},
+};
 
 use axum::{
     Json,
@@ -56,7 +59,7 @@ const fn default_per_page() -> usize {
     50
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct PackageFileEntry {
     pub package: String,
     pub name: String,
@@ -80,6 +83,8 @@ enum PackageStrategy {
     PythonHosted,
     Docker,
     Helm,
+    GoHosted,
+    GoProxy,
 }
 
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
@@ -94,12 +99,8 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
         DynRepository::Helm(_) => PackageStrategy::Helm,
         DynRepository::Docker(_) => PackageStrategy::Docker,
         DynRepository::Go(go_repo) => match go_repo {
-            crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::PackagesDirectory {
-                base: Some("packages/"),
-            },
-            crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::PackagesDirectory {
-                base: Some("go-proxy-cache/"),
-            },
+            crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::GoHosted,
+            crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::GoProxy,
         },
         _ => PackageStrategy::PackagesDirectory {
             base: Some("packages/"),
@@ -164,6 +165,12 @@ pub async fn list_cached_packages(
         }
         PackageStrategy::Helm => {
             list_helm_packages(site, repository, query.page, query.per_page).await
+        }
+        PackageStrategy::GoHosted => {
+            list_go_packages(repository, "packages/", query.page, query.per_page).await
+        }
+        PackageStrategy::GoProxy => {
+            list_go_packages(repository, "go-proxy-cache/", query.page, query.per_page).await
         }
     }
 }
@@ -259,6 +266,143 @@ async fn list_directory_packages(
         per_page,
         total_packages,
         items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GoFileKind {
+    Info,
+    Mod,
+    Zip,
+}
+
+impl GoFileKind {
+    const fn priority(self) -> u8 {
+        match self {
+            GoFileKind::Info => 1,
+            GoFileKind::Mod => 2,
+            GoFileKind::Zip => 3,
+        }
+    }
+}
+
+fn parse_go_file_name(name: &str) -> Option<(String, GoFileKind)> {
+    if name == "list" {
+        return None;
+    }
+    if let Some(version) = name.strip_suffix(".info") {
+        return Some((version.to_string(), GoFileKind::Info));
+    }
+    if let Some(version) = name.strip_suffix(".mod") {
+        return Some((version.to_string(), GoFileKind::Mod));
+    }
+    if let Some(version) = name.strip_suffix(".zip") {
+        return Some((version.to_string(), GoFileKind::Zip));
+    }
+    None
+}
+
+fn should_replace_go_file(current: GoFileKind, candidate: GoFileKind) -> bool {
+    candidate.priority() > current.priority()
+}
+
+async fn collect_go_package_entries(
+    storage: &nr_storage::DynStorage,
+    repository_id: Uuid,
+    base: &str,
+) -> Result<Vec<PackageFileEntry>, nr_storage::StorageError> {
+    let mut package_dirs = gather_package_dirs(storage, repository_id, Some(base)).await?;
+    package_dirs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut entries = Vec::new();
+    for (display_name, storage_relative) in package_dirs {
+        let mut directory_path = String::from(base);
+        if !directory_path.ends_with('/') {
+            directory_path.push('/');
+        }
+        if !storage_relative.is_empty() {
+            directory_path.push_str(&storage_relative);
+        }
+        if !directory_path.ends_with('/') {
+            directory_path.push('/');
+        }
+        let storage_path = nr_core::storage::StoragePath::from(directory_path.clone());
+        let Some(StorageFile::Directory { files, .. }) =
+            storage.open_file(repository_id, &storage_path).await?
+        else {
+            continue;
+        };
+
+        let mut versions: BTreeMap<String, (PackageFileEntry, GoFileKind)> = BTreeMap::new();
+        for entry in files.iter() {
+            if should_ignore(entry.name()) {
+                continue;
+            }
+            if let FileType::File(file_meta) = entry.file_type() {
+                if let Some((version, kind)) = parse_go_file_name(entry.name()) {
+                    let cache_path = format!("{}{}", directory_path, entry.name());
+                    let candidate = PackageFileEntry {
+                        package: display_name.clone(),
+                        name: version.clone(),
+                        cache_path,
+                        size: file_meta.file_size,
+                        modified: entry.modified().clone(),
+                    };
+                    match versions.get_mut(&version) {
+                        Some((existing, existing_kind)) => {
+                            if should_replace_go_file(*existing_kind, kind)
+                                || (existing.cache_path.is_empty()
+                                    && candidate.cache_path.is_empty())
+                            {
+                                *existing = candidate;
+                                *existing_kind = kind;
+                            } else if candidate.modified > existing.modified {
+                                existing.modified = candidate.modified;
+                                existing.size = candidate.size;
+                            }
+                        }
+                        None => {
+                            versions.insert(version, (candidate, kind));
+                        }
+                    }
+                }
+            }
+        }
+
+        entries.extend(versions.into_values().map(|(entry, _)| entry));
+    }
+
+    entries.sort_by(|a, b| a.package.cmp(&b.package).then(a.name.cmp(&b.name)));
+    Ok(entries)
+}
+
+async fn list_go_packages(
+    repository: DynRepository,
+    base: &str,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let storage = repository.get_storage();
+    let entries = collect_go_package_entries(&storage, repository.id(), base).await?;
+
+    let total_packages = entries.len();
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let start = (current_page - 1) * per_page;
+    let end = min(start + per_page, total_packages);
+
+    let page_items = if start < total_packages {
+        entries[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages,
+        items: page_items,
     };
     Ok(ResponseBuilder::ok().json(&response))
 }
@@ -560,6 +704,9 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
             if !(path.starts_with("charts/") || path.starts_with("v2/")) {
                 return false;
             }
+            is_valid_repository_path(path)
+        }
+        PackageStrategy::GoHosted | PackageStrategy::GoProxy => {
             is_valid_repository_path(path)
         }
     }
@@ -1040,6 +1187,9 @@ async fn gather_package_dirs(
                     }
                 }
             }
+            if let Some(stripped) = display_name.strip_suffix("/@v") {
+                display_name = stripped.to_string();
+            }
             if !display_name.is_empty() {
                 packages.push((display_name, storage_relative));
             }
@@ -1161,6 +1311,82 @@ mod tests {
                 "github.com/example/module".to_string(),
                 "github.com/example/module/@v".to_string()
             )]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collect_go_package_entries_deduplicates_versions() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository = Uuid::new_v4();
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"info"),
+                &nr_core::storage::StoragePath::from(
+                    "go-proxy-cache/github.com/example/module/@v/v1.0.0.info",
+                ),
+            )
+            .await?;
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"zip"),
+                &nr_core::storage::StoragePath::from(
+                    "go-proxy-cache/github.com/example/module/@v/v1.0.0.zip",
+                ),
+            )
+            .await?;
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"mod"),
+                &nr_core::storage::StoragePath::from(
+                    "go-proxy-cache/github.com/example/module/@v/v1.1.0.mod",
+                ),
+            )
+            .await?;
+
+        let entries =
+            super::collect_go_package_entries(&storage, repository, "go-proxy-cache/").await?;
+        assert_eq!(entries.len(), 2);
+        let mut versions: Vec<_> = entries.iter().map(|entry| entry.name.clone()).collect();
+        versions.sort();
+        assert_eq!(versions, vec!["v1.0.0".to_string(), "v1.1.0".to_string()]);
+        let zip_entry = entries
+            .iter()
+            .find(|entry| entry.name == "v1.0.0")
+            .expect("zip entry present");
+        assert!(
+            zip_entry.cache_path.ends_with(".zip"),
+            "expected zip cache path but found {}",
+            zip_entry.cache_path
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collect_go_package_entries_handles_hosted_storage() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository = Uuid::new_v4();
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"zip"),
+                &nr_core::storage::StoragePath::from(
+                    "packages/github.com/example/module/@v/v2.3.4.zip",
+                ),
+            )
+            .await?;
+
+        let entries = super::collect_go_package_entries(&storage, repository, "packages/").await?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].package, "github.com/example/module");
+        assert_eq!(entries[0].name, "v2.3.4");
+        assert!(
+            entries[0].cache_path.ends_with(".zip"),
+            "expected zip cache path but found {}",
+            entries[0].cache_path
         );
         Ok(())
     }

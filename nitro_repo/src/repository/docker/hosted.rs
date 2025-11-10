@@ -20,8 +20,8 @@ use tracing::{debug, error, instrument};
 use uuid::Uuid;
 
 use super::{
-    DockerError, DockerPushRules, DockerPushRulesConfigType, DockerRegistryConfigType,
-    REPOSITORY_TYPE_ID, RepoResponse, RepositoryRequest,
+    DockerError, DockerPushRules, DockerPushRulesConfigType, REPOSITORY_TYPE_ID, RepoResponse,
+    RepositoryRequest,
 };
 use crate::{
     app::NitroRepo,
@@ -128,7 +128,6 @@ impl Repository for DockerHosted {
         vec![
             DockerPushRulesConfigType::get_type_static(),
             ProjectConfigType::get_type_static(),
-            DockerRegistryConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
     }

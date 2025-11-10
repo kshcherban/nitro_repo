@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
-use uuid::Uuid;
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::{
     HelmRepositoryError,
@@ -589,9 +589,12 @@ impl HelmHosted {
     ) -> Result<(), HelmRepositoryError> {
         let db = &self.site().database;
 
-        tracing::debug!("Looking for project: {} in repository: {}", chart_name, self.id());
-        let project = DBProject::find_by_project_key(chart_name, self.id(), db)
-            .await?;
+        tracing::debug!(
+            "Looking for project: {} in repository: {}",
+            chart_name,
+            self.id()
+        );
+        let project = DBProject::find_by_project_key(chart_name, self.id(), db).await?;
 
         if project.is_none() {
             tracing::debug!("Project not found: {}", chart_name);
@@ -599,9 +602,13 @@ impl HelmHosted {
         }
         let project = project.unwrap();
 
-        tracing::debug!("Looking for version: {} for project_id: {}", chart_version, project.id);
-        let version_result = DBProjectVersion::find_by_version_and_project(chart_version, project.id, db)
-            .await?;
+        tracing::debug!(
+            "Looking for version: {} for project_id: {}",
+            chart_version,
+            project.id
+        );
+        let version_result =
+            DBProjectVersion::find_by_version_and_project(chart_version, project.id, db).await?;
 
         if version_result.is_none() {
             tracing::debug!("Version not found: {}@{}", chart_name, chart_version);
@@ -637,7 +644,8 @@ impl HelmHosted {
         if let Some(ref extra_data) = update.extra {
             tracing::debug!(
                 "VersionData.extra content: {}",
-                serde_json::to_string_pretty(&extra_data).unwrap_or_else(|_| "Invalid JSON".to_string())
+                serde_json::to_string_pretty(&extra_data)
+                    .unwrap_or_else(|_| "Invalid JSON".to_string())
             );
         }
 
@@ -1274,7 +1282,11 @@ impl HelmHosted {
             return Ok(());
         }
 
-        tracing::debug!("Parsed repository: {}, reference: {}", repository_name, reference);
+        tracing::debug!(
+            "Parsed repository: {}, reference: {}",
+            repository_name,
+            reference
+        );
 
         let storage = self.storage();
         let manifest_storage_path = StoragePath::from(manifest_path);
@@ -2070,11 +2082,11 @@ fn update_provenance_extra(extra: &mut HelmChartVersionExtra, canonical_path: &S
 mod tests {
     use super::*;
     use crate::repository::helm::chart::{ChartApiVersion, ChartType, HelmChartMetadata};
-    use chrono::{Utc, FixedOffset, TimeZone};
+    use chrono::{FixedOffset, TimeZone, Utc};
+    use nr_core::repository::RepositoryName;
     use semver::Version;
     use std::collections::BTreeMap;
     use uuid::Uuid;
-    use nr_core::repository::RepositoryName;
 
     fn sample_repository_record(active: bool, visibility: Visibility) -> DBRepository {
         let offset = FixedOffset::east_opt(0).unwrap();
@@ -2215,10 +2227,22 @@ mod tests {
         updated_auth.enabled = true;
 
         let state = HelmRuntimeState::new(repository, config, auth);
-        state.update(new_repository.clone(), updated_config.clone(), updated_auth.clone());
+        state.update(
+            new_repository.clone(),
+            updated_config.clone(),
+            updated_auth.clone(),
+        );
 
-        assert_eq!(state.is_active(), new_repository.active, "active flag should refresh");
-        assert_eq!(state.visibility(), new_repository.visibility, "visibility should refresh");
+        assert_eq!(
+            state.is_active(),
+            new_repository.active,
+            "active flag should refresh"
+        );
+        assert_eq!(
+            state.visibility(),
+            new_repository.visibility,
+            "visibility should refresh"
+        );
         assert!(
             state.config().overwrite,
             "expected overwrite flag to update from runtime refresh"

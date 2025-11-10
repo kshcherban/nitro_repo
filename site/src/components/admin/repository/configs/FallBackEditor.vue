@@ -7,11 +7,15 @@
     <JsonSchemaForm
       :form="form"
       v-model="model" />
-    <SubmitButton>Update Settings</SubmitButton>
+    <button
+      type="submit"
+      class="nr-button nr-button--primary"
+      @click="save">
+      Save Configuration
+    </button>
   </div>
 </template>
 <script setup lang="ts">
-import SubmitButton from "@/components/form/SubmitButton.vue";
 import http from "@/http";
 import { computed, ref, type PropType } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
@@ -68,6 +72,42 @@ async function loadDefault() {
       console.error(error);
     });
 }
+
+async function save() {
+  if (!props.repository || !props.settingName || !model.value) {
+    console.error("Missing required properties for save");
+    return;
+  }
+  try {
+    await http.put(
+      `/api/repository/${props.repository}/config/${props.settingName}`,
+      model.value
+    );
+    await load();
+  } catch (error) {
+    console.error("Failed to save configuration", error);
+  }
+}
+
 load();
 </script>
-<style lang="scss"></style>
+<style scoped lang="scss">
+@import "@/assets/styles/buttons.scss";
+
+.editorBox {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.settingHeader {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+
+.nr-button {
+  align-self: flex-start;
+  min-width: 10rem;
+}
+</style>

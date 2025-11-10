@@ -67,11 +67,7 @@ impl UpdateProjectVersion {
         Ok(())
     }
 
-    fn apply_update_fields<'args>(
-        &self,
-        version_id: Uuid,
-        update: &mut UpdateQueryBuilder<'args>,
-    ) {
+    fn apply_update_fields<'args>(&self, version_id: Uuid, update: &mut UpdateQueryBuilder<'args>) {
         let release_type = self.release_type.clone();
         let extra = self.extra.clone();
         let version_page = self.version_page.clone();

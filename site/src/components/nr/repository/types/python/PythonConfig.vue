@@ -155,7 +155,9 @@ onMounted(() => {
 });
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@import "@/assets/styles/buttons.scss";
+
 .python-config {
   display: flex;
   flex-direction: column;
@@ -171,21 +173,5 @@ onMounted(() => {
   gap: 0.5rem;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   align-items: end;
-}
-.nr-button {
-  width: fit-content;
-  padding: 0.4rem 0.8rem;
-}
-.nr-button--primary {
-  background: var(--brand-color, #2d7ef7);
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-}
-.nr-button--danger {
-  background: #d9534f;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
 }
 </style>
