@@ -55,4 +55,20 @@ describe("SubmitButton.vue", () => {
 
     expect(wrapper.emitted("click")).toHaveLength(1);
   });
+
+  it("reacts to disabled prop changes", async () => {
+    const wrapper = mount(SubmitButton, {
+      props: { disabled: true },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    const button = wrapper.get("button");
+    expect(button.attributes("disabled")).toBeDefined();
+
+    await wrapper.setProps({ disabled: false });
+
+    expect(button.attributes("disabled")).toBeUndefined();
+  });
 });

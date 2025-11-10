@@ -202,6 +202,7 @@
 <script setup lang="ts">
 import http from "@/http";
 import { computed, ref, watch } from "vue";
+import { useResizableColumns } from "@/composables/useResizableColumns";
 
 interface PackageEntry {
   name: string;
@@ -610,6 +611,9 @@ watch(
   },
   { immediate: true },
 );
+
+// Enable resizable columns
+useResizableColumns('.packages__table');
 
 watch(
   () => ({

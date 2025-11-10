@@ -87,6 +87,7 @@ const value = defineModel<MavenConfigType>({
 const selectedType = ref<string>(value.value?.type ?? "Hosted");
 const isCreate = computed(() => !props.repository);
 const isSaving = ref(false);
+const isLoading = ref(false);
 
 const isProxy = computed(() => selectedType.value === "Proxy");
 
@@ -105,6 +106,10 @@ const proxyConfig = computed<MavenProxyConfigType>({
 });
 
 watch(selectedType, (type) => {
+  // Don't update model while loading from server
+  if (isLoading.value) {
+    return;
+  }
   if (type === "Proxy") {
     value.value = {
       type: "Proxy",
@@ -119,16 +124,18 @@ async function load() {
   if (!props.repository) {
     return;
   }
+  isLoading.value = true;
   try {
     const response = await http.get(`/api/repository/${props.repository}/config/maven`);
     const data = response.data as MavenConfigType | null;
     if (!data) {
-      value.value = { type: "Hosted" };
       selectedType.value = "Hosted";
+      value.value = { type: "Hosted" };
       return;
     }
-    value.value = data;
+    // Set selectedType first to avoid triggering the watch
     selectedType.value = data.type;
+    value.value = data;
   } catch (error) {
     console.error("Failed to load Maven config", error);
     notify({
@@ -136,6 +143,8 @@ async function load() {
       title: "Failed to load Maven configuration",
       text: "Check the server logs for details.",
     });
+  } finally {
+    isLoading.value = false;
   }
 }
 

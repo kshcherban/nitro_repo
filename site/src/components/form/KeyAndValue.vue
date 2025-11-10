@@ -30,7 +30,8 @@ defineProps({
     border: 2px solid $secondary-50;
     padding: 5px;
     border-radius: 5px;
-    background-color: $secondary;
+    background-color: $background;
+    color: $text;
   }
   // Make it look like a input
   label {

@@ -1,7 +1,6 @@
 <template>
   <v-card
     class="auth-config"
-    variant="outlined"
     data-testid="auth-config-card">
     <v-card-text class="auth-config__content">
       <SwitchInput

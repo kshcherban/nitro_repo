@@ -1,27 +1,28 @@
 <template>
-  <div>
-    <div id="userPermissionsHeader">
-      <h1>User Permission</h1>
-      <SubmitButton
-        :disabled="!hasChanged"
-        @click="save"
-        >Save</SubmitButton
-      >
-    </div>
-    <div class="staticPermissions">
-      <div class="permissionsSection">
-        <h2>Primary Permissions</h2>
-        <p>General Permissions for Nitro Repo</p>
-        <div
-          id="primaryPermissions"
-          class="twoByGrid">
+  <section class="user-permissions">
+    <header class="user-permissions__header">
+      <div>
+        <h2 class="text-h5 mb-1">User Permission</h2>
+        <p class="text-body-2 text-medium-emphasis">
+          Configure the user’s elevated roles and default repository access.
+        </p>
+      </div>
+    </header>
+
+    <div class="user-permissions__grid">
+      <article class="user-permissions__card">
+        <h3 class="text-subtitle-1 mb-1">Primary Permissions</h3>
+        <p class="text-body-2 text-medium-emphasis">
+          General permissions for Nitro Repo.
+        </p>
+        <div class="user-permissions__switches">
           <SwitchInput
             id="admin"
             v-model="userPermissions.admin">
             <template #comment>
               Admins have full control over the system.
               <br />
-              <small>All other permissions are ignored</small>
+              <small>All other permissions are ignored.</small>
             </template>
             Admin
           </SwitchInput>
@@ -31,7 +32,7 @@
             <template #comment>
               Can create, edit, and remove users.
               <br />
-              <small>Admins can only be edited by admins</small>
+              <small>Admins can only be edited by admins.</small>
             </template>
             User Manager
           </SwitchInput>
@@ -39,43 +40,50 @@
             id="systemManager"
             v-model="userPermissions.system_manager">
             <template #comment>
-              Can create, edit, and remove storages and repositories. They will also have full read
-              and write access to all repositories
+              Can create, edit, and remove storages and repositories with full read/write access.
             </template>
             System Manager
           </SwitchInput>
         </div>
-      </div>
-      <div class="permissionsSection">
-        <h2>Default Repository Permissions</h2>
-        <p>
-          Default Permissions for a Repository. Used if the person does not have a set permissions
+      </article>
+
+      <article class="user-permissions__card">
+        <h3 class="text-subtitle-1 mb-1">Default Repository Permissions</h3>
+        <p class="text-body-2 text-medium-emphasis">
+          Applied when the user does not have explicit repository permissions.
         </p>
-        <div
-          id="defaultRepository"
-          class="twoByGrid">
+        <div class="user-permissions__switches">
           <SwitchInput
             id="defaultRead"
             v-model="userPermissions.default_repository_permissions.can_read">
-            <template #comment> Can read artifacts on any repository </template>
+            <template #comment>Can read artifacts on any repository.</template>
             Read
           </SwitchInput>
           <SwitchInput
             id="defaultWrite"
             v-model="userPermissions.default_repository_permissions.can_write">
-            <template #comment> Can write artifacts on any repository </template>
+            <template #comment>Can write artifacts on any repository.</template>
             Write
           </SwitchInput>
           <SwitchInput
-            id="defaultExecute"
+            id="defaultEdit"
             v-model="userPermissions.default_repository_permissions.can_edit">
-            <template #comment> Can edit configuration on any repository </template>
+            <template #comment>Can edit configuration on any repository.</template>
             Edit
           </SwitchInput>
         </div>
-      </div>
+      </article>
     </div>
-  </div>
+
+    <footer class="user-permissions__actions">
+      <SubmitButton
+        :block="false"
+        :disabled="!hasChanged"
+        @click="save">
+        Save
+      </SubmitButton>
+    </footer>
+  </section>
 </template>
 <script lang="ts" setup>
 import SubmitButton from "@/components/form/SubmitButton.vue";
@@ -113,13 +121,6 @@ const userPermissions = ref({
   system_manager: props.user.system_manager,
   default_repository_permissions: new RepositoryActionsType(props.user.default_repository_actions),
 });
-watch(
-  userPermissions,
-  () => {
-    console.log(`User Permissions: ${JSON.stringify(userPermissions)}`);
-  },
-  { deep: true },
-);
 async function save() {
   console.log("Saving User Permissions");
   const newPermissions = {
@@ -152,24 +153,46 @@ async function save() {
 }
 </script>
 <style lang="scss" scoped>
-.staticPermissions {
+.user-permissions {
   display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  margin: 1rem 2rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
-.twoByGrid {
+.user-permissions__grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
 }
-#userPermissionsHeader {
-  display: flex;
-  justify-content: space-between;
-  margin: 1rem 2rem;
-  button {
-    max-width: 4rem;
+
+@media (min-width: 960px) {
+  .user-permissions__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.user-permissions__card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+  border-radius: 12px;
+  background: var(--nr-surface);
+  border: 1px solid var(--nr-border-muted);
+}
+
+.user-permissions__switches {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.user-permissions__actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.user-permissions__actions :deep(.submit-button) {
+  min-width: 160px;
+  align-self: flex-start;
 }
 </style>

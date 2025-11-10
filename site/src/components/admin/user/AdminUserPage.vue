@@ -1,144 +1,166 @@
 <template>
-  <div
+  <v-container
     v-if="user"
-    class="admin-user-page">
+    class="admin-user-page pa-0">
     <FloatingErrorBanner
       :visible="errorBanner.visible"
       :title="errorBanner.title"
       :message="errorBanner.message"
       @close="resetError" />
-    <div class="tabs">
-      <div class="tabs-header">
-      <div
-        class="tab"
-        :data-active="currentTab === 'main'"
-        @click="currentTab = 'main'">
-        User
-      </div>
-      <div
-        class="tab"
-        :data-active="currentTab === 'password'"
-        @click="currentTab = 'password'">
-        Password
-      </div>
-      <div
-        class="tab"
-        :data-active="currentTab === 'user-permissions'"
-        @click="currentTab = 'user-permissions'">
-        User Permissions
-      </div>
-      <div
-        class="tab"
-        :data-active="currentTab === 'repository-permissions'"
-        @click="currentTab = 'repository-permissions'">
-        Repository Permissions
-      </div>
-      </div>
-      <div class="tabs-content">
-        <div
-          class="tab-content"
-          :data-active="currentTab === 'main'">
-          <div id="userMain">
-            <div class="userStatus">
-            <span
-              class="statusBadge"
-              :data-active="user.active">
-              {{ user.active ? "Active" : "Inactive" }}
-            </span>
-            <div class="statusActions">
-              <button
-                type="button"
-                class="secondaryButton"
-                :disabled="statusUpdating"
-                @click="setActive(!user.active)">
-                {{ user.active ? "Deactivate" : "Reactivate" }}
-              </button>
-              <button
-                type="button"
-                class="dangerButton"
-                :disabled="deletingUser || isCurrentUser"
-                @click="deleteUser">
-                Delete User
-              </button>
-            </div>
-          </div>
-          <form>
-            <TextInput
-              id="name"
-              v-model="changeUser.name"
-              autocomplete="name">
-              Name</TextInput
-            >
-            <ValidatableTextBox
-              id="email"
-              autocomplete="email"
-              :validations="EMAIL_VALIDATIONS"
-              :originalValue="user.email"
-              v-model="changeUser.email">
-              Email
-            </ValidatableTextBox>
-            <ValidatableTextBox
-              id="username"
-              :originalValue="user.username"
-              :validations="USERNAME_VALIDATIONS"
-              :deniedKeys="[' ']"
-              autocomplete="username"
-              v-model="changeUser.username">
-              Username
-            </ValidatableTextBox>
-            <SubmitButton>Save</SubmitButton>
-          </form>
-          <div>
-            <KeyAndValue
-              :label="'ID #'"
-              :value="user.id.toLocaleString()" />
-            <KeyAndValue
-              :label="'Status'"
-              :value="user.active ? 'Active' : 'Inactive'" />
-            <KeyAndValue
-              :label="'Created At'"
-              :value="new Date(user.created_at).toLocaleString()" />
-          </div>
-        </div>
-        </div>
-        <div
-          class="tab-content"
-          :data-active="currentTab === 'password'">
+
+    <v-card
+      variant="flat"
+      class="admin-user-page__card">
+      <v-tabs
+        v-model="currentTab"
+        density="comfortable"
+        class="admin-user-page__tabs"
+        data-testid="admin-user-tabs">
+        <v-tab
+          value="main"
+          data-testid="admin-user-tab">
+          User
+        </v-tab>
+        <v-tab
+          value="password"
+          data-testid="admin-user-tab">
+          Password
+        </v-tab>
+        <v-tab
+          value="user-permissions"
+          data-testid="admin-user-tab">
+          User Permissions
+        </v-tab>
+        <v-tab
+          value="repository-permissions"
+          data-testid="admin-user-tab">
+          Repository Permissions
+        </v-tab>
+      </v-tabs>
+
+      <v-divider />
+
+      <v-window
+        v-model="currentTab"
+        class="admin-user-page__window">
+        <v-window-item value="main">
+          <section class="admin-user-page__section">
+            <header class="admin-user-page__status">
+              <span
+                class="admin-user-page__status-badge"
+                :data-active="user.active">
+                {{ user.active ? "Active" : "Inactive" }}
+              </span>
+              <div class="admin-user-page__status-actions">
+                <v-btn
+                  variant="outlined"
+                  color="medium-emphasis"
+                  class="text-none"
+                  :disabled="statusUpdating"
+                  @click="setActive(!user.active)">
+                  {{ user.active ? "Deactivate" : "Reactivate" }}
+                </v-btn>
+                <v-btn
+                  color="error"
+                  variant="flat"
+                  class="text-none"
+                  prepend-icon="mdi-delete-outline"
+                  :disabled="deletingUser || isCurrentUser"
+                  @click="deleteUser">
+                  Delete User
+                </v-btn>
+              </div>
+            </header>
+
+            <form class="admin-user-page__form">
+              <TextInput
+                id="name"
+                v-model="changeUser.name"
+                autocomplete="name">
+                Name
+              </TextInput>
+              <ValidatableTextBox
+                id="email"
+                autocomplete="email"
+                :validations="EMAIL_VALIDATIONS"
+                :originalValue="user.email"
+                v-model="changeUser.email">
+                Email
+              </ValidatableTextBox>
+              <ValidatableTextBox
+                id="username"
+                :originalValue="user.username"
+                :validations="USERNAME_VALIDATIONS"
+                :deniedKeys="[' ']"
+                autocomplete="username"
+                v-model="changeUser.username">
+                Username
+              </ValidatableTextBox>
+              <div class="admin-user-page__actions">
+                <SubmitButton :block="false">Save</SubmitButton>
+              </div>
+            </form>
+
+            <dl class="admin-user-page__metadata">
+              <KeyAndValue
+                :label="'ID #'"
+                :value="user.id.toLocaleString()" />
+              <KeyAndValue
+                :label="'Status'"
+                :value="user.active ? 'Active' : 'Inactive'" />
+              <KeyAndValue
+                :label="'Created At'"
+                :value="new Date(user.created_at).toLocaleString()" />
+            </dl>
+          </section>
+        </v-window-item>
+
+        <v-window-item value="password">
           <form
             id="setPassword"
+            class="admin-user-page__password-form"
+            data-testid="admin-user-password-form"
             @submit.prevent="changePassword">
             <input
-            type="hidden"
-            name="email"
-            autocomplete="email"
-            :value="user.email" />
+              type="hidden"
+              name="email"
+              autocomplete="email"
+              :value="user.email" />
             <input
-            type="hidden"
-            name="username"
-            autocomplete="username"
-            :value="user.username" />
+              type="hidden"
+              name="username"
+              autocomplete="username"
+              :value="user.username" />
             <NewPasswordInput
-            id="password"
-            v-model="newPassword"
-            :passwordRules="passwordRules">
-            Password</NewPasswordInput
-          >
-            <SubmitButton :disabled="!newPassword">Save</SubmitButton>
+              id="password"
+              v-model="newPassword"
+              :passwordRules="passwordRules">
+              Password
+            </NewPasswordInput>
+            <div class="admin-user-page__actions">
+              <SubmitButton
+                :block="false"
+                :disabled="!newPassword">
+                Save
+              </SubmitButton>
+            </div>
           </form>
-        </div>
-        <div
-          class="tab-content"
-          :data-active="currentTab === 'user-permissions'">
-          <UserPermissions :user="user" />
-        </div>
-        <div
-          class="tab-content"
-          :data-active="currentTab === 'repository-permissions'">
-          <RepositoryPermissions :user="user" />
-        </div>
-      </div>
-    </div>
-  </div>
+        </v-window-item>
+
+        <v-window-item value="user-permissions">
+          <section class="admin-user-page__section">
+            <UserPermissions :user="user" />
+          </section>
+        </v-window-item>
+
+        <v-window-item value="repository-permissions">
+          <section class="admin-user-page__section">
+            <RepositoryPermissions :user="user" />
+          </section>
+        </v-window-item>
+      </v-window>
+    </v-card>
+  </v-container>
 </template>
 
 <script setup lang="ts">
@@ -385,130 +407,93 @@ function resolveUserOperationError(
 
 <style scoped lang="scss">
 @use "@/assets/styles/theme" as *;
-.admin-user-page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-.tabs {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 90vh;
 
-  background-color: $background-30;
+.admin-user-page__card {
+  border-radius: 16px;
+  overflow: hidden;
 }
-@media screen and (max-width: 800px) {
-  .tabs-header {
-    flex-direction: column;
-  }
+
+.admin-user-page__tabs {
+  padding-inline: 1rem;
 }
-.tabs-header {
-  display: flex;
-  gap: 1rem;
-  width: 100%;
-  background-color: $primary-30;
+
+.admin-user-page__window {
+  padding: 1.5rem;
 }
-.tab {
-  padding: 1rem;
-  cursor: pointer;
-  border-radius: 0.5rem 0.5rem 0 0;
-  border: 1px solid $primary-50;
-  &:hover {
-    background-color: $accent;
-    color: white;
-  }
-}
-.tab[data-active="true"] {
-  background-color: $accent;
-  color: white;
-  cursor: default;
-}
-.tab-content {
-  display: flex;
-  width: 100%;
-  height: 100%;
-  margin: auto 0;
-  border: 1px solid $primary-50;
-  padding: 1rem;
-}
-.tab-content[data-active="false"] {
-  display: none;
-}
-.tabs-content[data-active="true"] {
-  display: block;
-}
-.config {
-  width: 100%;
-  height: 100%;
-  margin: auto 0;
-}
-#userMain {
-  width: 100%;
+
+.admin-user-page__section {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
 }
-.userStatus {
+
+.admin-user-page__status {
   display: flex;
   align-items: center;
-  gap: 1rem;
   flex-wrap: wrap;
+  gap: 1rem;
 }
-.statusBadge {
+
+.admin-user-page__status-badge {
   padding: 0.35rem 0.75rem;
   border-radius: 999px;
   font-weight: 600;
   background-color: $primary-30;
   color: $text;
+
   &[data-active="true"] {
     background-color: $primary-70;
     color: $background;
   }
+
   &[data-active="false"] {
     background-color: $secondary-70;
     color: $text;
   }
 }
-.statusActions {
+
+.admin-user-page__status-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
 }
-.secondaryButton,
-.dangerButton {
-  border: none;
-  border-radius: 0.5rem;
-  padding: 0.5rem 1rem;
-  font-weight: bold;
-  cursor: pointer;
-}
-.secondaryButton {
-  background-color: $primary-70;
-  color: $text;
-  &:hover {
-    background-color: $primary-90;
-  }
-  &:disabled {
-    background-color: $primary-30;
-    cursor: not-allowed;
-  }
-}
-.dangerButton {
-  background-color: $accent;
-  color: $background;
-  &:hover {
-    background-color: $accent-70;
-  }
-  &:disabled {
-    background-color: $accent-30;
-    cursor: not-allowed;
-  }
+
+.admin-user-page__form {
+  display: grid;
+  gap: 1rem;
+  max-width: 520px;
 }
 
-form {
+.admin-user-page__actions {
+  margin-top: 0.5rem;
   display: flex;
-  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.admin-user-page__actions :deep(.submit-button) {
+  min-width: 160px;
+}
+
+.admin-user-page__metadata {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 360px;
+}
+
+.admin-user-page__password-form {
+  display: grid;
   gap: 1rem;
+  max-width: 520px;
+}
+
+@media screen and (max-width: 600px) {
+  .admin-user-page__window {
+    padding: 1rem;
+  }
+
+  .admin-user-page__form,
+  .admin-user-page__password-form {
+    max-width: 100%;
+  }
 }
 </style>

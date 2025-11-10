@@ -2,12 +2,24 @@
   <div id="storagesBox">
     <div id="headerBar">
       <h2>Storages</h2>
-      <input
-        type="text"
-        id="nameSearch"
-        v-model="searchValue"
-        autofocus
-        placeholder="Search by Name, Username, or Primary Email Address" />
+      <div class="search-control">
+        <input
+          type="text"
+          id="nameSearch"
+          v-model="searchValue"
+          autofocus
+          placeholder="Search by Name, Username, or Primary Email Address"
+          aria-label="Search storages" />
+        <button
+          v-if="searchValue.length"
+          type="button"
+          class="search-control__clear"
+          data-testid="storage-search-clear"
+          aria-label="Clear storage search"
+          @click="clearSearch">
+          ×
+        </button>
+      </div>
     </div>
     <div
       id="storages"
@@ -92,6 +104,10 @@ const filteredTable = computed(() => {
   const users = props.storages.map((user) => user);
   return users.sort(sortList);
 });
+
+function clearSearch() {
+  searchValue.value = "";
+}
 </script>
 <style scoped lang="scss">
 @use "@/assets/styles/theme" as *;
@@ -100,13 +116,36 @@ const filteredTable = computed(() => {
   justify-content: space-between;
   padding: 1rem;
   background-color: $primary-30;
-  input {
+  .search-control {
+    position: relative;
+    display: flex;
+    align-items: center;
     width: 25%;
+
+    input {
+      width: 100%;
+      padding-right: 2rem;
+    }
+
+    .search-control__clear {
+      position: absolute;
+      right: 0.5rem;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 1.25rem;
+      line-height: 1;
+      color: $primary-400;
+
+      &:hover {
+        color: $accent;
+      }
+    }
   }
 }
 @media screen and (max-width: 1200px) {
   #headerBar {
-    input {
+    .search-control {
       width: 50%;
     }
   }
@@ -115,7 +154,7 @@ const filteredTable = computed(() => {
   #headerBar {
     display: flex;
     flex-direction: column;
-    input {
+    .search-control {
       width: 100%;
     }
   }

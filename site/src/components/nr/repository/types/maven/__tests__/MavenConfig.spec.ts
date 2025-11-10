@@ -99,8 +99,9 @@ const proxyConfigStub = defineComponent({
     },
   },
   emits: ["update:modelValue"],
-  setup(_, { slots }) {
-    return () => h("div", { "data-stub": "proxy-config" }, slots.default?.());
+  setup(props, { slots }) {
+    // Just pass through the model value without modification
+    return () => h("div", { "data-stub": "proxy-config", "data-config": JSON.stringify(props.modelValue) }, slots.default?.());
   },
 });
 
@@ -125,6 +126,11 @@ describe("MavenConfig.vue", () => {
           TextInput: textInputStub,
           SubmitButton: submitButtonStub,
           MavenProxyConfig: proxyConfigStub,
+          VCard: { template: "<div data-stub='v-card'><slot /></div>" },
+          VCardText: { template: "<div data-stub='v-card-text'><slot /></div>" },
+          VRow: { template: "<div data-stub='v-row'><slot /></div>" },
+          VCol: { template: "<div data-stub='v-col'><slot /></div>" },
+          VExpandTransition: { template: "<div data-stub='v-expand-transition'><slot /></div>" },
         },
       },
     });
@@ -135,8 +141,9 @@ describe("MavenConfig.vue", () => {
   });
 
   it("loads and saves existing repository configuration", async () => {
-    (http.get as vi.Mock).mockResolvedValueOnce({
-      data: { type: "Proxy", config: { routes: [] } },
+    const loadedConfig = { type: "Proxy" as const, config: { routes: [] } };
+    (http.get as vi.Mock).mockResolvedValue({
+      data: loadedConfig,
     });
     (http.put as vi.Mock).mockResolvedValue(undefined);
 
@@ -146,8 +153,9 @@ describe("MavenConfig.vue", () => {
       props: {
         repository: "repo-1",
         modelValue: model.value,
-        "onUpdate:modelValue": (val: MavenConfigType) => {
+        "onUpdate:modelValue": async (val: MavenConfigType) => {
           model.value = val;
+          await wrapper.setProps({ modelValue: val });
         },
       },
       global: {
@@ -156,14 +164,23 @@ describe("MavenConfig.vue", () => {
           TextInput: textInputStub,
           SubmitButton: submitButtonStub,
           MavenProxyConfig: proxyConfigStub,
+          VCard: { template: "<div data-stub='v-card'><slot /></div>" },
+          VCardText: { template: "<div data-stub='v-card-text'><slot /></div>" },
+          VCardActions: { template: "<div data-stub='v-card-actions'><slot /></div>" },
+          VRow: { template: "<div data-stub='v-row'><slot /></div>" },
+          VCol: { template: "<div data-stub='v-col'><slot /></div>" },
+          VDivider: { template: "<hr data-stub='v-divider' />" },
+          VExpandTransition: { template: "<div data-stub='v-expand-transition'><slot /></div>" },
         },
       },
     });
 
     await flushPromises();
     expect(model.value.type).toBe("Proxy");
+    expect(model.value).toEqual(loadedConfig);
 
     await wrapper.find("form").trigger("submit");
-    expect(http.put).toHaveBeenCalledWith("/api/repository/repo-1/config/maven", model.value);
+    await flushPromises();
+    expect(http.put).toHaveBeenCalledWith("/api/repository/repo-1/config/maven", loadedConfig);
   });
 });

@@ -1,19 +1,35 @@
 <template>
   <v-container class="py-6 admin-repository-page">
     <div class="page-header">
-      <div>
+      <div class="page-header__titles">
         <h1 class="text-h5 mb-1">Repositories</h1>
         <p class="text-body-2 text-medium-emphasis">
           Monitor repository cache usage and manage repositories within this instance.
         </p>
       </div>
-      <v-btn
-        color="primary"
-        prepend-icon="mdi-plus"
-        :to="{ name: 'AdminCreateRepository' }"
-        variant="flat">
-        Create Repository
-      </v-btn>
+      <div class="page-header__actions">
+        <div class="page-header__cache">
+          <div class="text-body-1 font-weight-medium">Storage Usage Cache</div>
+          <div class="text-caption text-medium-emphasis">{{ usageStatusText }}</div>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :loading="refreshing"
+            :disabled="loading"
+            prepend-icon="mdi-refresh"
+            class="page-header__refresh"
+            @click="refreshUsage">
+            {{ refreshing ? "Refreshing…" : "Refresh Storage Usage" }}
+          </v-btn>
+        </div>
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-plus"
+          :to="{ name: 'AdminCreateRepository' }"
+          variant="flat">
+          Create Repository
+        </v-btn>
+      </div>
     </div>
 
     <v-alert
@@ -26,26 +42,6 @@
     </v-alert>
 
     <v-row v-else class="gy-6">
-      <v-col cols="12">
-        <v-card variant="outlined">
-          <v-card-text class="d-flex flex-wrap align-center justify-space-between">
-            <div>
-              <div class="text-body-1 font-weight-medium">Storage Usage Cache</div>
-              <div class="text-caption text-medium-emphasis">{{ usageStatusText }}</div>
-            </div>
-            <v-btn
-              color="primary"
-              variant="flat"
-              :loading="refreshing"
-              :disabled="loading"
-              prepend-icon="mdi-refresh"
-              @click="refreshUsage">
-              {{ refreshing ? "Refreshing…" : "Refresh Storage Usage" }}
-            </v-btn>
-          </v-card-text>
-        </v-card>
-      </v-col>
-
       <v-col cols="12">
         <v-card v-if="loading" class="text-center py-8" variant="flat">
           <v-progress-circular indeterminate color="primary" size="48" />
@@ -328,14 +324,51 @@ void fetchRepositories();
   flex-wrap: wrap;
 }
 
-.page-header > div {
+.page-header__titles {
   max-width: 640px;
+  flex: 1 1 auto;
 }
 
-@media (max-width: 600px) {
-  .page-header {
+.page-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.page-header__cache {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--nr-surface);
+  border: 1px solid var(--nr-border-color);
+  border-radius: var(--nr-radius-md);
+  padding: 0.75rem 1rem;
+}
+
+.page-header__cache > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.page-header__refresh {
+  min-width: 200px;
+}
+
+@media (max-width: 900px) {
+  .page-header__actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .page-header__cache {
+    justify-content: space-between;
+  }
+
+  .page-header__refresh {
+    width: 100%;
   }
 }
 </style>

@@ -64,6 +64,8 @@
             label="Search repositories..."
             prepend-inner-icon="mdi-magnify"
             variant="outlined"
+            clearable
+            @click:clear="clearSearchTerm"
             hide-details
             style="min-width: 300px;" />
         </v-col>
@@ -78,7 +80,7 @@
           md="4"
           lg="3">
           <v-card
-            hover
+            :ripple="false"
             class="repository-card h-100"
             @click="navigateToRepository(repo)">
             <v-card-title class="d-flex align-center pa-4">
@@ -225,8 +227,8 @@ function formatBytes(bytes?: number | null): string {
 // Navigate to repository
 function navigateToRepository(repo: RepositoryWithStorageName) {
   router.push({
-    name: 'BrowseRepository',
-    params: { id: repo.id }
+    name: 'Browse',
+    params: { id: repo.id, catchAll: '' }
   });
 }
 
@@ -246,6 +248,10 @@ async function getRepositories() {
 }
 
 onMounted(getRepositories);
+
+function clearSearchTerm() {
+  searchTerm.value = "";
+}
 </script>
 
 <style scoped lang="scss">

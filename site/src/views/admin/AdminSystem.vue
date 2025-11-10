@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import SwitchInput from "@/components/form/SwitchInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
+import PasswordInput from "@/components/form/text/PasswordInput.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 import SpinnerElement from "@/components/spinner/SpinnerElement.vue";
 import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
@@ -774,14 +775,16 @@ function removeGroupMapping(id: string) {
         </div>
 
         <div class="providerSection">
-          <header>
-            <h3>Google</h3>
-            <SwitchInput
-              id="google-enabled"
-              v-model="oauthForm.google.enabled"
-              :disabled="!oauthForm.enabled">
-              Enable Google login
-            </SwitchInput>
+          <header class="providerSection__header">
+            <div class="providerSection__title">
+              <h3>Google</h3>
+              <SwitchInput
+                id="google-enabled"
+                class="providerSection__toggle"
+                v-model="oauthForm.google.enabled"
+                :disabled="!oauthForm.enabled"
+                aria-label="Enable Google login" />
+            </div>
           </header>
           <div class="grid">
             <TextInput
@@ -791,16 +794,15 @@ function removeGroupMapping(id: string) {
               autocomplete="off">
               Client ID
             </TextInput>
-            <TextInput
+            <PasswordInput
               id="google-client-secret"
               v-model="oauthForm.google.client_secret"
               :disabled="!oauthForm.enabled || !oauthForm.google.enabled"
-              type="password"
               autocomplete="off"
               placeholder="Leave blank to keep existing"
-            >
+              aria-label="Google client secret">
               Client secret
-            </TextInput>
+            </PasswordInput>
             <TextInput
               id="google-scopes"
               v-model="oauthForm.google.scopes"
@@ -825,14 +827,16 @@ function removeGroupMapping(id: string) {
         </div>
 
         <div class="providerSection">
-          <header>
-            <h3>Microsoft Entra ID</h3>
-            <SwitchInput
-              id="microsoft-enabled"
-              v-model="oauthForm.microsoft.enabled"
-              :disabled="!oauthForm.enabled">
-              Enable Microsoft login
-            </SwitchInput>
+          <header class="providerSection__header">
+            <div class="providerSection__title">
+              <h3>Microsoft Entra ID</h3>
+              <SwitchInput
+                id="microsoft-enabled"
+                class="providerSection__toggle"
+                v-model="oauthForm.microsoft.enabled"
+                :disabled="!oauthForm.enabled"
+                aria-label="Enable Microsoft login" />
+            </div>
           </header>
           <div class="grid">
             <TextInput
@@ -842,16 +846,15 @@ function removeGroupMapping(id: string) {
               autocomplete="off">
               Client ID
             </TextInput>
-            <TextInput
+            <PasswordInput
               id="microsoft-client-secret"
               v-model="oauthForm.microsoft.client_secret"
               :disabled="!oauthForm.enabled || !oauthForm.microsoft.enabled"
-              type="password"
               autocomplete="off"
               placeholder="Leave blank to keep existing"
-            >
+              aria-label="Microsoft client secret">
               Client secret
-            </TextInput>
+            </PasswordInput>
             <TextInput
               id="microsoft-tenant-id"
               v-model="oauthForm.microsoft.tenant_id"
@@ -1036,13 +1039,30 @@ function removeGroupMapping(id: string) {
   flex-direction: column;
   gap: 1rem;
   background-color: var(--nr-surface-variant);
+}
 
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
+.providerSection__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.providerSection__title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+
+  h3 {
+    margin: 0;
   }
+}
+
+.providerSection__toggle {
+  margin: 0;
+}
+
+.providerSection__toggle :deep(.v-switch) {
+  margin: 0;
 }
 
 .casbinEditors {

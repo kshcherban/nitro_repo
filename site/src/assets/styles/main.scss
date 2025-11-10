@@ -39,6 +39,7 @@ a {
   }
 }
 
+/* Remove underline from Vuetify components */
 .v-btn,
 .v-btn:visited,
 .v-btn:hover,
@@ -48,4 +49,11 @@ a {
 
 .v-btn .v-btn__content {
   text-decoration: none;
+}
+
+/* Remove underline from menu items and navigation links */
+.v-list-item a:hover,
+.v-menu a:hover,
+.v-app-bar a:hover {
+  text-decoration: none !important;
 }

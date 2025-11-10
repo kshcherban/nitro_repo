@@ -58,6 +58,11 @@ const isValid = ref(false);
 const value = defineModel<string | undefined>({
   required: true,
 });
+
+const emit = defineEmits<{
+  (e: "validity", valid: boolean): void;
+}>();
+
 watch(internalValue, async () => {
   const { isValid: newIsValid, validationResults: newValidationResults } = await checkValidations(
     props.validations,
@@ -71,7 +76,9 @@ watch(internalValue, async () => {
     value.value = undefined;
   }
   isValid.value = newIsValid;
-});
+  emit("validity", newIsValid);
+}, { immediate: true });
+
 if (props.originalValue) {
   internalValue.value = props.originalValue;
   for (const validation of props.validations) {
@@ -79,6 +86,7 @@ if (props.originalValue) {
   }
 
   isValid.value = true;
+  emit("validity", true);
 }
 
 const showError = computed(() => !isValid.value && internalValue.value.length > 0);

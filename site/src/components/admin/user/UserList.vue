@@ -9,6 +9,8 @@
         prepend-inner-icon="mdi-magnify"
         variant="outlined"
         density="compact"
+        clearable
+        @click:clear="clearSearch"
         hide-details
         style="max-width: 300px;"
         autofocus />
@@ -99,6 +101,10 @@ function handleRowClick(_event: MouseEvent, row: DataTableRow) {
     return;
   }
   router.push(`/admin/user/${id}`);
+}
+
+function clearSearch() {
+  searchValue.value = "";
 }
 </script>
 <style scoped lang="scss">

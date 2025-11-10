@@ -1,91 +1,128 @@
 <template>
-  <div>
-    <div id="listHeader">
-      <h2>Repository Permissions</h2>
-      <button
-        @click="save"
-        :disabled="!hasChanged">
-        Save
-      </button>
-    </div>
-
-    <div v-auto-animate>
-      <div
-        id="header"
-        class="row">
-        <div class="col">Repository</div>
-        <div class="col">Read</div>
-        <div class="col">Write</div>
-        <div class="col">Edit</div>
-        <div class="col action">Action</div>
+  <section class="repository-permissions">
+    <header class="repository-permissions__header">
+      <div>
+        <h2 class="text-h5 mb-1">Repository Permissions</h2>
+        <p class="text-body-2 text-medium-emphasis">
+          Manage explicit repository access overrides for this user.
+        </p>
       </div>
+    </header>
+
+    <div
+      v-auto-animate
+      class="repository-permissions__table">
+      <div class="repository-permissions__row repository-permissions__row--header">
+        <div>Repository</div>
+        <div class="repository-permissions__toggle-heading">Read</div>
+        <div class="repository-permissions__toggle-heading">Write</div>
+        <div class="repository-permissions__toggle-heading">Edit</div>
+        <div class="repository-permissions__actions-heading">Action</div>
+      </div>
+
       <div
-        class="row item"
         v-for="repository in repositoryPermissions"
-        :key="repository.id">
-        <div class="col">{{ repository.name }}</div>
-        <div class="col">
-          <BaseSwitch v-model="repository.permissions.can_read" />
+        :key="repository.id"
+        class="repository-permissions__row">
+        <div class="repository-permissions__name">{{ repository.name }}</div>
+        <div class="repository-permissions__toggle">
+          <v-switch
+            v-model="repository.permissions.can_read"
+            color="primary"
+            density="comfortable"
+            hide-details />
         </div>
-        <div class="col">
-          <BaseSwitch v-model="repository.permissions.can_write" />
+        <div class="repository-permissions__toggle">
+          <v-switch
+            v-model="repository.permissions.can_write"
+            color="primary"
+            density="comfortable"
+            hide-details />
         </div>
-        <div class="col">
-          <BaseSwitch v-model="repository.permissions.can_edit" />
+        <div class="repository-permissions__toggle">
+          <v-switch
+            v-model="repository.permissions.can_edit"
+            color="primary"
+            density="comfortable"
+            hide-details />
         </div>
-        <div class="col action">
-          <button
-            class="actionButton"
+        <div class="repository-permissions__row-actions">
+          <v-btn
+            variant="text"
+            color="error"
+            class="text-none"
             @click="deleteRepository(repository.id)">
             Delete
-          </button>
+          </v-btn>
         </div>
       </div>
-      <div
-        class="row item"
-        id="create">
-        <div
-          class="col"
-          id="repoDropDown">
+
+      <div class="repository-permissions__row repository-permissions__row--create">
+        <div class="repository-permissions__name">
           <RepositoryDropdown v-model="newEntry.repository" />
         </div>
-        <div class="col">
-          <BaseSwitch v-model="newEntry.actions.can_read" />
+        <div class="repository-permissions__toggle">
+          <v-switch
+            v-model="newEntry.actions.can_read"
+            color="primary"
+            density="comfortable"
+            hide-details />
         </div>
-        <div class="col">
-          <BaseSwitch v-model="newEntry.actions.can_write" />
+        <div class="repository-permissions__toggle">
+          <v-switch
+            v-model="newEntry.actions.can_write"
+            color="primary"
+            density="comfortable"
+            hide-details />
         </div>
-        <div class="col">
-          <BaseSwitch v-model="newEntry.actions.can_edit" />
+        <div class="repository-permissions__toggle">
+          <v-switch
+            v-model="newEntry.actions.can_edit"
+            color="primary"
+            density="comfortable"
+            hide-details />
         </div>
-        <div class="col">
-          <button
-            class="actionButton"
+        <div class="repository-permissions__row-actions">
+          <v-btn
+            variant="tonal"
+            color="primary"
+            class="text-none"
             @click="addRepository"
             :disabled="!isNewEntryValid">
             Add
-          </button>
+          </v-btn>
         </div>
       </div>
     </div>
-  </div>
+
+    <footer class="repository-permissions__footer">
+      <SubmitButton
+        :block="false"
+        :disabled="!hasChanged"
+        @click="save">
+        Save
+      </SubmitButton>
+    </footer>
+  </section>
 </template>
+
 <script setup lang="ts">
-import { computed, ref, type PropType } from "vue";
+import { computed, ref, watch, type PropType } from "vue";
 import type { RepositoryActions, UserResponseType } from "@/types/base";
-import BaseSwitch from "@/components/form/BaseSwitch.vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import RepositoryDropdown from "@/components/form/dropdown/RepositoryDropdown.vue";
 import { notify } from "@kyvg/vue3-notification";
 import http from "@/http";
-import { watch } from "vue";
 import { RepositoryActionsType, type FullPermissions } from "@/types/user";
+import SubmitButton from "@/components/form/SubmitButton.vue";
+
 const props = defineProps({
   user: {
     type: Object as PropType<UserResponseType>,
     required: true,
   },
 });
+
 const originalPermissions = ref<FullPermissions | undefined>(undefined);
 const repositoryPermissions = ref<
   {
@@ -112,6 +149,7 @@ const newEntry = ref({
   repository: "",
   actions: new RepositoryActionsType([]),
 });
+
 function deleteRepository(repository: string) {
   for (let i = 0; i < repositoryPermissions.value.length; i++) {
     if (repositoryPermissions.value[i]?.id === repository) {
@@ -157,12 +195,12 @@ async function addRepository() {
   newEntry.value.actions.can_write = false;
   newEntry.value.actions.can_edit = false;
 }
+
 async function loadUserPermissions() {
   await http
     .get<FullPermissions>(`api/user-management/get/${props.user.id}/permissions`)
     .then((response) => {
       originalPermissions.value = response.data;
-      console.log(`Original Permissions: ${JSON.stringify(originalPermissions)}`);
     })
     .catch((error) => {
       notify({
@@ -173,18 +211,17 @@ async function loadUserPermissions() {
       console.error(error);
     });
 }
+
 async function load() {
-  // Load the repository permissions
   await loadUserPermissions();
   if (!originalPermissions.value) {
     console.error("No permissions found");
     return;
   }
-  // Loop through originalPermissions
+
   for (const [repository, actions] of Object.entries(
     originalPermissions.value.repository_permissions,
   )) {
-    console.log(`Loaded Repository: ${repository}`);
     const repositoryValue = await repoStore.getRepositoryById(repository);
     if (!repositoryValue) {
       console.error(`Repository ${repository} not found`);
@@ -197,7 +234,9 @@ async function load() {
     });
   }
 }
+
 load();
+
 watch(
   repositoryPermissions,
   () => {
@@ -208,9 +247,6 @@ watch(
       repositoryPermissions.value.length !==
       Object.keys(originalPermissions.value.repository_permissions).length
     ) {
-      console.log(
-        "Permissions have changed. repositoryPermissions.length !== originalPermissions.length",
-      );
       hasChanged.value = true;
       return;
     }
@@ -221,16 +257,15 @@ watch(
           originalPermissions.value.repository_permissions[repository.id] as Array<RepositoryActions>,
         )
       ) {
-        console.log("Permissions have changed. repositoryPermissions !== originalPermissions");
         hasChanged.value = true;
         return;
       }
     }
-    console.log("Permissions have not changed");
     hasChanged.value = false;
   },
   { deep: true },
 );
+
 async function save() {
   const repositoryPermissionsValue: Record<string, Array<RepositoryActions>> = {};
   for (const repository of repositoryPermissions.value) {
@@ -239,7 +274,7 @@ async function save() {
   const newPermissions = {
     repository_permissions: repositoryPermissionsValue,
   };
-  console.log(`Saving: ${JSON.stringify(newPermissions)}`);
+
   await http
     .put(`/api/user-management/update/${props.user.id}/permissions`, newPermissions)
     .then(() => {
@@ -251,13 +286,13 @@ async function save() {
     })
     .catch((error) => {
       let text = "An error occurred while saving permissions.";
-      if (error.response.data) {
+      if (error.response?.data) {
         text = error.response.data;
       }
       notify({
         type: "error",
         title: "Error Saving Permissions",
-        text: text,
+        text,
       });
     });
 }
@@ -265,55 +300,101 @@ async function save() {
 
 <style scoped lang="scss">
 @use "@/assets/styles/theme" as *;
-.row {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
-}
-.actionButton {
-  background-color: $primary;
-  color: white;
-  border: none;
-  padding: 0.5rem;
-  border-radius: 0.5rem;
-  cursor: pointer;
-  &:disabled {
-    background-color: $primary-50;
-    cursor: not-allowed;
-  }
-}
-#header {
-  border-bottom: 1px solid $primary-50;
-  padding: 1rem 0rem;
-  .col {
-    font-weight: bold;
-  }
-}
-.row {
-  padding: 1rem;
-  padding-top: 0.5rem;
-}
-#create {
-  margin-top: 1rem;
-  border-top: 1px solid $primary-50;
-  #repoDropDown {
-    margin-right: 1rem;
-  }
-}
-#listHeader {
+
+.repository-permissions {
   display: flex;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-  button {
-    background-color: $primary;
-    color: white;
-    border: none;
-    padding: 0.5rem;
-    border-radius: 0.5rem;
-    cursor: pointer;
-    &:disabled {
-      background-color: $primary-50;
-      cursor: not-allowed;
-    }
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.repository-permissions__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.repository-permissions__table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--nr-border-muted);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--nr-surface);
+}
+
+.repository-permissions__row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)) auto;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  align-items: center;
+}
+
+.repository-permissions__row + .repository-permissions__row {
+  border-top: 1px solid var(--nr-border-subtle);
+}
+
+.repository-permissions__row--header {
+  background: var(--nr-surface-elevated);
+  font-weight: 600;
+  color: var(--nr-text-secondary);
+}
+
+.repository-permissions__row--create {
+  background: var(--nr-surface-elevated);
+}
+
+.repository-permissions__name {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.repository-permissions__toggle {
+  display: flex;
+  justify-content: center;
+}
+
+.repository-permissions__toggle :deep(.v-switch) {
+  --v-theme-primary: var(--nr-primary);
+}
+
+.repository-permissions__toggle-heading {
+  text-align: center;
+}
+
+.repository-permissions__row-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.repository-permissions__actions-heading {
+  text-align: right;
+}
+
+.repository-permissions__footer {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.repository-permissions__footer :deep(.submit-button) {
+  min-width: 160px;
+}
+
+@media (max-width: 720px) {
+  .repository-permissions__row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 1rem;
+  }
+
+  .repository-permissions__toggle,
+  .repository-permissions__toggle-heading,
+  .repository-permissions__row-actions,
+  .repository-permissions__actions-heading {
+    justify-content: flex-start;
+    text-align: left;
   }
 }
 </style>

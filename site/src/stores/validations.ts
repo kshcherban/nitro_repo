@@ -18,11 +18,19 @@ export const useValidationStore = defineStore("validationStore", () => {
         isAvailable = true;
       })
       .catch((response) => {
-        if (response.response.status === 409) {
+        if (response.response?.status === 409) {
           isAvailable = false;
+        } else if (response.response?.status === 403 || response.response?.status === 401) {
+          // User doesn't have permission to check - assume available and let create operation handle it
+          console.warn(`Permission denied checking ${type} availability, assuming available`);
+          isAvailable = true;
+        } else {
+          // Other errors - log and assume available to not block form
+          console.warn(`Error checking ${type} availability:`, response);
+          isAvailable = true;
         }
       });
-    console.log(`${type} ${value} is aviailable: ${isAvailable}`);
+    console.log(`${type} ${value} is available: ${isAvailable}`);
     return isAvailable;
   }
   async function isUsernameInUse(username: string): Promise<boolean | undefined> {

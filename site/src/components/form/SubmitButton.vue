@@ -13,6 +13,8 @@
 </v-btn>
 </template>
 <script setup lang="ts">
+import { toRefs } from "vue";
+
 const emit = defineEmits<{
   (e: "click", event: MouseEvent): void;
 }>();
@@ -36,7 +38,7 @@ const props = withDefaults(
   },
 );
 
-const { block, loading, disabled, color, variant, type } = props;
+const { block, loading, disabled, color, variant, type } = toRefs(props);
 
 function handleClick(event: MouseEvent) {
   emit("click", event);

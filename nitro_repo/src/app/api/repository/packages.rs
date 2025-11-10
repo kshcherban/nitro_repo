@@ -167,7 +167,7 @@ pub async fn list_cached_packages(
             list_helm_packages(site, repository, query.page, query.per_page).await
         }
         PackageStrategy::GoHosted => {
-            list_go_packages(repository, "packages/", query.page, query.per_page).await
+            list_go_packages(repository, "", query.page, query.per_page).await
         }
         PackageStrategy::GoProxy => {
             list_go_packages(repository, "go-proxy-cache/", query.page, query.per_page).await
@@ -317,14 +317,19 @@ async fn collect_go_package_entries(
 
     let mut entries = Vec::new();
     for (display_name, storage_relative) in package_dirs {
-        let mut directory_path = String::from(base);
-        if !directory_path.ends_with('/') {
-            directory_path.push('/');
-        }
+        let mut directory_path = if base.is_empty() {
+            String::new()
+        } else {
+            let mut path = String::from(base);
+            if !path.ends_with('/') {
+                path.push('/');
+            }
+            path
+        };
         if !storage_relative.is_empty() {
             directory_path.push_str(&storage_relative);
         }
-        if !directory_path.ends_with('/') {
+        if !directory_path.is_empty() && !directory_path.ends_with('/') {
             directory_path.push('/');
         }
         let storage_path = nr_core::storage::StoragePath::from(directory_path.clone());

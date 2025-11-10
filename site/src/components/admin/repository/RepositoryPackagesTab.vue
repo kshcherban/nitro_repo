@@ -11,6 +11,8 @@
           prepend-inner-icon="mdi-magnify"
           variant="outlined"
           density="compact"
+          clearable
+          @click:clear="clearSearch"
           hide-details
           style="max-width: 300px;"
           aria-label="Search packages" />
@@ -113,6 +115,7 @@
 import http from "@/http";
 import { computed, onMounted, ref, watch } from "vue";
 import { notify } from "@kyvg/vue3-notification";
+import { useResizableColumns } from "@/composables/useResizableColumns";
 
 interface PackageEntry {
   name: string;
@@ -139,7 +142,15 @@ const selected = ref<string[]>([]);
 const isDeleting = ref(false);
 const searchTerm = ref("");
 
-onMounted(loadPackages);
+function clearSearch() {
+  searchTerm.value = "";
+}
+
+onMounted(() => {
+  loadPackages();
+  // Enable resizable columns for v-data-table
+  useResizableColumns('.v-data-table th');
+});
 watch(
   () => props.repositoryId,
   () => {
@@ -252,7 +263,7 @@ const headerTitle = computed(() => {
   if (isDockerRepository.value) {
     return "Images";
   }
-  return isHostedRepository.value ? "Packages" : "Cached Packages";
+  return "Packages";
 });
 const packageColumnTitle = computed(() => (isDockerRepository.value ? "Repository" : "Package"));
 const nameColumnTitle = computed(() => (isDockerRepository.value ? "Tag" : "Name"));
@@ -263,7 +274,7 @@ const pathColumnTitle = computed(() => {
   return isHostedRepository.value ? "Path" : "Cached Path";
 });
 const timestampColumnTitle = computed(() =>
-  isDockerRepository.value ? "Uploaded At" : "Cached At",
+  "Uploaded At",
 );
 
 const emptyRepositoryMessage = computed(() => {
@@ -272,7 +283,7 @@ const emptyRepositoryMessage = computed(() => {
   }
   return isHostedRepository.value
     ? "No packages yet. Upload a package to populate this list."
-    : "No cached packages yet. Trigger a download to populate this list.";
+    : "No packages yet. Trigger a download to populate this list.";
 });
 
 async function loadPackages() {

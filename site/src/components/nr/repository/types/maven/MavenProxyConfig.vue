@@ -107,7 +107,10 @@ function removeRoute(index: number) {
   if (index < 0 || index >= value.value.routes.length) {
     return;
   }
-  value.value.routes.splice(index, 1);
+  value.value = {
+    ...value.value,
+    routes: value.value.routes.filter((_, i) => i !== index),
+  };
 }
 
 function addRoute() {
@@ -127,10 +130,16 @@ function addRoute() {
     });
     return;
   }
-  value.value.routes.push({
-    url: trimmedUrl,
-    name: (draft.name ?? "").trim() || undefined,
-  });
+  value.value = {
+    ...value.value,
+    routes: [
+      ...value.value.routes,
+      {
+        url: trimmedUrl,
+        name: (draft.name ?? "").trim() || undefined,
+      },
+    ],
+  };
   draft.url = "";
   draft.name = "";
 }
