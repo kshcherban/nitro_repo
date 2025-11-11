@@ -26,25 +26,19 @@
         class="repository-permissions__row">
         <div class="repository-permissions__name">{{ repository.name }}</div>
         <div class="repository-permissions__toggle">
-          <v-switch
+          <BaseSwitch
             v-model="repository.permissions.can_read"
-            color="primary"
-            density="comfortable"
-            hide-details />
+            aria-label="Toggle read access" />
         </div>
         <div class="repository-permissions__toggle">
-          <v-switch
+          <BaseSwitch
             v-model="repository.permissions.can_write"
-            color="primary"
-            density="comfortable"
-            hide-details />
+            aria-label="Toggle write access" />
         </div>
         <div class="repository-permissions__toggle">
-          <v-switch
+          <BaseSwitch
             v-model="repository.permissions.can_edit"
-            color="primary"
-            density="comfortable"
-            hide-details />
+            aria-label="Toggle edit access" />
         </div>
         <div class="repository-permissions__row-actions">
           <v-btn
@@ -58,29 +52,23 @@
       </div>
 
       <div class="repository-permissions__row repository-permissions__row--create">
-        <div class="repository-permissions__name">
+        <div class="repository-permissions__name repository-permissions__name--input">
           <RepositoryDropdown v-model="newEntry.repository" />
         </div>
         <div class="repository-permissions__toggle">
-          <v-switch
+          <BaseSwitch
             v-model="newEntry.actions.can_read"
-            color="primary"
-            density="comfortable"
-            hide-details />
+            aria-label="Toggle read access for new repository" />
         </div>
         <div class="repository-permissions__toggle">
-          <v-switch
+          <BaseSwitch
             v-model="newEntry.actions.can_write"
-            color="primary"
-            density="comfortable"
-            hide-details />
+            aria-label="Toggle write access for new repository" />
         </div>
         <div class="repository-permissions__toggle">
-          <v-switch
+          <BaseSwitch
             v-model="newEntry.actions.can_edit"
-            color="primary"
-            density="comfortable"
-            hide-details />
+            aria-label="Toggle edit access for new repository" />
         </div>
         <div class="repository-permissions__row-actions">
           <v-btn
@@ -115,6 +103,7 @@ import { notify } from "@kyvg/vue3-notification";
 import http from "@/http";
 import { RepositoryActionsType, type FullPermissions } from "@/types/user";
 import SubmitButton from "@/components/form/SubmitButton.vue";
+import BaseSwitch from "@/components/form/BaseSwitch.vue";
 
 const props = defineProps({
   user: {
@@ -350,13 +339,28 @@ async function save() {
   gap: 0.75rem;
 }
 
+.repository-permissions__name--input {
+  align-items: stretch;
+  min-width: 0;
+}
+
+.repository-permissions__name--input :deep(.repository-dropdown),
+.repository-permissions__name--input :deep(select) {
+  width: 100%;
+}
+
 .repository-permissions__toggle {
   display: flex;
   justify-content: center;
 }
 
-.repository-permissions__toggle :deep(.v-switch) {
-  --v-theme-primary: var(--nr-primary);
+.repository-permissions__toggle :deep(.switchBox) {
+  display: flex;
+  justify-content: center;
+}
+
+.repository-permissions__toggle :deep(.switchBox > label) {
+  margin-right: 0;
 }
 
 .repository-permissions__toggle-heading {

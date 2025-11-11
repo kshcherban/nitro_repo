@@ -7,8 +7,6 @@
       </p>
     </div>
 
-    <v-divider />
-
     <div class="maven-proxy__routes" v-auto-animate>
       <div
         v-for="(route, index) in value.routes"
@@ -86,16 +84,16 @@
 import { reactive } from "vue";
 import { notify } from "@kyvg/vue3-notification";
 import TextInput from "@/components/form/text/TextInput.vue";
-import { type MavenProxyRoute, type MavenProxyConfigType } from "./maven";
+import { defaultProxy, type MavenProxyRoute, type MavenProxyConfigType } from "./maven";
 
 const value = defineModel<MavenProxyConfigType>({
   required: true,
 });
 
 if (!value.value || !Array.isArray(value.value.routes)) {
-  value.value = {
-    routes: Array.isArray(value.value?.routes) ? value.value.routes : [],
-  };
+  value.value = defaultProxy();
+} else if (value.value.routes.length === 0) {
+  value.value = defaultProxy();
 }
 
 const draft = reactive<MavenProxyRoute>({
@@ -159,9 +157,11 @@ function addRoute() {
 
   &__route,
   &__add {
-    padding: 1rem 0;
-    border-radius: 12px;
+    padding: 0;
+    border-radius: 0;
     background-color: transparent;
+    border: none;
+    box-shadow: none;
   }
 }
 </style>

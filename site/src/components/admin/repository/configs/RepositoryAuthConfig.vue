@@ -14,7 +14,7 @@
       </SwitchInput>
 
       <v-alert
-        v-if="!isCreate"
+        v-if="!isCreate && alertState"
         density="comfortable"
         :type="alertState.type"
         variant="tonal"
@@ -42,6 +42,7 @@ const isCreate = computed(() => !props.repository);
 const isSaving = ref(false);
 const error = ref<string | null>(null);
 const hasLoaded = ref(false);
+const hasUserInteracted = ref(false);
 const enabled = computed({
   get: () => model.value.enabled,
   set: (value: boolean) => {
@@ -49,17 +50,25 @@ const enabled = computed({
   },
 });
 
-const alertState = computed(() => {
+type AlertState =
+  | { type: "error"; message: string }
+  | { type: "info"; message: string }
+  | { type: "success"; message: string };
+
+const alertState = computed<AlertState | null>(() => {
+  if (!hasLoaded.value && !isSaving.value) {
+    return null;
+  }
   if (error.value) {
     return { type: "error" as const, message: `Failed to save: ${error.value}` };
   }
   if (isSaving.value) {
     return { type: "info" as const, message: "Saving…" };
   }
-  if (hasLoaded.value) {
+  if (hasUserInteracted.value) {
     return { type: "success" as const, message: "Authentication settings saved." };
   }
-  return { type: "info" as const, message: "Loading…" };
+  return null;
 });
 
 onMounted(load);
@@ -71,6 +80,7 @@ watch(
       return;
     }
     error.value = null;
+    hasUserInteracted.value = true;
     isSaving.value = true;
     try {
       await http.put(`/api/repository/${props.repository}/config/auth`, {

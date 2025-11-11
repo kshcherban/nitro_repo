@@ -10,7 +10,7 @@
             class="mb-4" />
           <h1 class="text-h3 font-weight-bold text-primary mb-2">Nitro Repository</h1>
           <p class="text-h6 text-medium-emphasis mb-6">
-            Universal package repository manager supporting Maven, NPM, Go, Helm, Python, and PHP
+            Universal package repository manager supporting Maven, NPM, Go, Docker, Helm, Python, and PHP
           </p>
           <div class="d-flex gap-4 justify-center flex-wrap">
             <v-btn
@@ -84,10 +84,17 @@
             class="repository-card h-100"
             @click="navigateToRepository(repo)">
             <v-card-title class="d-flex align-center pa-4">
-              <v-icon
-                :icon="getRepositoryIcon(repo.repository_type || '')"
-                color="primary"
-                class="mr-3" />
+              <span class="repository-card__icon mr-3">
+                <component
+                  v-if="hasComponentIcon(repo.repository_type || '')"
+                  :is="getComponentIcon(repo.repository_type || '').component"
+                  v-bind="getComponentIcon(repo.repository_type || '').props"
+                  class="repository-card__brand-icon" />
+                <v-icon
+                  v-else
+                  :icon="getFallbackIcon(repo.repository_type || '')"
+                  color="primary" />
+              </span>
               <div>
                 <div class="text-h6">{{ repo.name || 'Unknown' }}</div>
                 <div class="text-caption text-medium-emphasis">
@@ -164,9 +171,11 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
 import { computed, onMounted, ref } from "vue";
+import type { Component } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
 import type { RepositoryWithStorageName } from "@/types/repository";
+import { HelmIcon, DockerIcon } from "vue3-simple-icons";
 
 const router = useRouter();
 const repositories = ref<RepositoryWithStorageName[]>([]);
@@ -177,24 +186,51 @@ const repoStore = useRepositoryStore();
 const session = sessionStore();
 const user = computed(() => session.user);
 
-// Get repository icon based on type
-function getRepositoryIcon(type: string): string {
-  switch (type.toLowerCase()) {
-    case 'maven':
-      return 'mdi-language-java';
-    case 'npm':
-      return 'mdi-nodejs';
-    case 'go':
-      return 'mdi-language-go';
-    case 'helm':
-      return 'mdi-sail';
-    case 'python':
-      return 'mdi-language-python';
-    case 'php':
-      return 'mdi-language-php';
-    default:
-      return 'mdi-package-variant';
-  }
+type ComponentIcon = {
+  component: Component;
+  props?: Record<string, unknown>;
+};
+
+const componentIconMap: Record<string, ComponentIcon> = {
+  helm: {
+    component: HelmIcon,
+    props: {
+      size: "32",
+      color: "#0F1689",
+    },
+  },
+  docker: {
+    component: DockerIcon,
+    props: {
+      size: "32",
+      color: "#2496ED",
+    },
+  },
+};
+
+const fallbackIconMap: Record<string, string> = {
+  maven: "mdi-language-java",
+  npm: "mdi-nodejs",
+  go: "mdi-language-go",
+  python: "mdi-language-python",
+  php: "mdi-language-php",
+};
+
+function normalizeType(type: string): string {
+  return type?.toLowerCase?.() ?? "";
+}
+
+function hasComponentIcon(type: string): boolean {
+  return Boolean(componentIconMap[normalizeType(type)]);
+}
+
+function getComponentIcon(type: string): ComponentIcon {
+  return componentIconMap[normalizeType(type)]!;
+}
+
+function getFallbackIcon(type: string): string {
+  const normalized = normalizeType(type);
+  return fallbackIconMap[normalized] ?? "mdi-package-variant";
 }
 
 // Filter repositories based on search term
@@ -262,6 +298,17 @@ function clearSearchTerm() {
   &:hover {
     transform: translateY(-4px);
   }
+}
+
+.repository-card__brand-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.repository-card__brand-icon :deep(svg) {
+  width: 32px;
+  height: 32px;
 }
 
 :deep(.v-card--hover) {

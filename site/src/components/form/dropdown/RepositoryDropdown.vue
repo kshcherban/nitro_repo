@@ -1,20 +1,16 @@
 <template>
-  <select
-    id="dropdown"
-    v-model="value">
-    <option
-      v-for="option in repositoryEntries"
-      :key="option.value"
-      :value="option.value">
-      {{ option.label }}
-    </option>
-  </select>
+  <DropDown
+    id="repository-dropdown"
+    class="repository-dropdown"
+    v-model="value"
+    :options="repositoryEntries" />
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { type RepositoryWithStorageName } from "@/types/repository";
 import { useRepositoryStore } from "@/stores/repositories";
+import DropDown from "@/components/form/dropdown/DropDown.vue";
 
 const repositories = ref<RepositoryWithStorageName[]>([]);
 const repoStore = useRepositoryStore();
@@ -33,3 +29,9 @@ const value = defineModel<string>({
   required: true,
 });
 </script>
+
+<style scoped lang="scss">
+.repository-dropdown {
+  width: 100%;
+}
+</style>

@@ -14,7 +14,7 @@ set -ex
 # Build frontend unless -b flag is provided
 if [[ "$SKIP_FRONTEND" = false ]]; then
     cd site
-    npm run build &>/dev/null
+    npm run build
     cd ../
     cargo build --features frontend
 else

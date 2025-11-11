@@ -4,7 +4,9 @@
     rel="noopener noreferrer"
     :title="icon.name"
     :href="icon.url">
-    <component :is="icon.component"
+    <component
+      :is="icon.component"
+      v-bind="icon.props"
   /></a>
 </template>
 <script setup lang="ts">

@@ -123,4 +123,23 @@ describe("PublicRepositoryList.vue", () => {
     expect(input.value).toBe("gin");
     expect(wrapper.find('[data-testid="search-help-modal"]').exists()).toBe(false);
   });
+
+  it("navigates directly to browse route when a repository row is clicked", async () => {
+    const router = await import("@/router");
+    const wrapper = mount(PublicRepositoryList, {
+      props: { repositories },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    const row = wrapper.findAll(".row.item")[0];
+    expect(row.exists()).toBe(true);
+    await row.trigger("click");
+
+    expect(router.default.push).toHaveBeenCalledWith({
+      name: "Browse",
+      params: { id: repositories[0].id },
+    });
+  });
 });

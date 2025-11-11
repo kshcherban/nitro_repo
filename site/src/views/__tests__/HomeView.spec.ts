@@ -49,6 +49,14 @@ const VAvatarStub = defineComponent({
   template: "<div class='v-avatar'><slot /></div>",
 });
 
+const HelmIconStub = defineComponent({
+  template: "<span class='helm-icon-stub'></span>",
+});
+
+const DockerIconStub = defineComponent({
+  template: "<span class='docker-icon-stub'></span>",
+});
+
 const VBtnStub = defineComponent({
   props: {
     to: [String, Object],
@@ -74,6 +82,10 @@ const VCardActionsStub = defineComponent({
 
 const VChipStub = defineComponent({
   template: "<span class='v-chip'><slot /></span>",
+});
+
+const VSpacerStub = defineComponent({
+  template: "<span class='v-spacer'></span>",
 });
 
 const VIconStub = defineComponent({
@@ -127,10 +139,13 @@ const vuetifyStubs = {
   "v-card-text": VCardTextStub,
   "v-card-actions": VCardActionsStub,
   "v-chip": VChipStub,
+  "v-spacer": VSpacerStub,
   "v-icon": VIconStub,
   "v-progress-circular": VProgressCircularStub,
   "v-alert": VAlertStub,
   "v-text-field": VTextFieldStub,
+  HelmIcon: HelmIconStub,
+  DockerIcon: DockerIconStub,
 };
 
 describe("HomeView.vue", () => {

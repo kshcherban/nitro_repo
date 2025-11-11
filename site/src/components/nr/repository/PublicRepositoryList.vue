@@ -235,8 +235,8 @@
         :key="repository.id"
         @click="
           router.push({
-            name: 'repository_page_by_id',
-            params: { repositoryId: repository.id },
+            name: 'Browse',
+            params: { id: repository.id },
           })
         ">
         <div class="col">{{ repository.id }}</div>

@@ -49,15 +49,17 @@ const SubmitButtonStub = defineComponent({
   template: `<button class="submit-button-stub" :data-block="block" :disabled="disabled" @click="$emit('click')"><slot /></button>`,
 });
 
-const VSwitchStub = defineComponent({
+const BaseSwitchStub = defineComponent({
   props: {
     modelValue: Boolean,
-    color: String,
   },
-  emits: ["update:modelValue"],
+  emits: ["update:modelValue", "change", "setTrue", "setFalse"],
   template: `
-    <label class="v-switch-stub" :data-color="color">
-      <input type="checkbox" :checked="modelValue" @change="$emit('update:modelValue', $event.target.checked)" />
+    <label class="base-switch-stub">
+      <input
+        type="checkbox"
+        :checked="modelValue"
+        @change="$emit('update:modelValue', $event.target.checked); $emit('change', $event.target.checked); $emit($event.target.checked ? 'setTrue' : 'setFalse')" />
     </label>
   `,
 });
@@ -103,7 +105,7 @@ describe("RepositoryPermissions.vue", () => {
       global: {
         stubs: {
           SubmitButton: SubmitButtonStub,
-          "v-switch": VSwitchStub,
+          BaseSwitch: BaseSwitchStub,
           "v-btn": VBtnStub,
           RepositoryDropdown: RepositoryDropdownStub,
         },
@@ -115,16 +117,70 @@ describe("RepositoryPermissions.vue", () => {
 
     await flushPromises();
 
-    const switches = wrapper.findAllComponents(VSwitchStub);
-    expect(switches.length).toBeGreaterThan(0);
-    for (const toggle of switches) {
-      expect(toggle.attributes("data-color")).toBe("primary");
-    }
-
     const footer = wrapper.find(".repository-permissions__footer");
     expect(footer.exists()).toBe(true);
     const button = footer.findComponent(SubmitButtonStub);
     expect(button.exists()).toBe(true);
     expect(button.props("block")).toBe(false);
+  });
+
+  it("renders repository dropdown row with input styling class", async () => {
+    const wrapper = mount(RepositoryPermissions, {
+      props: {
+        user: defaultUser as any,
+      },
+      global: {
+        stubs: {
+          SubmitButton: SubmitButtonStub,
+          BaseSwitch: BaseSwitchStub,
+          "v-btn": VBtnStub,
+          RepositoryDropdown: RepositoryDropdownStub,
+        },
+        directives: {
+          "auto-animate": () => undefined,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    const createRow = wrapper.find(".repository-permissions__row--create");
+    expect(createRow.exists()).toBe(true);
+    const nameCell = createRow.find(".repository-permissions__name");
+    expect(nameCell.classes()).toContain("repository-permissions__name--input");
+  });
+
+  it("uses base switch toggles for existing and new entries", async () => {
+    const wrapper = mount(RepositoryPermissions, {
+      props: {
+        user: defaultUser as any,
+      },
+      global: {
+        stubs: {
+          SubmitButton: SubmitButtonStub,
+          BaseSwitch: BaseSwitchStub,
+          "v-btn": VBtnStub,
+          RepositoryDropdown: RepositoryDropdownStub,
+        },
+        directives: {
+          "auto-animate": () => undefined,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    const switches = wrapper.findAllComponents(BaseSwitchStub);
+    expect(switches.length).toBe(6);
+
+    const repositoryRows = wrapper.findAll(".repository-permissions__row");
+    const dataRows = repositoryRows.filter(
+      (row) => !row.classes().includes("repository-permissions__row--header"),
+    );
+    expect(dataRows.length).toBeGreaterThan(0);
+    for (const row of dataRows) {
+      const toggles = row.findAllComponents(BaseSwitchStub);
+      expect(toggles.length).toBe(3);
+    }
   });
 });

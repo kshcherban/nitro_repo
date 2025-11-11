@@ -711,9 +711,7 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
             }
             is_valid_repository_path(path)
         }
-        PackageStrategy::GoHosted | PackageStrategy::GoProxy => {
-            is_valid_repository_path(path)
-        }
+        PackageStrategy::GoHosted | PackageStrategy::GoProxy => is_valid_repository_path(path),
     }
 }
 

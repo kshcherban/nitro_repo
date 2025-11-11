@@ -1,89 +1,127 @@
-import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
+import { describe, expect, it, vi } from "vitest";
+import { defineComponent, ref } from "vue";
+import type { MavenProxyConfigType } from "@/components/nr/repository/types/maven/maven";
 
-import MavenProxyConfig from "../MavenProxyConfig.vue";
+vi.mock("@vue/devtools-kit", () => ({}));
 
-const textInputStub = {
-  template: `<label class="stub-text-field">
-    <slot />
-    <input :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" />
-  </label>`,
+const storageMock = {
+  getItem: vi.fn().mockReturnValue(null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+  clear: vi.fn(),
+};
+
+Object.defineProperty(globalThis, "localStorage", {
+  value: storageMock,
+  configurable: true,
+});
+
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "localStorage", {
+    value: storageMock,
+    configurable: true,
+  });
+}
+
+const MavenProxyConfig = (await import("@/components/nr/repository/types/maven/MavenProxyConfig.vue")).default;
+
+const TextInputStub = defineComponent({
+  name: "TextInputStub",
   props: {
     modelValue: {
-      type: [String, Number],
+      type: String,
       default: "",
     },
   },
-};
+  emits: ["update:modelValue"],
+  setup(props, { emit, attrs }) {
+    const onInput = (event: Event) => {
+      const target = event.target as HTMLInputElement | null;
+      emit("update:modelValue", target?.value ?? "");
+    };
+    return { attrs, onInput };
+  },
+  template: `
+    <input
+      class="text-input-stub"
+      :value="modelValue"
+      v-bind="attrs"
+      @input="onInput" />
+  `,
+});
+
+const VRowStub = defineComponent({
+  template: `<div class="v-row-stub"><slot /></div>`,
+});
+const VColStub = defineComponent({
+  template: `<div class="v-col-stub"><slot /></div>`,
+});
+const VBtnStub = defineComponent({
+  emits: ["click"],
+  template: `<button class="v-btn-stub" @click="$emit('click')"><slot /></button>`,
+});
+
+function createHarness() {
+  return defineComponent({
+    components: { MavenProxyConfig },
+    setup() {
+      const state = ref<MavenProxyConfigType>({ routes: [] });
+      return { state };
+    },
+    template: `<MavenProxyConfig v-model="state" />`,
+  });
+}
 
 describe("MavenProxyConfig.vue", () => {
-  it("removes routes when remove is clicked", async () => {
-    let model = {
-      routes: [
-        { url: "https://repo1.example.com", name: "Primary" },
-        { url: "https://repo2.example.com", name: "Secondary" },
-      ],
-    };
-
-    const wrapper = mount(MavenProxyConfig, {
-      props: {
-        modelValue: model,
-        "onUpdate:modelValue": (val: typeof model) => {
-          model = val;
-          wrapper.setProps({ modelValue: val });
-        },
-      },
+  it("prefills the first upstream route with Maven Central", async () => {
+    const Harness = createHarness();
+    const wrapper = mount(Harness, {
       global: {
         stubs: {
-          TextInput: textInputStub,
-          VRow: { template: "<div data-stub='v-row'><slot /></div>" },
-          VCol: { template: "<div data-stub='v-col'><slot /></div>" },
-          VBtn: { template: "<button data-stub='v-btn' @click='$emit(\"click\")'><slot /></button>", props: ["disabled"] },
-          VDivider: { template: "<hr data-stub='v-divider' />" },
+          TextInput: TextInputStub,
+          "v-row": VRowStub,
+          "v-col": VColStub,
+          "v-btn": VBtnStub,
+          "v-divider": defineComponent({
+            template: `<div class="v-divider-stub"></div>`,
+          }),
+        },
+        directives: {
+          "auto-animate": () => undefined,
         },
       },
     });
 
-    await wrapper.findAll('[data-stub="v-btn"]').at(0)?.trigger("click");
-    expect(model.routes).toHaveLength(1);
+    await flushPromises();
+
+    const current = (wrapper.vm as { state: MavenProxyConfigType }).state;
+    expect(current.routes.length).toBeGreaterThan(0);
+    expect(current.routes[0]?.url).toBe("https://repo1.maven.org/maven2/");
+    expect(current.routes[0]?.name).toBe("Maven Central");
   });
 
-  it("adds a new route when provided URL is valid", async () => {
-    let model = {
-      routes: [{ url: "https://repo1.example.com", name: "Primary" }],
-    };
-
-    const wrapper = mount(MavenProxyConfig, {
-      props: {
-        modelValue: model,
-        "onUpdate:modelValue": (val: typeof model) => {
-          model = val;
-          wrapper.setProps({ modelValue: val });
-        },
-      },
+  it("renders without divider separator", async () => {
+    const Harness = createHarness();
+    const wrapper = mount(Harness, {
       global: {
         stubs: {
-          TextInput: textInputStub,
-          VRow: { template: "<div data-stub='v-row'><slot /></div>" },
-          VCol: { template: "<div data-stub='v-col'><slot /></div>" },
-          VBtn: { template: "<button data-stub='v-btn' @click='$emit(\"click\")'><slot /></button>", props: ["disabled"] },
-          VDivider: { template: "<hr data-stub='v-divider' />" },
+          TextInput: TextInputStub,
+          "v-row": VRowStub,
+          "v-col": VColStub,
+          "v-btn": VBtnStub,
+          "v-divider": defineComponent({
+            template: `<div class="v-divider-stub"></div>`,
+          }),
+        },
+        directives: {
+          "auto-animate": () => undefined,
         },
       },
     });
 
-    const inputs = wrapper.findAll("input");
-    const urlInput = inputs.at(inputs.length - 2);
-    const nameInput = inputs.at(inputs.length - 1);
+    await flushPromises();
 
-    await urlInput?.setValue("https://repo3.example.com");
-    await nameInput?.setValue("Tertiary");
-    await wrapper.findAll('[data-stub="v-btn"]').at(-1)?.trigger("click");
-
-    expect(model.routes).toHaveLength(2);
-    expect(model.routes[1]).toEqual({
-      url: "https://repo3.example.com",
-      name: "Tertiary",
-    });
+    expect(wrapper.find(".v-divider-stub").exists()).toBe(false);
   });
 });

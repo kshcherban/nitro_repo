@@ -35,7 +35,12 @@ export interface MavenProxyConfigType {
 }
 export function defaultProxy(): MavenProxyConfigType {
   return {
-    routes: [],
+    routes: [
+      {
+        url: "https://repo1.maven.org/maven2/",
+        name: "Maven Central",
+      },
+    ],
   };
 }
 export type MavenConfigType =

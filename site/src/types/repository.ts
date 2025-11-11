@@ -16,6 +16,7 @@ import { PhpFrontendDefinition } from "@/components/nr/repository/types/php/php"
 import { NpmFrontendDefinition } from "@/components/nr/repository/types/npm/npm";
 import { GoFrontendDefinition } from "@/components/nr/repository/types/go/go";
 import { HelmFrontendDefinition } from "@/components/nr/repository/types/helm/helm";
+import { DockerFrontendDefinition } from "@/components/nr/repository/types/docker/docker";
 import NPMConfig from "@/components/nr/repository/types/npm/NPMConfig.vue";
 import type { RepositoryActionsType } from "./user";
 
@@ -126,6 +127,7 @@ export const repositoryTypes: FrontendRepositoryType[] = [
   PhpFrontendDefinition,
   GoFrontendDefinition,
   HelmFrontendDefinition,
+  DockerFrontendDefinition,
 ];
 export function findRepositoryType(name: string): FrontendRepositoryType | undefined {
   return repositoryTypes.find((repositoryType) => repositoryType.name === name);

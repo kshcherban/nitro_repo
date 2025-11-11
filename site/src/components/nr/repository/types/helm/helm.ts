@@ -37,7 +37,10 @@ export const HelmFrontendDefinition: FrontendRepositoryType = {
       name: "Helm",
       component: HelmIcon,
       url: "https://helm.sh/",
-      props: {},
+      props: {
+        color: "#0F1689",
+        size: "28",
+      },
     },
   ],
 };

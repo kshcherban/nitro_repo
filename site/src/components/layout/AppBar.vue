@@ -2,8 +2,9 @@
   <v-app-bar
     :elevation="1"
     color="white"
-    app>
-    <v-container fluid class="d-flex align-center pa-0">
+    app
+    class="app-bar">
+    <v-container fluid class="d-flex align-center pa-0 app-bar__inner">
       <router-link
         to="/"
         class="d-flex align-center text-decoration-none logo-link">
@@ -58,7 +59,7 @@
         color="primary"
         variant="flat"
         prepend-icon="mdi-login"
-        class="text-none">
+        class="text-none app-bar__login">
         Login
       </v-btn>
     </v-container>
@@ -78,9 +79,22 @@ defineProps({
 </script>
 
 <style lang="scss" scoped>
+.app-bar {
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.app-bar__inner {
+  gap: 1rem;
+}
+
 .logo-link {
   &:hover {
     opacity: 0.8;
   }
+}
+
+.app-bar__login {
+  margin-right: 0.5rem;
 }
 </style>

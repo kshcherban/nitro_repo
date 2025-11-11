@@ -8,7 +8,8 @@
         <component
           :is="input.component"
           v-bind="input.props"
-          v-model="value[input.id]" />
+          :model-value="value[input.id]"
+          @update:model-value="updateValue(input.id, $event)" />
       </div>
     </form>
   </div>
@@ -27,6 +28,7 @@ const props = defineProps({
 const value = defineModel<any>();
 
 const inputs = computed(() => {
+  ensureModel();
   return props.form
     ?.getProperties(value)
     .map((field) => {
@@ -40,8 +42,24 @@ interface Input {
   id: string;
   props: Record<string, any>;
 }
+
+function ensureModel(): void {
+  if (!value.value) {
+    value.value = {};
+  }
+}
+
+function updateValue(fieldId: string, newValue: unknown): void {
+  ensureModel();
+  const next = {
+    ...value.value,
+    [fieldId]: newValue,
+  };
+  value.value = next;
+}
+
 function formFieldToInput(field: FormInputType): Input | undefined {
-  if (!value.value[field.key()]) {
+  if (value.value[field.key()] === undefined) {
     value.value[field.key()] = field.default();
   }
   switch (field.type()) {
@@ -50,7 +68,9 @@ function formFieldToInput(field: FormInputType): Input | undefined {
         component: TextInput,
         label: field.title() ?? field.key(),
         id: field.key(),
-        props: {},
+        props: {
+          id: field.key(),
+        },
       };
     case "enum": {
       const enumField = field as EnumInput;
@@ -66,6 +86,7 @@ function formFieldToInput(field: FormInputType): Input | undefined {
         label: enumField.title() ?? enumField.key(),
         id: enumField.key(),
         props: {
+          id: enumField.key(),
           options: options,
         },
       };
@@ -75,7 +96,9 @@ function formFieldToInput(field: FormInputType): Input | undefined {
         component: SwitchInput,
         label: field.title() ?? field.key(),
         id: field.key(),
-        props: {},
+        props: {
+          id: field.key(),
+        },
       };
     }
     default:

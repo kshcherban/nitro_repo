@@ -38,13 +38,6 @@
           v-if="repositoryPage"
           :repository="repository"
           :page="repositoryPage" />
-        <v-alert
-          v-else
-          type="info"
-          variant="tonal"
-          class="mt-4">
-          This repository does not define a custom page yet.
-        </v-alert>
       </v-col>
       <v-col cols="12" lg="4">
         <RepositoryHelper :repository="repository" />
