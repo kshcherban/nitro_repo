@@ -1,7 +1,9 @@
 import { mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, nextTick } from "vue";
+import { flushPromises } from "@vue/test-utils";
 import SubmitButton from "@/components/form/SubmitButton.vue";
+import { notify } from "@kyvg/vue3-notification";
 
 vi.mock("@vue/devtools-kit", () => ({}));
 
@@ -324,5 +326,27 @@ describe("AdminUserPage.vue", () => {
     const passwordForm = wrapper.find('[data-testid="admin-user-password-form"]');
     expect(passwordForm.exists()).toBe(true);
     expect(passwordForm.classes()).toContain("admin-user-page__password-form");
+  });
+
+  it("submits user details without leaving the admin page", async () => {
+    const wrapper = factory();
+    const http = await import("@/http");
+
+    await wrapper.find("#email").setValue("updated@example.com");
+    await wrapper.find("#username").setValue("updated-user");
+    await wrapper.find(".admin-user-page__form").trigger("submit");
+
+    await flushPromises();
+
+    expect(http.default.put).toHaveBeenCalledWith(
+      "/api/user-management/update/1",
+      expect.objectContaining({
+        email: "updated@example.com",
+        username: "updated-user",
+      }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "User Updated" }),
+    );
   });
 });

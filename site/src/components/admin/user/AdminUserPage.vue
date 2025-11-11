@@ -72,7 +72,9 @@
               </div>
             </header>
 
-            <form class="admin-user-page__form">
+            <form
+              class="admin-user-page__form"
+              @submit.prevent="saveUserDetails">
               <TextInput
                 id="name"
                 v-model="changeUser.name"
@@ -97,7 +99,12 @@
                 Username
               </ValidatableTextBox>
               <div class="admin-user-page__actions">
-                <SubmitButton :block="false">Save</SubmitButton>
+                <SubmitButton
+                  :block="false"
+                  :loading="savingUser"
+                  :disabled="savingUser">
+                  Save
+                </SubmitButton>
               </div>
             </form>
 
@@ -207,6 +214,7 @@ const session = sessionStore();
 const isCurrentUser = computed(() => session.user?.id === props.user.id);
 const statusUpdating = ref(false);
 const deletingUser = ref(false);
+const savingUser = ref(false);
 const errorBanner = ref({
   visible: false,
   title: "",
@@ -283,6 +291,42 @@ async function changePassword() {
       console.error(resolved.debugMessage);
       showError(resolved.title, resolved.message);
     });
+}
+
+async function saveUserDetails() {
+  if (savingUser.value) {
+    return;
+  }
+  resetError();
+  savingUser.value = true;
+  try {
+    await http.put(`/api/user-management/update/${props.user.id}`, {
+      name: changeUser.value.name,
+      email: changeUser.value.email,
+      username: changeUser.value.username,
+    });
+    notify({
+      type: "success",
+      title: "User Updated",
+      text: "User profile details have been saved.",
+    });
+    emit("refresh");
+  } catch (error) {
+    const resolved = resolveUserOperationError(
+      error,
+      "Unable to update user",
+      "Review the provided details and try again.",
+    );
+    console.error(resolved.debugMessage);
+    notify({
+      type: "error",
+      title: resolved.title,
+      text: resolved.message,
+    });
+    showError(resolved.title, resolved.message);
+  } finally {
+    savingUser.value = false;
+  }
 }
 
 async function setActive(active: boolean) {

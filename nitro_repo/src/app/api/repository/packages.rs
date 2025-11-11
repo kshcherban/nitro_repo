@@ -59,6 +59,8 @@ const fn default_per_page() -> usize {
     50
 }
 
+const GO_FILE_SUFFIXES: [&str; 3] = [".zip", ".mod", ".info"];
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct PackageFileEntry {
     pub package: String,
@@ -380,6 +382,51 @@ async fn collect_go_package_entries(
 
     entries.sort_by(|a, b| a.package.cmp(&b.package).then(a.name.cmp(&b.name)));
     Ok(entries)
+}
+
+struct GoDeletionResult {
+    removed: usize,
+    missing: Vec<String>,
+}
+
+fn go_related_paths(path: &str) -> Option<Vec<String>> {
+    for suffix in GO_FILE_SUFFIXES.iter() {
+        if let Some(base) = path.strip_suffix(suffix) {
+            let mut paths = Vec::with_capacity(GO_FILE_SUFFIXES.len());
+            for candidate in GO_FILE_SUFFIXES.iter() {
+                paths.push(format!("{}{}", base, candidate));
+            }
+            return Some(paths);
+        }
+    }
+    None
+}
+
+async fn delete_go_package(
+    storage: &nr_storage::DynStorage,
+    repository_id: Uuid,
+    path: &str,
+) -> Result<Option<GoDeletionResult>, nr_storage::StorageError> {
+    let Some(paths) = go_related_paths(path) else {
+        return Ok(None);
+    };
+
+    let mut removed = 0usize;
+    let mut missing = Vec::new();
+
+    for related_path in paths.iter() {
+        let storage_path = nr_core::storage::StoragePath::from(related_path.as_str());
+        match storage.delete_file(repository_id, &storage_path).await {
+            Ok(true) => removed += 1,
+            Ok(false) => missing.push(related_path.clone()),
+            Err(err) => {
+                missing.push(related_path.clone());
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(Some(GoDeletionResult { removed, missing }))
 }
 
 async fn list_go_packages(
@@ -1068,6 +1115,24 @@ pub async fn delete_cached_packages(
                 missing.push(path.clone());
             }
             continue;
+        }
+        if matches!(
+            strategy,
+            PackageStrategy::GoHosted | PackageStrategy::GoProxy
+        ) {
+            match delete_go_package(&storage, repository.id(), path).await {
+                Ok(Some(result)) => {
+                    deleted += result.removed;
+                    missing.extend(result.missing);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(?err, path, "Failed to delete Go package files");
+                    missing.push(path.clone());
+                    continue;
+                }
+            }
         }
         if let PackageStrategy::Docker = strategy {
             match delete_docker_package(&storage, repository.id(), path).await {

@@ -25,6 +25,14 @@
             <span v-if="visiblePackages.length"> · Showing {{ visiblePackages.length }} file(s)</span>
           </div>
           <div class="d-flex align-center gap-3">
+            <v-btn
+              color="primary"
+              variant="text"
+              prepend-icon="mdi-refresh"
+              :disabled="isLoading || isDeleting"
+              @click="refreshPackages">
+              Refresh
+            </v-btn>
             <span v-if="selectedCount > 0" class="text-body-2">{{ selectedCount }} selected</span>
             <v-btn
               color="error"
@@ -38,6 +46,20 @@
           </div>
         </div>
       </v-card-subtitle>
+
+      <v-card-text
+        v-if="!isLoading && pendingDeletionCount > 0"
+        class="pt-0 px-4">
+        <v-alert
+          type="info"
+          variant="tonal"
+          border="start"
+          class="packages__deletion-alert">
+          <div class="text-body-2">
+            {{ pendingDeletionCount }} package{{ pendingDeletionCount === 1 ? "" : "s" }} queued for deletion. Changes may take a moment to complete. Use Refresh to check for updates.
+          </div>
+        </v-alert>
+      </v-card-text>
 
       <v-data-table
         v-if="!isLoading && !error && totalPackages > 0 && visiblePackages.length > 0"
@@ -141,6 +163,8 @@ const perPageOptions = [25, 50, 100, 200];
 const selected = ref<string[]>([]);
 const isDeleting = ref(false);
 const searchTerm = ref("");
+const pendingDeletionPaths = ref<string[]>([]);
+const pendingDeletionCount = ref(0);
 
 function clearSearch() {
   searchTerm.value = "";
@@ -154,12 +178,14 @@ onMounted(() => {
 watch(
   () => props.repositoryId,
   () => {
-    packages.value = [];
-    error.value = null;
-    currentPage.value = 1;
-    selected.value = [];
-    searchTerm.value = "";
-    loadPackages();
+  packages.value = [];
+  error.value = null;
+  currentPage.value = 1;
+  selected.value = [];
+  searchTerm.value = "";
+  pendingDeletionPaths.value = [];
+  pendingDeletionCount.value = 0;
+  loadPackages();
   },
 );
 
@@ -307,6 +333,16 @@ async function loadPackages() {
     packages.value = items;
     totalPackages.value = data.total_packages ?? 0;
     selected.value = [];
+
+    if (pendingDeletionPaths.value.length > 0) {
+      const remaining = pendingDeletionPaths.value.filter((path) =>
+        items.some((pkg) => pkg.cachePath === path),
+      );
+      pendingDeletionPaths.value = remaining;
+      pendingDeletionCount.value = remaining.length;
+    } else {
+      pendingDeletionCount.value = 0;
+    }
   } catch (err) {
     console.error(err);
     error.value = err instanceof Error ? err.message : String(err);
@@ -319,6 +355,7 @@ async function deleteSelected() {
   if (!props.repositoryId || selected.value.length === 0) {
     return;
   }
+  const paths = [...selected.value];
   const count = selected.value.length;
   const confirmationMessage = isDockerRepository.value
     ? `Delete ${count} image tag(s)? This removes their manifests from the registry.`
@@ -345,6 +382,8 @@ async function deleteSelected() {
       title: successTitle,
       text: successText,
     });
+    pendingDeletionPaths.value = paths;
+    pendingDeletionCount.value = paths.length;
     selected.value = [];
     await loadPackages();
   } catch (err: any) {
@@ -358,6 +397,13 @@ async function deleteSelected() {
   } finally {
     isDeleting.value = false;
   }
+}
+
+async function refreshPackages() {
+  if (isLoading.value || isDeleting.value) {
+    return;
+  }
+  await loadPackages();
 }
 
 
@@ -422,5 +468,9 @@ function formatBytes(bytes: number): string {
 // Add smooth card transitions
 .v-card {
   transition: all 0.3s ease;
+}
+
+.packages__deletion-alert {
+  margin: 0;
 }
 </style>

@@ -314,16 +314,14 @@ const pathColumnTitle = computed(() => {
   }
   return isHostedRepository.value ? "Path" : "Cached Path";
 });
-const timestampColumnTitle = computed(() =>
-  isDockerRepository.value ? "Uploaded At" : "Cached At",
-);
+const timestampColumnTitle = "Uploaded At";
 
 const columns = computed<ColumnDefinition[]>(() => [
   { key: "package", label: packageColumnTitle.value, optional: false },
   { key: "name", label: nameColumnTitle.value, optional: false },
   { key: "size", label: "Size", optional: false, align: "right" },
   { key: "path", label: pathColumnTitle.value, optional: true },
-  { key: "timestamp", label: timestampColumnTitle.value, optional: true },
+  { key: "timestamp", label: timestampColumnTitle, optional: true },
 ]);
 
 const optionalColumns = computed(() => columns.value.filter((column) => column.optional));

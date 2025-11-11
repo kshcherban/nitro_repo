@@ -187,8 +187,8 @@
                 <th>Package</th>
                 <th>Repository</th>
                 <th>Size</th>
-                <th>Cached Path</th>
-                <th>Cached At</th>
+                <th>Path</th>
+                <th>Uploaded At</th>
               </tr>
             </thead>
             <tbody>

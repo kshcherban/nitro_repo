@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::StatusCode;
+use mime::TEXT_PLAIN_UTF_8;
 use nr_core::{
     database::entities::user::{
         ChangePasswordNoCheck, NewUserRequest, UserSafeData, UserType as _,
@@ -37,6 +38,7 @@ use crate::{
         create_user,
         is_taken,
         update_permissions,
+        update_user,
         update_password,
         update_user_status,
         delete_user
@@ -54,6 +56,7 @@ pub fn user_management_routes() -> axum::Router<NitroRepo> {
         )
         .route("/create", axum::routing::post(create_user))
         .route("/is-taken", axum::routing::post(is_taken))
+        .route("/update/{user_id}", axum::routing::put(update_user))
         .route(
             "/update/{user_id}/permissions",
             axum::routing::put(update_permissions),
@@ -166,6 +169,14 @@ pub enum IsTaken {
     Email(String),
 }
 
+#[derive(Deserialize, ToSchema, Default)]
+#[serde(default)]
+pub struct UpdateUserRequest {
+    pub name: Option<String>,
+    pub username: Option<String>,
+    pub email: Option<String>,
+}
+
 #[utoipa::path(
     post,
     path = "/is-taken",
@@ -216,6 +227,97 @@ pub async fn is_taken(
     } else {
         Ok(ResponseBuilder::no_content().empty())
     }
+}
+
+#[utoipa::path(
+    put,
+    path = "/update/{user_id}",
+    request_body = UpdateUserRequest,
+    responses(
+        (status = 200, description = "User updated", body = UserSafeData),
+        (status = 400, description = "Invalid user data", body = String, content_type = "text/plain"),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "Username or email already in use", body = String, content_type = "text/plain")
+    )
+)]
+pub async fn update_user(
+    auth: Authentication,
+    State(site): State<NitroRepo>,
+    Path(user_id): Path<i32>,
+    JsonBody(update): JsonBody<UpdateUserRequest>,
+) -> Result<Response, InternalError> {
+    if !auth.is_admin_or_user_manager() {
+        return Ok(MissingPermission::UserManager.into_response());
+    }
+
+    let Some(user) = UserSafeData::get_by_id(user_id, &site.database).await? else {
+        return Ok(ResponseBuilder::not_found()
+            .error_reason("User not found")
+            .body("User not found"));
+    };
+
+    let new_name = update.name.unwrap_or_else(|| user.name.clone());
+    let new_username = if let Some(username) = update.username {
+        match Username::new(username) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return Ok(ResponseBuilder::bad_request()
+                    .content_type(TEXT_PLAIN_UTF_8)
+                    .body(err.to_string()));
+            }
+        }
+    } else {
+        None
+    };
+
+    let new_email = if let Some(email) = update.email {
+        match Email::new(email) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return Ok(ResponseBuilder::bad_request()
+                    .content_type(TEXT_PLAIN_UTF_8)
+                    .body(err.to_string()));
+            }
+        }
+    } else {
+        None
+    };
+
+    let target_username = new_username.as_ref().unwrap_or(&user.username);
+    if target_username != &user.username
+        && user_utils::is_username_taken_by_other(target_username.as_ref(), user_id, &site.database)
+            .await?
+    {
+        return Ok(ConflictResponse::from("username").into_response());
+    }
+
+    let target_email = new_email.as_ref().unwrap_or(&user.email);
+    if target_email != &user.email
+        && user_utils::is_email_taken_by_other(target_email.as_ref(), user_id, &site.database)
+            .await?
+    {
+        return Ok(ConflictResponse::from("email").into_response());
+    }
+
+    if new_name != user.name {
+        user.update_name(&new_name, &site.database).await?;
+    }
+    if target_username != &user.username {
+        user.update_username(target_username.as_ref(), &site.database)
+            .await?;
+    }
+    if target_email != &user.email {
+        user.update_email_address(target_email.as_ref(), &site.database)
+            .await?;
+    }
+
+    let Some(updated_user) = UserSafeData::get_by_id(user_id, &site.database).await? else {
+        return Ok(ResponseBuilder::not_found()
+            .error_reason("User not found")
+            .body("User not found"));
+    };
+
+    Ok(ResponseBuilder::ok().json(&updated_user))
 }
 
 #[utoipa::path(

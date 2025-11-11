@@ -49,17 +49,19 @@ const SubmitButtonStub = defineComponent({
   template: `<button class="submit-button-stub" :data-block="block" :disabled="disabled" @click="$emit('click')"><slot /></button>`,
 });
 
-const BaseSwitchStub = defineComponent({
+const SwitchInputStub = defineComponent({
   props: {
     modelValue: Boolean,
+    id: String,
   },
-  emits: ["update:modelValue", "change", "setTrue", "setFalse"],
+  emits: ["update:modelValue"],
   template: `
-    <label class="base-switch-stub">
+    <label class="switch-input-stub">
       <input
         type="checkbox"
         :checked="modelValue"
-        @change="$emit('update:modelValue', $event.target.checked); $emit('change', $event.target.checked); $emit($event.target.checked ? 'setTrue' : 'setFalse')" />
+        @change="$emit('update:modelValue', $event.target.checked)" />
+      <slot />
     </label>
   `,
 });
@@ -105,7 +107,7 @@ describe("RepositoryPermissions.vue", () => {
       global: {
         stubs: {
           SubmitButton: SubmitButtonStub,
-          BaseSwitch: BaseSwitchStub,
+          SwitchInput: SwitchInputStub,
           "v-btn": VBtnStub,
           RepositoryDropdown: RepositoryDropdownStub,
         },
@@ -132,7 +134,7 @@ describe("RepositoryPermissions.vue", () => {
       global: {
         stubs: {
           SubmitButton: SubmitButtonStub,
-          BaseSwitch: BaseSwitchStub,
+          SwitchInput: SwitchInputStub,
           "v-btn": VBtnStub,
           RepositoryDropdown: RepositoryDropdownStub,
         },
@@ -150,7 +152,7 @@ describe("RepositoryPermissions.vue", () => {
     expect(nameCell.classes()).toContain("repository-permissions__name--input");
   });
 
-  it("uses base switch toggles for existing and new entries", async () => {
+  it("uses the shared switch input component for toggles", async () => {
     const wrapper = mount(RepositoryPermissions, {
       props: {
         user: defaultUser as any,
@@ -158,7 +160,7 @@ describe("RepositoryPermissions.vue", () => {
       global: {
         stubs: {
           SubmitButton: SubmitButtonStub,
-          BaseSwitch: BaseSwitchStub,
+          SwitchInput: SwitchInputStub,
           "v-btn": VBtnStub,
           RepositoryDropdown: RepositoryDropdownStub,
         },
@@ -170,7 +172,7 @@ describe("RepositoryPermissions.vue", () => {
 
     await flushPromises();
 
-    const switches = wrapper.findAllComponents(BaseSwitchStub);
+    const switches = wrapper.findAllComponents(SwitchInputStub);
     expect(switches.length).toBe(6);
 
     const repositoryRows = wrapper.findAll(".repository-permissions__row");
@@ -179,7 +181,7 @@ describe("RepositoryPermissions.vue", () => {
     );
     expect(dataRows.length).toBeGreaterThan(0);
     for (const row of dataRows) {
-      const toggles = row.findAllComponents(BaseSwitchStub);
+      const toggles = row.findAllComponents(SwitchInputStub);
       expect(toggles.length).toBe(3);
     }
   });
