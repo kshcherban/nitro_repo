@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, ref } from "vue";
+import { defineComponent, h, ref } from "vue";
+import SubmitButton from "@/components/form/SubmitButton.vue";
 
 vi.mock("@vue/devtools-kit", () => ({}));
 
@@ -50,19 +51,6 @@ const controlStubs = {
     emits: ["update:modelValue"],
     template: `<div data-testid="scopes-selector-stub"></div>`,
   }),
-  SubmitButton: defineComponent({
-    props: { disabled: Boolean, loading: Boolean },
-    emits: ["click"],
-    template: `
-      <button
-        class="v-btn"
-        type="submit"
-        :disabled="disabled"
-        @click="$emit('click', $event)">
-        <slot />
-      </button>
-    `,
-  }),
   CopyCode: defineComponent({
     props: ["code"],
     template: "<pre data-testid='token-output'>{{ code }}</pre>",
@@ -103,9 +91,21 @@ const vuetifyStubs = {
     template: "<div data-testid='token-create-loading'></div>",
   }),
   "v-btn": defineComponent({
+    inheritAttrs: false,
     props: { color: String, variant: String, type: { type: String, default: "button" } },
     emits: ["click"],
-    template: "<button class='v-btn' :type='type' @click=\"$emit('click', $event)\"><slot /></button>",
+    setup(props, { attrs, emit, slots }) {
+      return () =>
+        h(
+          "button",
+          {
+            class: ["v-btn", attrs.class],
+            type: props.type,
+            onClick: (event: MouseEvent) => emit("click", event),
+          },
+          slots.default ? slots.default() : undefined,
+        );
+    },
   }),
 };
 
@@ -160,7 +160,7 @@ describe("TokenCreate.vue", () => {
     vi.resetModules();
   });
 
-  it("renders the new form layout with a create button", async () => {
+  it("renders the new form layout with a fixed-width create button", async () => {
     const wrapper = mount(TokenCreate, {
       global: {
         stubs: {
@@ -173,6 +173,13 @@ describe("TokenCreate.vue", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="token-create-card"]').exists()).toBe(true);
-    expect(wrapper.find(".v-btn").text()).toContain("Create Token");
+    const submitWrapper = wrapper.findComponent(SubmitButton);
+    expect(submitWrapper.exists()).toBe(true);
+    expect(submitWrapper.props("block")).toBe(false);
+
+    const buttonEl = wrapper.get(".v-btn");
+    expect(buttonEl.text()).toContain("Create Token");
+    expect(buttonEl.classes()).toContain("submit-button");
+    expect(buttonEl.classes()).toContain("submit-button--fixed");
   });
 });

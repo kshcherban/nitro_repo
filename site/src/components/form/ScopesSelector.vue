@@ -13,9 +13,13 @@
           class="scopeEntry">
           <span>{{ scope.name }}</span>
           <small>{{ scope.description }}</small>
-          <BaseSwitch
-            @setTrue="addDescription(scope)"
-            @setFalse="removeDescription(scope)" />
+          <SwitchInput
+            :id="`scope-${scope.key}`"
+            :model-value="isScopeSelected(scope)"
+            class="scope-switch"
+            @update:model-value="(value) => toggleScope(scope, value)">
+            {{ isScopeSelected(scope) ? "Enabled" : "Enable" }}
+          </SwitchInput>
         </div>
       </div>
     </div>
@@ -25,7 +29,7 @@
 <script setup lang="ts">
 import { siteStore } from "@/stores/site";
 import { type ScopeDescription } from "@/types/base";
-import BaseSwitch from "./BaseSwitch.vue";
+import SwitchInput from "./SwitchInput.vue";
 import { ref } from "vue";
 
 const site = siteStore();
@@ -47,7 +51,6 @@ function organizeScopes() {
       organized.set(parent, [scope]);
     }
   }
-  console.log(organized);
   scopeDescriptionsOrganized.value = organized;
 }
 async function getScopeDescriptions() {
@@ -63,7 +66,21 @@ function removeDescription(scope: ScopeDescription) {
   model.value = model.value.filter((s) => s.key !== scope.key);
 }
 function addDescription(scope: ScopeDescription) {
-  model.value.push(scope);
+  if (!isScopeSelected(scope)) {
+    model.value = [...model.value, scope];
+  }
+}
+
+function isScopeSelected(scope: ScopeDescription): boolean {
+  return model.value.some((item) => item.key === scope.key);
+}
+
+function toggleScope(scope: ScopeDescription, enabled: boolean) {
+  if (enabled) {
+    addDescription(scope);
+  } else {
+    removeDescription(scope);
+  }
 }
 
 getScopeDescriptions();
@@ -86,5 +103,9 @@ getScopeDescriptions();
   flex-direction: column;
   justify-content: space-between;
   margin: 0.5rem;
+
+  :deep(.switch-wrapper) {
+    margin: 0.5rem 0 0;
+  }
 }
 </style>

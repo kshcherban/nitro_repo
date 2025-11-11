@@ -2,13 +2,19 @@
   <div
     v-auto-animate
     id="repositoryEntries">
-    <div
+      <div
       id="header"
       class="row">
       <div class="col">Repository</div>
-      <div class="col">Read</div>
-      <div class="col">Write</div>
-      <div class="col">Edit</div>
+      <div
+        class="col"
+        aria-hidden="true"></div>
+      <div
+        class="col"
+        aria-hidden="true"></div>
+      <div
+        class="col"
+        aria-hidden="true"></div>
       <div class="col action">Action</div>
     </div>
     <div
@@ -40,7 +46,7 @@
       <div class="col">
         <button
           type="button"
-          class="actionButton"
+          class="actionButton actionButton--danger actionButton--fixed-width"
           @click="removeEntry(entry.repositoryId)">
           Remove
         </button>
@@ -78,7 +84,7 @@
       <div class="col">
         <button
           type="button"
-          class="actionButton"
+          class="actionButton actionButton--primary actionButton--fixed-width"
           @click="addEntry"
           :disabled="!isNewEntryValid">
           Add
@@ -168,14 +174,41 @@ function removeEntry(id: string) {
     }
   }
   .actionButton {
-    background-color: $primary;
-    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: none;
-    padding: 0.5rem;
+    padding: 0.5rem 1.25rem;
     border-radius: 0.5rem;
     cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.2s ease;
+  }
+
+  .actionButton--fixed-width {
+    min-width: 6.25rem;
+  }
+
+  .actionButton--primary {
+    background-color: $primary;
+    color: white;
+
     &:disabled {
       background-color: $primary-50;
+      cursor: not-allowed;
+    }
+  }
+
+  .actionButton--danger {
+    background-color: var(--nr-error);
+    color: white;
+
+    &:hover {
+      background-color: var(--nr-error-dark);
+    }
+
+    &:disabled {
+      background-color: var(--nr-error-light);
       cursor: not-allowed;
     }
   }

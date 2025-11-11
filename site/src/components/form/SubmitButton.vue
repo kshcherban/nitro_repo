@@ -1,16 +1,16 @@
 <template>
   <v-btn
-    class="submit-button"
+    class="submit-button submit-button--fixed"
     :type="type"
     :block="block"
     :loading="loading"
     :disabled="disabled"
   :color="color"
-  :variant="variant"
-  v-bind="$attrs"
-  @click="handleClick">
-  <slot />
-</v-btn>
+    :variant="variant"
+    v-bind="$attrs"
+    @click="handleClick">
+    <slot />
+  </v-btn>
 </template>
 <script setup lang="ts">
 import { toRefs } from "vue";
@@ -49,5 +49,14 @@ function handleClick(event: MouseEvent) {
 .submit-button {
   text-transform: none;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  padding: 0.5rem 1.25rem;
+}
+
+.submit-button--fixed {
+  min-width: 6.25rem;
 }
 </style>

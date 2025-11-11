@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
-import { defineComponent } from "vue";
+import { defineComponent, h } from "vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 
 const vuetifyStubs = {
   "v-btn": defineComponent({
+    inheritAttrs: false,
     props: {
       type: {
         type: String,
@@ -17,15 +18,19 @@ const vuetifyStubs = {
       disabled: Boolean,
     },
     emits: ["click"],
-    template: `
-      <button
-        class="v-btn"
-        :type="type"
-        :disabled="disabled"
-        @click="$emit('click', $event)">
-        <slot />
-      </button>
-    `,
+    setup(props, { slots, emit, attrs }) {
+      return () =>
+        h(
+          "button",
+          {
+            class: ["v-btn", attrs.class],
+            type: props.type,
+            disabled: props.disabled,
+            onClick: (event: MouseEvent) => emit("click", event),
+          },
+          slots.default ? slots.default() : undefined,
+        );
+    },
   }),
 };
 
@@ -40,6 +45,8 @@ describe("SubmitButton.vue", () => {
 
     const button = wrapper.get("button");
     expect(button.classes()).toContain("v-btn");
+    expect(button.classes()).toContain("submit-button");
+    expect(button.classes()).toContain("submit-button--fixed");
     expect(button.attributes("type")).toBe("submit");
     expect(button.text()).toBe("Create");
   });

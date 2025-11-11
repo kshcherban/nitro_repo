@@ -70,6 +70,7 @@
           <div class="d-flex justify-end mt-6">
             <SubmitButton
               color="primary"
+              :block="false"
               :loading="isSubmitting"
               :disabled="isSubmitting">
               <span v-if="isSubmitting">Creating…</span>
