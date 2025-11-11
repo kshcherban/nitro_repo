@@ -173,6 +173,7 @@ describe("TokenCreate.vue", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="token-create-card"]').exists()).toBe(true);
+    expect(wrapper.find('.token-create__actions').exists()).toBe(true);
     const submitWrapper = wrapper.findComponent(SubmitButton);
     expect(submitWrapper.exists()).toBe(true);
     expect(submitWrapper.props("block")).toBe(false);

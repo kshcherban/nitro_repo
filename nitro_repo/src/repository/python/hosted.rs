@@ -588,7 +588,13 @@ impl PythonHosted {
                     let mut href = format!("{}{}", ctx.prefix_to_root, relative_path);
                     if let Some(hash) = file_meta.file_hash.sha2_256.as_deref().or(metadata_hash) {
                         href.push_str("#sha256=");
-                        href.push_str(hash);
+                        // Convert base64-encoded hash to hex format for PEP 503 compliance
+                        if let Some(hex_hash) = base64_to_hex(hash) {
+                            href.push_str(&hex_hash);
+                        } else {
+                            // Fallback to original hash if conversion fails
+                            href.push_str(hash);
+                        }
                     }
 
                     let mut line = String::from("    <a href=\"");
@@ -670,6 +676,22 @@ fn html_escape(input: &str) -> String {
         .collect()
 }
 
+/// Converts a base64-encoded hash to lowercase hex format for PEP 503 compliance
+fn base64_to_hex(base64_hash: &str) -> Option<String> {
+    use nr_core::utils::base64_utils;
+
+    // Decode base64 to bytes
+    let bytes = base64_utils::decode(base64_hash).ok()?;
+
+    // Convert bytes to lowercase hex string
+    Some(
+        bytes
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +730,24 @@ mod tests {
         assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
         let location = response.headers().get(LOCATION).unwrap();
         assert_eq!(location, "/repositories/test/py-hosted/");
+    }
+
+    #[test]
+    fn converts_base64_hash_to_hex() {
+        // Test with the actual hash from the failing test
+        // Base64: 0GTnr0+DaIgPWAw6gAhnsd3T2aRPyiXu9SETyZYgKj4=
+        // Expected hex: d064e7af4f8368880f580c3a800867b1ddd3d9a44fca25eef52113c996202a3e
+        let base64_hash = "0GTnr0+DaIgPWAw6gAhnsd3T2aRPyiXu9SETyZYgKj4=";
+        let hex_hash = base64_to_hex(base64_hash);
+        assert_eq!(
+            hex_hash,
+            Some("d064e7af4f8368880f580c3a800867b1ddd3d9a44fca25eef52113c996202a3e".to_string())
+        );
+    }
+
+    #[test]
+    fn handles_invalid_base64() {
+        let result = base64_to_hex("invalid!@#");
+        assert_eq!(result, None);
     }
 }

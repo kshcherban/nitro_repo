@@ -14,9 +14,9 @@
       class="repository-permissions__table">
       <div class="repository-permissions__row repository-permissions__row--header">
         <div>Repository</div>
-        <div class="repository-permissions__toggle-heading">Read</div>
-        <div class="repository-permissions__toggle-heading">Write</div>
-        <div class="repository-permissions__toggle-heading">Edit</div>
+        <div class="repository-permissions__toggle-heading" aria-hidden="true"></div>
+        <div class="repository-permissions__toggle-heading" aria-hidden="true"></div>
+        <div class="repository-permissions__toggle-heading" aria-hidden="true"></div>
         <div class="repository-permissions__actions-heading">Action</div>
       </div>
 
@@ -51,9 +51,9 @@
         </div>
         <div class="repository-permissions__row-actions">
           <v-btn
-            variant="text"
+            variant="flat"
             color="error"
-            class="text-none"
+            class="text-none repository-permissions__action repository-permissions__action--delete"
             @click="deleteRepository(repository.id)">
             Delete
           </v-btn>
@@ -92,7 +92,7 @@
           <v-btn
             variant="tonal"
             color="primary"
-            class="text-none"
+            class="text-none repository-permissions__action"
             @click="addRepository"
             :disabled="!isNewEntryValid">
             Add
@@ -389,6 +389,21 @@ async function save() {
 .repository-permissions__row-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.repository-permissions__action {
+  min-width: 100px;
+}
+
+.repository-permissions__action--delete {
+  background-color: var(--v-theme-error);
+  color: var(--v-theme-on-error);
+  transition: filter 0.2s ease, background-color 0.2s ease;
+}
+
+.repository-permissions__action--delete:hover:not(.v-btn--disabled),
+.repository-permissions__action--delete:focus-visible:not(.v-btn--disabled) {
+  filter: brightness(0.92);
 }
 
 .repository-permissions__actions-heading {

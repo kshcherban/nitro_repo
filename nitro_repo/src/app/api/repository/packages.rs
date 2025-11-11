@@ -10,7 +10,7 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, FixedOffset};
-use nr_storage::{FileType, Storage, StorageFile};
+use nr_storage::{DynStorage, FileType, Storage, StorageFile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -81,7 +81,8 @@ pub struct PackageListResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageStrategy {
     PackagesDirectory { base: Option<&'static str> },
-    Maven,
+    MavenHosted,
+    MavenProxy,
     PythonHosted,
     Docker,
     Helm,
@@ -91,7 +92,10 @@ enum PackageStrategy {
 
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
     match repository {
-        DynRepository::Maven(_) => PackageStrategy::Maven,
+        DynRepository::Maven(maven_repo) => match maven_repo {
+            crate::repository::maven::MavenRepository::Hosted(_) => PackageStrategy::MavenHosted,
+            crate::repository::maven::MavenRepository::Proxy(_) => PackageStrategy::MavenProxy,
+        },
         DynRepository::Python(python_repo) => match python_repo {
             crate::repository::python::PythonRepository::Hosted(_) => PackageStrategy::PythonHosted,
             _ => PackageStrategy::PackagesDirectory {
@@ -156,8 +160,11 @@ pub async fn list_cached_packages(
         PackageStrategy::PackagesDirectory { base } => {
             list_directory_packages(repository, query.page, query.per_page, base).await
         }
-        PackageStrategy::Maven => {
-            list_maven_packages(site, repository, query.page, query.per_page).await
+        PackageStrategy::MavenHosted => {
+            list_maven_hosted_packages(site, repository, query.page, query.per_page).await
+        }
+        PackageStrategy::MavenProxy => {
+            list_maven_proxy_packages(repository, query.page, query.per_page).await
         }
         PackageStrategy::PythonHosted => {
             list_directory_packages(repository, query.page, query.per_page, None).await
@@ -563,7 +570,7 @@ async fn list_helm_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
-async fn list_maven_packages(
+async fn list_maven_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
     page: usize,
@@ -678,6 +685,149 @@ async fn list_maven_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+async fn list_maven_proxy_packages(
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let storage = repository.get_storage();
+    let response =
+        build_maven_proxy_package_list(&storage, repository.id(), page, per_page_raw).await?;
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
+async fn build_maven_proxy_package_list(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<PackageListResponse, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+
+    let mut directories = gather_package_dirs(storage, repository_id, None).await?;
+    directories.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut version_dirs = Vec::new();
+
+    for (_, relative) in directories.into_iter() {
+        let Some(package_label) = derive_maven_package_label(&relative) else {
+            continue;
+        };
+        let storage_path = nr_core::storage::StoragePath::from(ensure_trailing_slash(&relative));
+        let Some(StorageFile::Directory { files, .. }) =
+            storage.open_file(repository_id, &storage_path).await?
+        else {
+            continue;
+        };
+        let has_pom = files.iter().any(|entry| {
+            matches!(entry.file_type(), FileType::File(_)) && entry.name().ends_with(".pom")
+        });
+        if !has_pom {
+            continue;
+        }
+        version_dirs.push((relative, package_label));
+    }
+
+    let total_versions = version_dirs.len();
+    if total_versions == 0 {
+        return Ok(PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        });
+    }
+
+    let start = (current_page - 1) * per_page;
+    if start >= total_versions {
+        return Ok(PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions,
+            items: Vec::new(),
+        });
+    }
+
+    let end = min(start + per_page, total_versions);
+    let mut items = Vec::new();
+
+    for (relative, package_label) in version_dirs[start..end].iter() {
+        let storage_path = nr_core::storage::StoragePath::from(ensure_trailing_slash(relative));
+        let Some(StorageFile::Directory { files, .. }) =
+            storage.open_file(repository_id, &storage_path).await?
+        else {
+            continue;
+        };
+
+        let cache_prefix = relative.trim_matches('/');
+        let mut file_entries: Vec<_> = files.iter().collect();
+        file_entries.sort_by(|a, b| a.name().cmp(b.name()));
+
+        for entry in file_entries {
+            if should_ignore(entry.name()) {
+                continue;
+            }
+            if let FileType::File(file_meta) = entry.file_type() {
+                let cache_path = if cache_prefix.is_empty() {
+                    entry.name().to_string()
+                } else {
+                    format!("{cache_prefix}/{}", entry.name())
+                };
+                items.push(PackageFileEntry {
+                    package: package_label.clone(),
+                    name: entry.name().to_string(),
+                    cache_path,
+                    size: file_meta.file_size,
+                    modified: entry.modified().clone(),
+                });
+            }
+        }
+    }
+
+    Ok(PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions,
+        items,
+    })
+}
+
+fn ensure_trailing_slash(path: &str) -> String {
+    if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    }
+}
+
+fn derive_maven_package_label(path: &str) -> Option<String> {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut segments: Vec<&str> = trimmed
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let version = segments.pop()?.to_string();
+    let artifact = segments.pop()?.to_string();
+    let group = if segments.is_empty() {
+        None
+    } else {
+        Some(segments.join("."))
+    };
+    let project_key = if let Some(group) = group {
+        format!("{group}:{artifact}")
+    } else {
+        artifact
+    };
+    Some(format!("{project_key}:{version}"))
+}
+
 async fn list_docker_packages(
     repository: DynRepository,
     page: usize,
@@ -750,7 +900,9 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
                 is_valid_repository_path(path)
             }
         }
-        PackageStrategy::Maven | PackageStrategy::PythonHosted => is_valid_repository_path(path),
+        PackageStrategy::MavenHosted
+        | PackageStrategy::MavenProxy
+        | PackageStrategy::PythonHosted => is_valid_repository_path(path),
         PackageStrategy::Docker => is_valid_docker_manifest_path(path),
         PackageStrategy::Helm => {
             if !(path.starts_with("charts/") || path.starts_with("v2/")) {
@@ -1379,6 +1531,104 @@ mod tests {
                 "github.com/example/module".to_string(),
                 "github.com/example/module/@v".to_string()
             )]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_maven_proxy_package_list_exposes_cached_files() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository = Uuid::new_v4();
+
+        let base_dir = "com/example/demo/1.0.0";
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"jar-bytes"),
+                &nr_core::storage::StoragePath::from(format!("{base_dir}/demo-1.0.0.jar")),
+            )
+            .await?;
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"pom-bytes"),
+                &nr_core::storage::StoragePath::from(format!("{base_dir}/demo-1.0.0.pom")),
+            )
+            .await?;
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"metadata"),
+                &nr_core::storage::StoragePath::from("com/example/demo/maven-metadata.xml"),
+            )
+            .await?;
+
+        let response = super::build_maven_proxy_package_list(&storage, repository, 1, 50).await?;
+        assert_eq!(response.total_packages, 1);
+        assert_eq!(response.items.len(), 2);
+
+        let mut names: Vec<&str> = response
+            .items
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["demo-1.0.0.jar", "demo-1.0.0.pom"]);
+        assert!(
+            response
+                .items
+                .iter()
+                .all(|item| item.package == "com.example:demo:1.0.0")
+        );
+        assert!(
+            response
+                .items
+                .iter()
+                .all(|item| item.cache_path.starts_with("com/example/demo/1.0.0/"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_maven_proxy_package_list_paginates_versions() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository = Uuid::new_v4();
+
+        let versions = [("1.0.0", b"v1"), ("1.1.0", b"v2")];
+        for (version, data) in versions.iter() {
+            let base_dir = format!("com/example/demo/{version}");
+            storage
+                .save_file(
+                    repository,
+                    FileContent::from(*data),
+                    &nr_core::storage::StoragePath::from(format!("{base_dir}/demo-{version}.jar")),
+                )
+                .await?;
+            storage
+                .save_file(
+                    repository,
+                    FileContent::from(*data),
+                    &nr_core::storage::StoragePath::from(format!("{base_dir}/demo-{version}.pom")),
+                )
+                .await?;
+        }
+
+        let first_page = super::build_maven_proxy_package_list(&storage, repository, 1, 1).await?;
+        assert_eq!(first_page.total_packages, 2);
+        assert!(
+            first_page
+                .items
+                .iter()
+                .all(|item| item.package.ends_with(":1.0.0"))
+        );
+
+        let second_page = super::build_maven_proxy_package_list(&storage, repository, 2, 1).await?;
+        assert_eq!(second_page.total_packages, 2);
+        assert!(
+            second_page
+                .items
+                .iter()
+                .all(|item| item.package.ends_with(":1.1.0"))
         );
         Ok(())
     }

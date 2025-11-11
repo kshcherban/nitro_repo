@@ -67,7 +67,7 @@
             <ScopesSelector v-model="scopes" />
           </section>
 
-          <div class="d-flex justify-end mt-6">
+          <div class="token-create__actions mt-6">
             <SubmitButton
               color="primary"
               :block="false"
@@ -194,5 +194,10 @@ async function createToken() {
 
 .token-result-card {
   text-align: left;
+}
+
+.token-create__actions {
+  display: flex;
+  justify-content: flex-start;
 }
 </style>
