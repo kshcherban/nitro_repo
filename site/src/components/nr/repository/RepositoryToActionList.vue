@@ -16,14 +16,26 @@
       v-for="entry in repositoryEntries"
       :key="entry.repositoryId">
       <div class="col">{{ getRepositoryName(entry.repositoryId) }}</div>
-      <div class="col">
-        <BaseSwitch v-model="entry.actions.can_read" />
+      <div class="col repository-switch">
+        <SwitchInput
+          :id="`repo-${entry.repositoryId}-read`"
+          v-model="entry.actions.can_read">
+          Read
+        </SwitchInput>
       </div>
-      <div class="col">
-        <BaseSwitch v-model="entry.actions.can_write" />
+      <div class="col repository-switch">
+        <SwitchInput
+          :id="`repo-${entry.repositoryId}-write`"
+          v-model="entry.actions.can_write">
+          Write
+        </SwitchInput>
       </div>
-      <div class="col">
-        <BaseSwitch v-model="entry.actions.can_edit" />
+      <div class="col repository-switch">
+        <SwitchInput
+          :id="`repo-${entry.repositoryId}-edit`"
+          v-model="entry.actions.can_edit">
+          Edit
+        </SwitchInput>
       </div>
       <div class="col">
         <button
@@ -42,14 +54,26 @@
         id="repoDropDown">
         <RepositoryDropdown v-model="newEntry.repositoryId" />
       </div>
-      <div class="col">
-        <BaseSwitch v-model="newEntry.actions.can_read" />
+      <div class="col repository-switch">
+        <SwitchInput
+          id="new-repo-read"
+          v-model="newEntry.actions.can_read">
+          Read
+        </SwitchInput>
       </div>
-      <div class="col">
-        <BaseSwitch v-model="newEntry.actions.can_write" />
+      <div class="col repository-switch">
+        <SwitchInput
+          id="new-repo-write"
+          v-model="newEntry.actions.can_write">
+          Write
+        </SwitchInput>
       </div>
-      <div class="col">
-        <BaseSwitch v-model="newEntry.actions.can_edit" />
+      <div class="col repository-switch">
+        <SwitchInput
+          id="new-repo-edit"
+          v-model="newEntry.actions.can_edit">
+          Edit
+        </SwitchInput>
       </div>
       <div class="col">
         <button
@@ -64,7 +88,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import BaseSwitch from "@/components/form/BaseSwitch.vue";
+import SwitchInput from "@/components/form/SwitchInput.vue";
 import RepositoryDropdown from "@/components/form/dropdown/RepositoryDropdown.vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import { RepositoryActionsType } from "@/types/user";
@@ -133,6 +157,15 @@ function removeEntry(id: string) {
   .row {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
+  }
+  .repository-switch {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    :deep(.switch-wrapper) {
+      margin: 0;
+    }
   }
   .actionButton {
     background-color: $primary;

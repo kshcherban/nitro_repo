@@ -89,7 +89,4 @@ export const siteStore = defineStore(
       getUser,
     };
   },
-  {
-    persist: false,
-  },
 );

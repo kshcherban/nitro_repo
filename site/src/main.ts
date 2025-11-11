@@ -1,10 +1,9 @@
 import "./assets/styles/main.scss";
 import "vue-final-modal/style.css";
-import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 import Notifications from "@kyvg/vue3-notification";
 
 import { createApp } from "vue";
-import { createPinia } from "pinia";
+import { createPinia, setActivePinia } from "pinia";
 import { createVfm } from "vue-final-modal";
 import App from "./App.vue";
 import router from "./router";
@@ -46,9 +45,12 @@ import { autoAnimatePlugin } from "@formkit/auto-animate/vue";
 import { applyThemeTokens } from "@/utils/themeTokens";
 import vuetify from "./plugins/vuetify";
 
+const pinia = createPinia();
+setActivePinia(pinia);
 const app = createApp(App);
 const vfm = createVfm();
 applyThemeTokens();
+
 router.beforeEach((to) => {
   const store = sessionStore(pinia);
   if (to.meta.requiresAuth && store.session === undefined) {
@@ -94,8 +96,6 @@ library.add(faCircleXmark);
 library.add(faCheckCircle);
 library.add(faFile);
 library.add(faFolder);
-const pinia = createPinia();
-pinia.use(piniaPluginPersistedstate);
 app.use(createMetaManager());
 app.use(pinia);
 app.use(vuetify);

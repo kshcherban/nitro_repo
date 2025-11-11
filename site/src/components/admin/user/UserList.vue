@@ -46,6 +46,7 @@
 import router from "@/router";
 import type { UserResponseType } from "@/types/base";
 import { computed, ref, type PropType } from "vue";
+import type { DataTableHeader } from "vuetify";
 
 const searchValue = ref<string>("");
 
@@ -54,25 +55,29 @@ const props = defineProps({
 });
 
 // Define table headers
-const headers = [
+const headers: DataTableHeader[] = [
   {
     title: 'ID #',
     key: 'id',
+    value: 'id',
     sortable: true,
   },
   {
     title: 'Name',
     key: 'name',
+    value: 'name',
     sortable: true,
   },
   {
     title: 'Username',
     key: 'username',
+    value: 'username',
     sortable: true,
   },
   {
     title: 'Status',
     key: 'active',
+    value: 'active',
     sortable: true,
   },
 ];

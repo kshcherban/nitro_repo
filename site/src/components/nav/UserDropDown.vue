@@ -13,7 +13,7 @@
       >
       <RouterLink
         class="navLink right"
-        v-if="session.isAdmin()"
+        v-if="session.isAdmin"
         :to="{ name: 'admin' }"
         >Admin</RouterLink
       >

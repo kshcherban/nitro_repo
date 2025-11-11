@@ -23,7 +23,7 @@
         <v-btn
           color="primary"
           prepend-icon="mdi-plus"
-          :to="{ name: 'CreateStorage' }"
+          :to="{ name: 'StorageCreate' }"
           variant="flat">
           Create Storage
         </v-btn>
@@ -67,7 +67,7 @@
       <v-btn
         color="primary"
         prepend-icon="mdi-plus"
-        :to="{ name: 'CreateStorage' }"
+        :to="{ name: 'StorageCreate' }"
         variant="flat">
         Create Storage
       </v-btn>
@@ -78,6 +78,7 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
 import { computed, ref } from "vue";
+import type { DataTableHeader } from "vuetify";
 import { useRepositoryStore } from "@/stores/repositories";
 import type { StorageItem } from "@/components/nr/storage/storageTypes";
 
@@ -88,25 +89,29 @@ const error = ref<string | null>(null);
 const repositoriesTypesStore = useRepositoryStore();
 
 // Define table headers
-const headers = [
+const headers: DataTableHeader[] = [
   {
     title: 'ID #',
     key: 'id',
+    value: 'id',
     sortable: true,
   },
   {
     title: 'Name',
     key: 'name',
+    value: 'name',
     sortable: true,
   },
   {
     title: 'Storage Type',
     key: 'storage_type',
+    value: 'storage_type',
     sortable: true,
   },
   {
     title: 'Active',
     key: 'active',
+    value: 'active',
     sortable: true,
   },
 ];

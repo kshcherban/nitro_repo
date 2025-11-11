@@ -25,7 +25,7 @@
         <v-btn
           color="primary"
           prepend-icon="mdi-plus"
-          :to="{ name: 'AdminCreateRepository' }"
+          :to="{ name: 'RepositoryCreate' }"
           variant="flat">
           Create Repository
         </v-btn>
@@ -92,13 +92,13 @@
           <div class="text-body-2 text-medium-emphasis mb-4">
             Create your first repository to get started.
           </div>
-          <v-btn
-            color="primary"
-            prepend-icon="mdi-plus"
-            :to="{ name: 'AdminCreateRepository' }"
-            variant="flat">
-            Create Repository
-          </v-btn>
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-plus"
+          :to="{ name: 'RepositoryCreate' }"
+          variant="flat">
+          Create Repository
+        </v-btn>
         </v-card>
       </v-col>
     </v-row>
@@ -109,6 +109,7 @@
 import { useRouter } from "vue-router";
 import http from "@/http";
 import { computed, ref } from "vue";
+import type { DataTableHeader } from "vuetify";
 import type { RepositoryWithStorageName } from "@/types/repository";
 
 const router = useRouter();
@@ -118,46 +119,54 @@ const refreshing = ref(false);
 const error = ref<string | null>(null);
 
 // Define table headers
-const headers = [
+const headers: DataTableHeader[] = [
   {
     title: 'ID #',
     key: 'id',
+    value: 'id',
     sortable: true,
   },
   {
     title: 'Name',
     key: 'name',
+    value: 'name',
     sortable: true,
   },
   {
     title: 'Storage Name',
     key: 'storage_name',
+    value: 'storage_name',
     sortable: true,
   },
   {
     title: 'Repository Type',
     key: 'repository_type',
+    value: 'repository_type',
     sortable: true,
   },
   {
     title: 'Auth',
     key: 'auth_enabled',
+    value: 'auth_enabled',
     sortable: true,
   },
   {
     title: 'Storage',
     key: 'storage_usage_bytes',
+    value: 'storage_usage_bytes',
     sortable: true,
     align: 'end' as const,
   },
   {
     title: 'Active',
     key: 'active',
+    value: 'active',
     sortable: true,
   },
   {
     title: 'Usage Updated',
     key: 'storage_usage_updated_at',
+    value: 'storage_usage_updated_at',
     sortable: true,
   },
 ];

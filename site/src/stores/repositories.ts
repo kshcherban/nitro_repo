@@ -162,7 +162,4 @@ export const useRepositoryStore = defineStore(
       getRepositoryIdByNames,
     };
   },
-  {
-    persist: false,
-  },
 );

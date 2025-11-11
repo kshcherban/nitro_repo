@@ -42,7 +42,4 @@ export const useProjectStore = defineStore(
       getProjectByKey,
     };
   },
-  {
-    persist: false,
-  },
 );

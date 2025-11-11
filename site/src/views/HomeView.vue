@@ -160,7 +160,7 @@
         v-if="user?.admin"
         color="primary"
         prepend-icon="mdi-plus"
-        :to="{ name: 'AdminCreateRepository' }"
+        :to="{ name: 'RepositoryCreate' }"
         variant="flat">
         Create Repository
       </v-btn>

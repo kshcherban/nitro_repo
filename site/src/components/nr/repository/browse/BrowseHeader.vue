@@ -43,7 +43,11 @@ interface PathElement {
 const pathElements = ref<PathElement[]>([]);
 function buildPath() {
   pathElements.value = [];
-  const pathSplit = (router.currentRoute.value.params.catchAll as string).split("/");
+  const param = router.currentRoute.value.params.catchAll;
+  if (!param || typeof param !== "string") {
+    return;
+  }
+  const pathSplit = param.split("/");
   let path = "";
   for (const element of pathSplit) {
     pathElements.value.push({
