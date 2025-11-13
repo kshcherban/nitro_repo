@@ -1,0 +1,21 @@
+{
+    "name": "nitro-test/sample-lib",
+    "description": "A minimal PHP library for integration testing",
+    "type": "library",
+    "version": "1.0.0",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Nitro Test",
+            "email": "test@nitro.test"
+        }
+    ],
+    "require": {
+        "php": ">=7.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "NitroTest\\SampleLib\\": "src/"
+        }
+    }
+}

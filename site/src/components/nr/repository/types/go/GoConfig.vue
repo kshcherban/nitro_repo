@@ -35,6 +35,7 @@
             variant="tonal"
             class="text-none"
             type="button"
+            prepend-icon="mdi-plus"
             @click="addRoute">
             Add Route
           </v-btn>
@@ -81,6 +82,7 @@
             variant="text"
             class="text-none"
             type="button"
+            prepend-icon="mdi-delete"
             @click="removeRoute(index)"
             :disabled="proxyConfig.routes.length <= 1">
             Remove
@@ -120,7 +122,8 @@
       v-if="!isCreate"
       :block="false"
       :disabled="hasErrors"
-      class="go-config__submit">
+      class="go-config__submit"
+      prepend-icon="mdi-content-save">
       Save Configuration
     </SubmitButton>
   </form>

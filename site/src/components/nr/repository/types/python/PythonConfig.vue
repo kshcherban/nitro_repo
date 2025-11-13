@@ -22,6 +22,7 @@
           variant="text"
           class="text-none"
           type="button"
+          prepend-icon="mdi-delete"
           @click="removeRoute(index)"
         >Remove</v-btn>
       </div>
@@ -30,6 +31,7 @@
         variant="tonal"
         class="text-none align-self-start"
         type="button"
+        prepend-icon="mdi-plus"
         @click="addRoute">
         Add Route
       </v-btn>
@@ -37,7 +39,8 @@
 
     <SubmitButton
       v-if="!isCreate"
-      :block="false">
+      :block="false"
+      prepend-icon="mdi-content-save">
       Save
     </SubmitButton>
   </form>

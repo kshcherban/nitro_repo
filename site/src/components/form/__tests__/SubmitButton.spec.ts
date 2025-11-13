@@ -32,6 +32,12 @@ const vuetifyStubs = {
         );
     },
   }),
+  "v-icon": defineComponent({
+    inheritAttrs: false,
+    setup(_props, { slots }) {
+      return () => h("i", { class: "v-icon" }, slots.default ? slots.default() : undefined);
+    },
+  }),
 };
 
 describe("SubmitButton.vue", () => {

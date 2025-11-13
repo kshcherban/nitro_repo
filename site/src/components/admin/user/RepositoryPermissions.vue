@@ -53,7 +53,8 @@
           <v-btn
             variant="flat"
             color="error"
-            class="text-none repository-permissions__action repository-permissions__action--delete"
+            prepend-icon="mdi-delete"
+            class="repository-permissions__button repository-permissions__button--danger"
             @click="deleteRepository(repository.id)">
             Delete
           </v-btn>
@@ -90,9 +91,10 @@
         </div>
         <div class="repository-permissions__row-actions">
           <v-btn
-            variant="tonal"
+            variant="flat"
             color="primary"
-            class="text-none repository-permissions__action"
+            prepend-icon="mdi-plus"
+            class="repository-permissions__button repository-permissions__button--primary"
             @click="addRepository"
             :disabled="!isNewEntryValid">
             Add
@@ -103,9 +105,11 @@
 
     <footer class="repository-permissions__footer">
       <SubmitButton
+        variant="flat"
         :block="false"
         :disabled="!hasChanged"
-        @click="save">
+        @click="save"
+        prepend-icon="mdi-content-save">
         Save
       </SubmitButton>
     </footer>
@@ -391,19 +395,30 @@ async function save() {
   justify-content: flex-end;
 }
 
-.repository-permissions__action {
-  min-width: 100px;
+.repository-permissions__button {
+  min-width: 110px;
+  text-transform: none;
+  font-weight: 600;
+  transition: filter 0.2s ease, box-shadow 0.2s ease;
 }
 
-.repository-permissions__action--delete {
-  background-color: var(--v-theme-error);
+.repository-permissions__button :deep(.v-btn__overlay) {
+  background-color: transparent;
+}
+
+.repository-permissions__button--primary {
+  color: var(--v-theme-on-primary);
+}
+
+.repository-permissions__button--danger {
   color: var(--v-theme-on-error);
-  transition: filter 0.2s ease, background-color 0.2s ease;
 }
 
-.repository-permissions__action--delete:hover:not(.v-btn--disabled),
-.repository-permissions__action--delete:focus-visible:not(.v-btn--disabled) {
-  filter: brightness(0.92);
+.repository-permissions__button--primary:hover:not(.v-btn--disabled),
+.repository-permissions__button--primary:focus-visible:not(.v-btn--disabled),
+.repository-permissions__button--danger:hover:not(.v-btn--disabled),
+.repository-permissions__button--danger:focus-visible:not(.v-btn--disabled) {
+  filter: brightness(0.93);
 }
 
 .repository-permissions__actions-heading {

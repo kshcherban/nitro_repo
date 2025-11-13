@@ -109,7 +109,8 @@
           data-testid="helm-config-save"
           :loading="isSaving"
           :disabled="isSaving"
-          :block="false">
+          :block="false"
+          prepend-icon="mdi-content-save">
           <span v-if="isSaving">Saving…</span>
           <span v-else>Save</span>
         </SubmitButton>

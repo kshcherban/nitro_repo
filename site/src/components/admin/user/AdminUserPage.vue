@@ -102,7 +102,8 @@
                 <SubmitButton
                   :block="false"
                   :loading="savingUser"
-                  :disabled="savingUser">
+                  :disabled="savingUser"
+                  prepend-icon="mdi-content-save">
                   Save
                 </SubmitButton>
               </div>
@@ -147,7 +148,8 @@
             <div class="admin-user-page__actions">
               <SubmitButton
                 :block="false"
-                :disabled="!newPassword">
+                :disabled="!newPassword"
+                prepend-icon="mdi-content-save">
                 Save
               </SubmitButton>
             </div>

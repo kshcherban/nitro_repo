@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: nitro_repo_test
+      POSTGRES_USER: nitro
+      POSTGRES_PASSWORD: nitro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nitro"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+
+  nitro_repo:
+    image: nitro_repo:test
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - RUST_LOG=debug
+      - DATABASE_URL=postgresql://nitro:nitro@postgres:5432/nitro_repo_test
+      - NITRO_CONFIG=/config/nitro_repo.test.toml
+    ports:
+      - "127.0.0.1:8888:8888"
+    command: ["start", "--config", "/config/nitro_repo.test.toml"]
+    volumes:
+      - ./config/nitro_repo.test.toml:/config/nitro_repo.test.toml:ro
+      - test-storage:/storage
+
+  db-seeder:
+    image: postgres:17
+    depends_on:
+      - nitro_repo
+    environment:
+      - PGPASSWORD=nitro
+    volumes:
+      - ./seed-data.sql:/seed-data.sql:ro
+      - ./seed-database.sh:/seed-database.sh:ro
+    command: /bin/bash /seed-database.sh
+    restart: "on-failure"
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    depends_on:
+      db-seeder:
+        condition: service_completed_successfully
+    environment:
+      - NITRO_URL=http://nitro_repo:8888
+      - TEST_TOKEN=NPDxeLFM8ehXKteIHW7DFy1chf2QaYdf
+    volumes:
+      - ../integration:/tests:ro
+      - ../fixtures:/fixtures:ro
+      - test-results:/results
+    command: /bin/bash -c "sleep infinity"
+
+volumes:
+  test-storage:
+  test-results:

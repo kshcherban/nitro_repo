@@ -79,6 +79,7 @@
       <SubmitButton
         :block="false"
         :disabled="!hasChanged"
+        prepend-icon="mdi-content-save"
         @click="save">
         Save
       </SubmitButton>

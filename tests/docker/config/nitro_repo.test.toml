@@ -1,0 +1,32 @@
+mode = "Debug"
+suggested_local_storage_path = "/storage"
+
+[database]
+user = "nitro"
+password = "nitro"
+database = "nitro_repo_test"
+host = "postgres"
+port = 5432
+
+[sessions]
+lifespan = 86400
+cleanup_interval = 3600
+database_location = "/storage/sessions.redb"
+
+[site]
+app_url = "http://localhost:8888"
+
+[web_server]
+bind_address = "0.0.0.0:8888"
+
+[security]
+allow_basic_without_tokens = false
+
+[log.levels]
+default = "Debug"
+
+[log.loggers.console.config.levels]
+default = "Debug"
+
+[log.loggers.file.config.levels]
+default = "Debug"

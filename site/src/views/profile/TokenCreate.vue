@@ -72,7 +72,8 @@
               color="primary"
               :block="false"
               :loading="isSubmitting"
-              :disabled="isSubmitting">
+              :disabled="isSubmitting"
+              prepend-icon="mdi-plus">
               <span v-if="isSubmitting">Creating…</span>
               <span v-else>Create Token</span>
             </SubmitButton>

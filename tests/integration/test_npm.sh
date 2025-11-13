@@ -1,0 +1,260 @@
+#!/bin/bash
+# NPM integration tests
+# Tests hosted and proxy NPM repositories end-to-end
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
+# NPM-specific configuration
+NPM_HOSTED_REPO="${TEST_STORAGE}/npm-hosted"
+NPM_PROXY_REPO="${TEST_STORAGE}/npm-proxy"
+FIXTURE_DIR="/fixtures/npm/hello-pkg"
+PACKAGE_NAME="@nitro-test/hello-pkg"
+VERSION_1="1.0.0"
+VERSION_2="1.0.1"
+NITRO_REGISTRY_HOST="${NITRO_URL#*://}"
+
+print_section "NPM Integration Tests"
+
+# Setup workspace
+WORKSPACE=$(create_workspace "npm")
+cd "$WORKSPACE"
+
+# Copy fixture and create tarball
+cp -r "$FIXTURE_DIR" "$WORKSPACE/hello-pkg"
+cd "$WORKSPACE/hello-pkg"
+
+# Test 1: Create package tarball
+print_test "Create NPM package tarball"
+if npm pack > /dev/null 2>&1; then
+    TARBALL=$(ls nitro-test-hello-pkg-*.tgz)
+    if [ -f "$TARBALL" ]; then
+        pass
+    else
+        fail "Tarball not created"
+        cleanup_workspace "$WORKSPACE"
+        exit 1
+    fi
+else
+    fail "npm pack failed"
+    cleanup_workspace "$WORKSPACE"
+    exit 1
+fi
+
+# Test 2: Publish package to hosted repository
+print_test "Publish package to npm-hosted"
+
+# Create .npmrc for authentication - use bearer token for NPM
+cat > "$WORKSPACE/hello-pkg/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_HOSTED_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
+always-auth=true
+EOF
+
+cd "$WORKSPACE/hello-pkg"
+if npm publish --registry="${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/" 2>&1 | tee /tmp/npm-publish.log; then
+    pass
+else
+    cat /tmp/npm-publish.log
+    fail "npm publish failed"
+fi
+
+# Test 3: Verify package metadata available
+print_test "Fetch package metadata"
+ENCODED_NAME=$(echo "$PACKAGE_NAME" | sed 's/@/%40/g; s/\//%2F/g')
+METADATA_PATH="/repositories/${NPM_HOSTED_REPO}/${ENCODED_NAME}"
+
+METADATA=$(curl -sf "${NITRO_URL}${METADATA_PATH}" || echo "")
+
+if echo "$METADATA" | jq -e '.name == "@nitro-test/hello-pkg"' > /dev/null 2>&1; then
+    pass
+else
+    fail "Package metadata not available or invalid"
+fi
+
+# Test 4: Install package from hosted repository
+print_test "Install package from npm-hosted"
+INSTALL_DIR="$WORKSPACE/install-test"
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+cat > "$INSTALL_DIR/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_HOSTED_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
+always-auth=true
+EOF
+
+if npm install "$PACKAGE_NAME@${VERSION_1}" > /dev/null 2>&1 && \
+   [ -d "node_modules/@nitro-test/hello-pkg" ]; then
+    pass
+else
+    fail "Failed to install package"
+fi
+
+# Test 5: Verify installed package works
+print_test "Verify installed package functionality"
+cat > "$INSTALL_DIR/test.js" <<EOF
+const pkg = require('@nitro-test/hello-pkg');
+console.log(pkg.greet('World'));
+console.log(pkg.getVersion());
+EOF
+
+OUTPUT=$(node test.js)
+if echo "$OUTPUT" | grep -q "Hello, World!" && \
+   echo "$OUTPUT" | grep -q "1.0.0"; then
+    pass
+else
+    fail "Package not functioning correctly"
+fi
+
+# Test 6: Publish second version
+print_test "Publish second version (${VERSION_2})"
+cd "$WORKSPACE/hello-pkg"
+
+# Update package.json version
+jq ".version = \"${VERSION_2}\"" package.json > package.json.tmp && mv package.json.tmp package.json
+
+if npm publish --registry="${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/" > /dev/null 2>&1; then
+    pass
+else
+    fail "Failed to publish second version"
+fi
+
+# Test 7: Verify both versions exist
+print_test "Verify both versions accessible"
+METADATA=$(curl -sf "${NITRO_URL}${METADATA_PATH}")
+
+if echo "$METADATA" | jq -e ".versions.\"${VERSION_1}\"" > /dev/null 2>&1 && \
+   echo "$METADATA" | jq -e ".versions.\"${VERSION_2}\"" > /dev/null 2>&1; then
+    pass
+else
+    fail "Both versions not in metadata"
+fi
+
+# Test 8: Install specific version
+print_test "Install specific version (${VERSION_1})"
+INSTALL_DIR_V1="$WORKSPACE/install-v1"
+mkdir -p "$INSTALL_DIR_V1"
+cd "$INSTALL_DIR_V1"
+
+cat > "$INSTALL_DIR_V1/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_HOSTED_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
+always-auth=true
+EOF
+
+if npm install "$PACKAGE_NAME@${VERSION_1}" > /dev/null 2>&1; then
+    INSTALLED_VERSION=$(jq -r .version node_modules/@nitro-test/hello-pkg/package.json)
+    if [ "$INSTALLED_VERSION" = "$VERSION_1" ]; then
+        pass
+    else
+        fail "Wrong version installed: $INSTALLED_VERSION"
+    fi
+else
+    fail "Failed to install specific version"
+fi
+
+# Test 9: Install latest version
+print_test "Install latest version"
+INSTALL_DIR_LATEST="$WORKSPACE/install-latest"
+mkdir -p "$INSTALL_DIR_LATEST"
+cd "$INSTALL_DIR_LATEST"
+
+cat > "$INSTALL_DIR_LATEST/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_HOSTED_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
+always-auth=true
+EOF
+
+if npm install "$PACKAGE_NAME@latest" > /dev/null 2>&1; then
+    INSTALLED_VERSION=$(jq -r .version node_modules/@nitro-test/hello-pkg/package.json)
+    if [ "$INSTALLED_VERSION" = "$VERSION_2" ]; then
+        pass
+    else
+        fail "Latest version not installed: $INSTALLED_VERSION"
+    fi
+else
+    fail "Failed to install latest version"
+fi
+
+# Test 10: Proxy repository - fetch from npmjs.org
+print_test "Proxy: fetch lodash from npmjs.org"
+PROXY_INSTALL_DIR="$WORKSPACE/proxy-test"
+mkdir -p "$PROXY_INSTALL_DIR"
+cd "$PROXY_INSTALL_DIR"
+
+cat > "$PROXY_INSTALL_DIR/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_PROXY_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_PROXY_REPO}/
+always-auth=true
+EOF
+
+if npm install lodash@4.17.21 > /dev/null 2>&1 && \
+   [ -d "node_modules/lodash" ]; then
+    pass
+else
+    fail "Failed to proxy package from npmjs.org"
+fi
+
+# Test 11: Proxy caching verification
+print_test "Proxy: verify package is cached"
+PROXY_INSTALL_DIR2="$WORKSPACE/proxy-test2"
+mkdir -p "$PROXY_INSTALL_DIR2"
+cd "$PROXY_INSTALL_DIR2"
+
+cat > "$PROXY_INSTALL_DIR2/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_PROXY_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_PROXY_REPO}/
+always-auth=true
+EOF
+
+if npm install lodash@4.17.21 > /dev/null 2>&1 && \
+   [ -d "node_modules/lodash" ]; then
+    pass
+else
+    fail "Failed to retrieve cached package"
+fi
+
+# Test 12: Authentication required for publish
+print_test "Verify authentication required for publish"
+cd "$WORKSPACE/hello-pkg"
+
+# Try to publish without auth
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X PUT \
+    "${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/${ENCODED_NAME}" \
+    -H "Content-Type: application/json" \
+    --data '{}')
+
+if [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
+    pass
+else
+    fail "Expected 401/403 without auth, got $STATUS"
+fi
+
+# Test 13: Not found for non-existent package
+print_test "Verify 404 for non-existent package"
+NONEXISTENT_PATH="/repositories/${NPM_HOSTED_REPO}/@nonexistent/package-does-not-exist"
+
+STATUS=$(get_http_status "${NITRO_URL}${NONEXISTENT_PATH}")
+
+if assert_http_status "404" "$STATUS"; then
+    pass
+else
+    fail "Expected 404, got $STATUS"
+fi
+
+# Test 14: NPM scoped package support
+print_test "Verify scoped package support"
+if echo "$METADATA" | jq -e '.name | startswith("@")' > /dev/null 2>&1; then
+    pass
+else
+    fail "Scoped package not properly supported"
+fi
+
+# Cleanup
+cleanup_workspace "$WORKSPACE"
+
+print_summary

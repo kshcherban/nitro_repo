@@ -5,10 +5,16 @@
     :block="block"
     :loading="loading"
     :disabled="disabled"
-  :color="color"
+    :color="color"
     :variant="variant"
     v-bind="$attrs"
     @click="handleClick">
+    <v-icon
+      v-if="prependIcon"
+      size="small"
+      class="submit-button__icon">
+      {{ prependIcon }}
+    </v-icon>
     <slot />
   </v-btn>
 </template>
@@ -27,6 +33,7 @@ const props = withDefaults(
     color?: string;
     variant?: "flat" | "outlined" | "text" | "tonal" | "elevated";
     type?: "submit" | "button" | "reset";
+    prependIcon?: string;
   }>(),
   {
     block: true,
@@ -35,10 +42,11 @@ const props = withDefaults(
     color: "primary",
     variant: "flat",
     type: "submit",
+    prependIcon: undefined,
   },
 );
 
-const { block, loading, disabled, color, variant, type } = toRefs(props);
+const { block, loading, disabled, color, variant, type, prependIcon } = toRefs(props);
 
 function handleClick(event: MouseEvent) {
   emit("click", event);
@@ -58,5 +66,9 @@ function handleClick(event: MouseEvent) {
 
 .submit-button--fixed {
   min-width: 6.25rem;
+}
+
+.submit-button__icon {
+  margin-right: 0.5rem;
 }
 </style>

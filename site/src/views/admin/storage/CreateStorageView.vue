@@ -35,7 +35,9 @@
       </div>
       <SubmitButton
         v-if="storageConfig"
-        class="primary-action">
+        class="primary-action"
+        :block="false"
+        prepend-icon="mdi-plus">
         Create
       </SubmitButton>
     </form>

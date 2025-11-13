@@ -37,6 +37,7 @@
               variant="text"
               class="text-none"
               :disabled="value.routes.length <= 1"
+              prepend-icon="mdi-delete"
               @click="removeRoute(index)">
               Remove
             </v-btn>
@@ -71,6 +72,7 @@
             variant="tonal"
             class="text-none"
             :disabled="!draft.url.trim()"
+            prepend-icon="mdi-plus"
             @click="addRoute">
             Add
           </v-btn>

@@ -20,6 +20,13 @@ app_url = "https://nitro.sudoers.dev"
 [security]
 allow_basic_without_tokens = true
 
+[security.password_rules]
+min_length = 12
+require_uppercase = false
+require_lowercase = true
+require_number = false
+require_symbol = false
+
   # [security.sso]
   # enabled = true
   # login_path = "/api/user/sso/login"

@@ -19,7 +19,12 @@
           " />
       </MilkdownProvider>
     </div>
-    <SubmitButton @click="save">Save </SubmitButton>
+    <SubmitButton
+      :block="false"
+      prepend-icon="mdi-content-save"
+      @click="save">
+      Save
+    </SubmitButton>
   </div>
 </template>
 <script setup lang="ts">

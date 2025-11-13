@@ -68,9 +68,11 @@
 
           <div class="d-flex justify-end mt-6">
             <SubmitButton
+              :block="false"
               color="primary"
               :loading="isSubmitting"
-              :disabled="isSubmitting">
+              :disabled="isSubmitting"
+              prepend-icon="mdi-plus">
               <span v-if="isSubmitting">Creating…</span>
               <span v-else>Create</span>
             </SubmitButton>

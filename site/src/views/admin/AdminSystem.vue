@@ -678,10 +678,12 @@ function removeGroupMapping(id: string) {
 
         <footer class="actions">
           <SubmitButton
+            :block="false"
             :disabled="!hasSsoChanges || ssoSaving"
             :loading="ssoSaving"
+            prepend-icon="mdi-content-save"
             title="Save SSO configuration">
-            Save Changes
+            Save
           </SubmitButton>
           <span class="actions__spacer" />
           <v-btn
@@ -925,29 +927,33 @@ function removeGroupMapping(id: string) {
               placeholder="read/write, admin">
               Nitro roles (comma separated)
             </TextInput>
-            <v-btn
-              variant="text"
-              color="error"
-              :disabled="!oauthForm.enabled"
-              @click="removeGroupMapping(mapping.id)">
-              Remove
-            </v-btn>
-          </div>
           <v-btn
-            variant="outlined"
-            color="primary"
+            variant="text"
+            color="error"
             :disabled="!oauthForm.enabled"
-            @click="addGroupMapping">
-            Add mapping
+            prepend-icon="mdi-delete"
+            @click="removeGroupMapping(mapping.id)">
+            Remove
           </v-btn>
+          </div>
+        <v-btn
+          variant="outlined"
+          color="primary"
+          :disabled="!oauthForm.enabled"
+          prepend-icon="mdi-plus"
+          @click="addGroupMapping">
+          Add mapping
+        </v-btn>
         </div>
 
         <footer class="actions">
           <SubmitButton
+            :block="false"
             :disabled="!hasOAuthChanges || oauthSaving"
             :loading="oauthSaving"
+            prepend-icon="mdi-content-save"
             title="Save OAuth2 configuration">
-            Save Changes
+            Save
           </SubmitButton>
           <span class="actions__spacer" />
           <v-btn

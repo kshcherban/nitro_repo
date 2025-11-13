@@ -80,8 +80,10 @@
 
           <div class="d-flex justify-end mt-6">
             <SubmitButton
+              :block="false"
               :disabled="!formIsValid || isSubmitting"
-              :loading="isSubmitting">
+              :loading="isSubmitting"
+              prepend-icon="mdi-account-plus">
               <span v-if="isSubmitting">Creating…</span>
               <span v-else>Create User</span>
             </SubmitButton>

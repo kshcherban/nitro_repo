@@ -48,7 +48,8 @@
         <SubmitButton
           :block="false"
           :loading="isSaving"
-          :disabled="isSaving">
+          :disabled="isSaving"
+          prepend-icon="mdi-content-save">
           <span v-if="isSaving">Saving…</span>
           <span v-else>Save</span>
         </SubmitButton>

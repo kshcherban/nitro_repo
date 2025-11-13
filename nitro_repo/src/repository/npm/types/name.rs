@@ -54,10 +54,26 @@ impl TryFrom<String> for NPMPackageName {
                     reason: "Invalid scope format. Must be @scope/name",
                 });
             }
-            let scope = parts.first().map(|s| s.to_string());
+            let scope = parts
+                .first()
+                .map(|s| s.trim_start_matches('@').to_string())
+                .ok_or_else(|| InvalidNPMPackageName {
+                    name: value.clone(),
+                    reason: "Invalid scope format. Must be @scope/name",
+                })?;
+            if scope.is_empty() {
+                return Err(InvalidNPMPackageName {
+                    name: value,
+                    reason: "Scope cannot be empty",
+                });
+            }
             let name = parts.get(1).map(|s| s.to_string()).unwrap();
             NPMPackageName::validate_name(&name)?;
-            Ok(NPMPackageName { name, scope })
+            NPMPackageName::validate_name(&scope)?;
+            Ok(NPMPackageName {
+                name,
+                scope: Some(scope),
+            })
         } else {
             NPMPackageName::validate_name(&value)?;
             Ok(NPMPackageName {
@@ -129,21 +145,21 @@ pub mod tests {
                 "@scope/test",
                 NPMPackageName {
                     name: "test".to_string(),
-                    scope: Some("@scope".to_string()),
+                    scope: Some("scope".to_string()),
                 },
             ),
             (
                 "@scope/test-package",
                 NPMPackageName {
                     name: "test-package".to_string(),
-                    scope: Some("@scope".to_string()),
+                    scope: Some("scope".to_string()),
                 },
             ),
             (
                 "@scope/test_package",
                 NPMPackageName {
                     name: "test_package".to_string(),
-                    scope: Some("@scope".to_string()),
+                    scope: Some("scope".to_string()),
                 },
             ),
         ];

@@ -1,5 +1,7 @@
 use std::{
     fmt::Debug,
+    fs,
+    io,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -8,10 +10,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Duration, FixedOffset, Local};
 use http::StatusCode;
 use rand::{Rng, SeedableRng, distr::Alphanumeric, rngs::StdRng};
-use redb::{
-    CommitError, Database, Error, ReadableDatabase, ReadableTable, ReadableTableMetadata,
-    TableDefinition,
-};
+use redb::{CommitError, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -34,6 +33,8 @@ pub enum SessionError {
     #[error("Session not found")]
     RedbError(#[from] redb::Error),
     #[error(transparent)]
+    DatabaseError(#[from] redb::DatabaseError),
+    #[error(transparent)]
     TableError(#[from] redb::TableError),
     #[error(transparent)]
     TransactionError(#[from] redb::TransactionError),
@@ -41,6 +42,8 @@ pub enum SessionError {
     StorageError(#[from] redb::StorageError),
     #[error(transparent)]
     CommitError(#[from] CommitError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
     #[error("Could not parse DateTime: {0}")]
     DateTimeParseError(#[from] chrono::ParseError),
 }
@@ -164,19 +167,28 @@ impl Debug for SessionManager {
     }
 }
 impl SessionManager {
-    pub fn new(session_config: SessionManagerConfig, mode: Mode) -> Result<Self, Error> {
+    pub fn new(
+        session_config: SessionManagerConfig,
+        mode: Mode,
+    ) -> Result<Self, SessionError> {
+        if let Some(parent) = session_config.database_location.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
         let sessions = if session_config.database_location.exists() {
-            let database = Database::open(&session_config.database_location)?;
-            if mode == Mode::Debug {
-                println!("Opened database: {:?}", database);
-                let session = database.begin_write()?;
-                let table = session.open_table(TABLE)?;
-                debug!("Found {} sessions", table.len()?);
-            }
-            database
+            Database::open(&session_config.database_location)?
         } else {
             Database::create(&session_config.database_location)?
         };
+
+        Self::ensure_sessions_table(&sessions)?;
+
+        if mode == Mode::Debug {
+            println!("Opened database: {:?}", sessions);
+            let txn = sessions.begin_read()?;
+            let table = txn.open_table(TABLE)?;
+            debug!("Found {} sessions", table.len()?);
+        }
 
         Ok(Self {
             config: session_config,
@@ -184,6 +196,14 @@ impl SessionManager {
             mode,
             running: AtomicBool::new(false),
         })
+    }
+    fn ensure_sessions_table(database: &Database) -> Result<(), SessionError> {
+        let tx = database.begin_write()?;
+        {
+            tx.open_table(TABLE)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
     pub fn number_of_sessions(&self) -> Result<u64, SessionError> {
         let sessions = self.sessions.begin_read()?;
@@ -395,5 +415,35 @@ pub fn create_session_id(exists_call_back: impl Fn(&str) -> bool) -> String {
         if !exists_call_back(&session_id) {
             break session_id;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn session_manager_creates_table_for_new_database() {
+        let tmp_dir = tempdir().expect("create temp dir");
+        let db_path = tmp_dir.path().join("sessions.redb");
+        let config = SessionManagerConfig {
+            lifespan: Duration::seconds(60),
+            cleanup_interval: Duration::seconds(60),
+            database_location: db_path.clone(),
+        };
+
+        let manager =
+            SessionManager::new(config.clone(), Mode::Debug).expect("session manager builds");
+
+        assert!(
+            db_path.exists(),
+            "session database file should be created on initialization"
+        );
+        assert_eq!(
+            manager.number_of_sessions().expect("read session count"),
+            0,
+            "fresh session database should contain zero sessions"
+        );
     }
 }

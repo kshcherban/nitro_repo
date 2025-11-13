@@ -16,6 +16,7 @@
       <SubmitButton
         :block="false"
         data-testid="generic-config-save"
+        prepend-icon="mdi-content-save"
         @click="save">
         Save Configuration
       </SubmitButton>
