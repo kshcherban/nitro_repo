@@ -99,6 +99,13 @@ const showPackages = computed(() => {
 
 loadRepository();
 
+watch(showPackages, (value) => {
+  if (value && files.value === undefined) {
+    files.value = [];
+    numberOfFiles.value = 0;
+  }
+});
+
 function changeDirectory(path: string) {
   console.log(`Changing directory to ${path}`);
   websocket.send(JSON.stringify({ type: "ListDirectory", data: path }));

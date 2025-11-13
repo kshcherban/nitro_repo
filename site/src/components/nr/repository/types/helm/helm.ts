@@ -1,7 +1,7 @@
 import { HelmIcon } from "vue3-simple-icons";
 import type { FrontendRepositoryType } from "@/types/repository";
 
-export type HelmRepositoryMode = "http" | "oci" | "hybrid";
+export type HelmRepositoryMode = "http" | "oci";
 
 export interface HelmRepositoryConfig {
   overwrite: boolean;
@@ -16,7 +16,7 @@ export function defaultHelmConfig(): HelmRepositoryConfig {
   return {
     overwrite: false,
     index_cache_ttl: 300,
-    mode: "hybrid",
+    mode: "http",
     public_base_url: undefined,
     max_chart_size: 10 * 1024 * 1024,
     max_file_count: 1024,
@@ -24,7 +24,6 @@ export function defaultHelmConfig(): HelmRepositoryConfig {
 }
 
 export const helmModeOptions = [
-  { value: "hybrid", label: "Hybrid (HTTP + OCI)" },
   { value: "http", label: "HTTP chart repository" },
   { value: "oci", label: "OCI registry only" },
 ];

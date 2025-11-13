@@ -103,6 +103,14 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             },
         },
         DynRepository::Helm(_) => PackageStrategy::Helm,
+        DynRepository::NPM(npm_repo) => match npm_repo {
+            crate::repository::npm::NPMRegistry::Hosted(_) => {
+                PackageStrategy::PackagesDirectory { base: None }
+            }
+            crate::repository::npm::NPMRegistry::Proxy(_) => PackageStrategy::PackagesDirectory {
+                base: Some("packages/"),
+            },
+        },
         DynRepository::Docker(_) => PackageStrategy::Docker,
         DynRepository::Go(go_repo) => match go_repo {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::GoHosted,

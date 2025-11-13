@@ -93,7 +93,7 @@ import http from "@/http";
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
 import { getConfigType, getConfigTypeDefault, type RepositoryTypeDescription } from "@/types/repository";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { computed, ref, watch } from "vue";
 import { isAxiosError } from "axios";
 const input = ref({
@@ -129,6 +129,7 @@ const errorBanner = ref({
   title: "",
   message: "",
 });
+const alerts = useAlertsStore();
 const isSubmitting = ref(false);
 const resetError = () => {
   errorBanner.value.visible = false;
@@ -201,29 +202,23 @@ async function createRepository() {
   }
   resetError();
   isSubmitting.value = true;
-  await http
-    .post(`/api/repository/new/${selectedRepositoryType.value}`, request)
-    .then((response) => {
-      notify({
-        type: "success",
-        title: "Success",
-        text: "Repository created",
-      });
-      router.push({
-        name: "AdminViewRepository",
-        params: { id: response.data.id },
-      });
-    })
-    .catch((error) => {
-      const resolved = resolveRepositoryError(error);
-      errorBanner.value.visible = true;
-      errorBanner.value.title = resolved.title;
-      errorBanner.value.message = resolved.message;
-      console.error(resolved.debugMessage);
-    })
-    .finally(() => {
-      isSubmitting.value = false;
+  try {
+    const response = await http.post(`/api/repository/new/${selectedRepositoryType.value}`, request);
+    alerts.success("Repository created", "The repository has been created.");
+    router.push({
+      name: "AdminViewRepository",
+      params: { id: response.data.id },
     });
+  } catch (error) {
+    const resolved = resolveRepositoryError(error);
+    errorBanner.value.visible = true;
+    errorBanner.value.title = resolved.title;
+    errorBanner.value.message = resolved.message;
+    console.error(resolved.debugMessage);
+    alerts.error(resolved.title, resolved.message);
+  } finally {
+    isSubmitting.value = false;
+  }
 }
 
 function resolveRepositoryError(error: unknown): {

@@ -13,8 +13,13 @@ vi.mock("@/router", () => ({
   },
 }));
 
-vi.mock("@kyvg/vue3-notification", () => ({
-  notify: vi.fn(),
+const mockAlerts = {
+  success: vi.fn(),
+  error: vi.fn(),
+};
+
+vi.mock("@/stores/alerts", () => ({
+  useAlertsStore: () => mockAlerts,
 }));
 
 import BasicRepositoryInfo from "../BasicRepositoryInfo.vue";
@@ -64,6 +69,8 @@ const repository = {
 describe("BasicRepositoryInfo", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAlerts.success.mockReset();
+    mockAlerts.error.mockReset();
   });
 
   it("renders repository metadata in a themed card layout", () => {

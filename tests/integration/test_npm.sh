@@ -26,9 +26,9 @@ cd "$WORKSPACE"
 cp -r "$FIXTURE_DIR" "$WORKSPACE/hello-pkg"
 cd "$WORKSPACE/hello-pkg"
 
-# Test 1: Create package tarball
 print_test "Create NPM package tarball"
-if npm pack > /dev/null 2>&1; then
+# Test 1: Create package tarball
+if run_cmd npm pack; then
     TARBALL=$(ls nitro-test-hello-pkg-*.tgz)
     if [ -f "$TARBALL" ]; then
         pass
@@ -54,10 +54,9 @@ always-auth=true
 EOF
 
 cd "$WORKSPACE/hello-pkg"
-if npm publish --registry="${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/" 2>&1 | tee /tmp/npm-publish.log; then
+if run_cmd npm publish --registry="${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/"; then
     pass
 else
-    cat /tmp/npm-publish.log
     fail "npm publish failed"
 fi
 
@@ -67,8 +66,15 @@ ENCODED_NAME=$(echo "$PACKAGE_NAME" | sed 's/@/%40/g; s/\//%2F/g')
 METADATA_PATH="/repositories/${NPM_HOSTED_REPO}/${ENCODED_NAME}"
 
 METADATA=$(curl -sf "${NITRO_URL}${METADATA_PATH}" || echo "")
+record_output "$METADATA"
 
-if echo "$METADATA" | jq -e '.name == "@nitro-test/hello-pkg"' > /dev/null 2>&1; then
+set +e
+jq -e '.name == "@nitro-test/hello-pkg"' <<<"$METADATA" > /dev/null 2>&1
+metadata_status=$?
+set -e
+
+if [ "$metadata_status" -eq 0 ]; then
+    clear_last_log
     pass
 else
     fail "Package metadata not available or invalid"
@@ -86,7 +92,7 @@ registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
 always-auth=true
 EOF
 
-if npm install "$PACKAGE_NAME@${VERSION_1}" > /dev/null 2>&1 && \
+if run_cmd npm install "$PACKAGE_NAME@${VERSION_1}" && \
    [ -d "node_modules/@nitro-test/hello-pkg" ]; then
     pass
 else
@@ -116,7 +122,7 @@ cd "$WORKSPACE/hello-pkg"
 # Update package.json version
 jq ".version = \"${VERSION_2}\"" package.json > package.json.tmp && mv package.json.tmp package.json
 
-if npm publish --registry="${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/" > /dev/null 2>&1; then
+if run_cmd npm publish --registry="${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/"; then
     pass
 else
     fail "Failed to publish second version"
@@ -124,10 +130,16 @@ fi
 
 # Test 7: Verify both versions exist
 print_test "Verify both versions accessible"
-METADATA=$(curl -sf "${NITRO_URL}${METADATA_PATH}")
+METADATA=$(curl -sf "${NITRO_URL}${METADATA_PATH}" || echo "")
+record_output "$METADATA"
 
-if echo "$METADATA" | jq -e ".versions.\"${VERSION_1}\"" > /dev/null 2>&1 && \
-   echo "$METADATA" | jq -e ".versions.\"${VERSION_2}\"" > /dev/null 2>&1; then
+set +e
+jq -e ".versions | has(\"${VERSION_1}\") and has(\"${VERSION_2}\")" <<<"$METADATA" > /dev/null 2>&1
+metadata_versions_status=$?
+set -e
+
+if [ "$metadata_versions_status" -eq 0 ]; then
+    clear_last_log
     pass
 else
     fail "Both versions not in metadata"
@@ -145,7 +157,7 @@ registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
 always-auth=true
 EOF
 
-if npm install "$PACKAGE_NAME@${VERSION_1}" > /dev/null 2>&1; then
+if run_cmd npm install "$PACKAGE_NAME@${VERSION_1}"; then
     INSTALLED_VERSION=$(jq -r .version node_modules/@nitro-test/hello-pkg/package.json)
     if [ "$INSTALLED_VERSION" = "$VERSION_1" ]; then
         pass
@@ -168,7 +180,7 @@ registry=${NITRO_URL}/repositories/${NPM_HOSTED_REPO}/
 always-auth=true
 EOF
 
-if npm install "$PACKAGE_NAME@latest" > /dev/null 2>&1; then
+if run_cmd npm install "$PACKAGE_NAME@latest"; then
     INSTALLED_VERSION=$(jq -r .version node_modules/@nitro-test/hello-pkg/package.json)
     if [ "$INSTALLED_VERSION" = "$VERSION_2" ]; then
         pass
@@ -191,7 +203,7 @@ registry=${NITRO_URL}/repositories/${NPM_PROXY_REPO}/
 always-auth=true
 EOF
 
-if npm install lodash@4.17.21 > /dev/null 2>&1 && \
+if run_cmd npm install lodash@4.17.21 && \
    [ -d "node_modules/lodash" ]; then
     pass
 else
@@ -210,7 +222,7 @@ registry=${NITRO_URL}/repositories/${NPM_PROXY_REPO}/
 always-auth=true
 EOF
 
-if npm install lodash@4.17.21 > /dev/null 2>&1 && \
+if run_cmd npm install lodash@4.17.21 && \
    [ -d "node_modules/lodash" ]; then
     pass
 else
@@ -238,7 +250,7 @@ fi
 print_test "Verify 404 for non-existent package"
 NONEXISTENT_PATH="/repositories/${NPM_HOSTED_REPO}/@nonexistent/package-does-not-exist"
 
-STATUS=$(get_http_status "${NITRO_URL}${NONEXISTENT_PATH}")
+STATUS=$(get_http_status "${NITRO_URL}${NONEXISTENT_PATH}" -H "$(get_auth_header)")
 
 if assert_http_status "404" "$STATUS"; then
     pass
@@ -248,7 +260,13 @@ fi
 
 # Test 14: NPM scoped package support
 print_test "Verify scoped package support"
-if echo "$METADATA" | jq -e '.name | startswith("@")' > /dev/null 2>&1; then
+record_output "$METADATA"
+set +e
+jq -e '.name | startswith("@")' <<<"$METADATA" > /dev/null 2>&1
+metadata_scope_status=$?
+set -e
+if [ "$metadata_scope_status" -eq 0 ]; then
+    clear_last_log
     pass
 else
     fail "Scoped package not properly supported"

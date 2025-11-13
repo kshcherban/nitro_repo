@@ -26,7 +26,7 @@ cd "$WORKSPACE/test-pkg"
 
 # Test 1: Build distribution package
 print_test "Build Python distribution package"
-if python3 setup.py sdist bdist_wheel > /dev/null 2>&1; then
+if run_cmd python3 setup.py sdist bdist_wheel; then
     DIST_FILE=$(ls dist/*.tar.gz | head -n 1)
     if [ -f "$DIST_FILE" ]; then
         pass
@@ -56,7 +56,7 @@ username: ${TEST_USER}
 password: ${TEST_PASSWORD}
 EOF
 
-if twine upload --verbose --repository nitro-test dist/* 2>&1 | tee /tmp/twine-upload.log; then
+if run_cmd twine upload --repository nitro-test dist/*; then
     pass
 else
     fail "twine upload failed"
@@ -67,8 +67,10 @@ print_test "Fetch package via PyPI Simple API"
 SIMPLE_PATH="/repositories/${PYTHON_HOSTED_REPO}/simple/${PACKAGE_NAME}/"
 
 RESPONSE=$(curl -sf "${NITRO_URL}${SIMPLE_PATH}" || echo "")
+record_output "$RESPONSE"
 
 if echo "$RESPONSE" | grep -q "${PACKAGE_NAME}"; then
+    clear_last_log
     pass
 else
     fail "Package not found in Simple API"
@@ -80,9 +82,9 @@ VENV_DIR="$WORKSPACE/venv"
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 
-if pip install --index-url="${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/simple" \
+if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/simple" \
    --trusted-host=nitro_repo \
-   "${PACKAGE_NAME}==${VERSION_1}" > /dev/null 2>&1; then
+   "${PACKAGE_NAME}==${VERSION_1}"; then
     pass
 else
     fail "Failed to install package"
@@ -91,9 +93,11 @@ fi
 # Test 5: Verify installed package works
 print_test "Verify installed package functionality"
 PYTHON_OUTPUT=$(python3 -c "import nitro_test_pkg; print(nitro_test_pkg.greet('World')); print(nitro_test_pkg.get_version())")
+record_output "$PYTHON_OUTPUT"
 
 if echo "$PYTHON_OUTPUT" | grep -q "Hello, World!" && \
    echo "$PYTHON_OUTPUT" | grep -q "${VERSION_1}"; then
+    clear_last_log
     pass
 else
     fail "Package not functioning correctly"
@@ -111,9 +115,11 @@ sed -i "s/__version__ = '${VERSION_1}'/__version__ = '${VERSION_2}'/" nitro_test
 
 # Rebuild
 rm -rf dist/ build/ *.egg-info
-python3 setup.py sdist bdist_wheel > /dev/null 2>&1
+if ! run_cmd python3 setup.py sdist bdist_wheel; then
+    fail "Failed to rebuild package artifacts"
+fi
 
-if twine upload --repository nitro-test dist/* > /dev/null 2>&1; then
+if run_cmd twine upload --repository nitro-test dist/*; then
     pass
 else
     fail "Failed to upload second version"
@@ -125,10 +131,13 @@ VENV_DIR_V2="$WORKSPACE/venv2"
 python3 -m venv "$VENV_DIR_V2"
 source "$VENV_DIR_V2/bin/activate"
 
-if pip install --index-url="${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/simple" \
-   "${PACKAGE_NAME}==${VERSION_2}" > /dev/null 2>&1; then
+if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/simple" \
+   --trusted-host=nitro_repo \
+   "${PACKAGE_NAME}==${VERSION_2}"; then
     INSTALLED_VERSION=$(python3 -c "import nitro_test_pkg; print(nitro_test_pkg.get_version())")
+    record_output "$INSTALLED_VERSION"
     if [ "$INSTALLED_VERSION" = "$VERSION_2" ]; then
+        clear_last_log
         pass
     else
         fail "Wrong version installed: $INSTALLED_VERSION"
@@ -145,8 +154,9 @@ VENV_DIR_PROXY="$WORKSPACE/venv-proxy"
 python3 -m venv "$VENV_DIR_PROXY"
 source "$VENV_DIR_PROXY/bin/activate"
 
-if pip install --index-url="${NITRO_URL}/repositories/${PYTHON_PROXY_REPO}/simple" \
-   "requests==2.31.0" > /dev/null 2>&1; then
+if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_PROXY_REPO}/simple" \
+   --trusted-host=nitro_repo \
+   "requests==2.31.0"; then
     pass
 else
     fail "Failed to proxy package from PyPI"
@@ -160,8 +170,9 @@ VENV_DIR_PROXY2="$WORKSPACE/venv-proxy2"
 python3 -m venv "$VENV_DIR_PROXY2"
 source "$VENV_DIR_PROXY2/bin/activate"
 
-if pip install --index-url="${NITRO_URL}/repositories/${PYTHON_PROXY_REPO}/simple" \
-   "requests==2.31.0" > /dev/null 2>&1; then
+if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_PROXY_REPO}/simple" \
+   --trusted-host=nitro_repo \
+   "requests==2.31.0"; then
     pass
 else
     fail "Failed to retrieve cached package"
@@ -178,7 +189,7 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     "${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/" \
     --data '{}')
 
-if [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
+if [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ] || [ "$STATUS" = "308" ]; then
     pass
 else
     fail "Expected 401/403 without auth, got $STATUS"

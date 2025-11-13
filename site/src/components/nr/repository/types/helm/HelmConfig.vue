@@ -97,7 +97,8 @@
           color="info"
           class="mt-4"
           density="compact">
-          Hybrid mode exposes classic HTTP chart downloads and OCI registry endpoints simultaneously.
+          Choose HTTP mode for classic index.yaml and tarball downloads, or OCI mode to expose Helm
+          charts via the registry-compatible API.
         </v-alert>
       </v-card-text>
 

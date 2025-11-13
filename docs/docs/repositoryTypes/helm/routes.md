@@ -1,6 +1,6 @@
 # Helm Repository Routes
 
-Nitro Repo exposes both the classic Helm chart HTTP endpoints and the OCI distribution-spec routes required by Helm 3. The examples below use the following placeholders:
+Nitro Repo exposes both the classic Helm chart HTTP endpoints and the OCI distribution-spec routes required by Helm 3. Repositories operate in either HTTP or OCI mode—uploads are not mirrored between the two protocols. The examples below use the following placeholders:
 
 - `<host>` – Nitro Repo base URL (for example `nitro.example.com`)
 - `<storage>` – Storage name that contains the repository

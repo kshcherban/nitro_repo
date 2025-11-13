@@ -28,14 +28,14 @@
 <script setup lang="ts">
 import http from "@/http";
 import SwitchInput from "@/components/form/SwitchInput.vue";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 
 const props = defineProps<{
   repository?: string;
 }>();
 
 const model = defineModel<{ enabled: boolean }>({
-  default: { enabled: false },
+  default: { enabled: true },
 });
 
 const isCreate = computed(() => !props.repository);
@@ -43,6 +43,7 @@ const isSaving = ref(false);
 const error = ref<string | null>(null);
 const hasLoaded = ref(false);
 const hasUserInteracted = ref(false);
+const isSyncingRemote = ref(false);
 const enabled = computed({
   get: () => model.value.enabled,
   set: (value: boolean) => {
@@ -76,7 +77,7 @@ onMounted(load);
 watch(
   () => enabled.value,
   async (enabled) => {
-    if (!props.repository || !hasLoaded.value) {
+    if (!props.repository || !hasLoaded.value || isSyncingRemote.value) {
       return;
     }
     error.value = null;
@@ -101,6 +102,7 @@ async function load() {
     hasLoaded.value = true;
     return;
   }
+  isSyncingRemote.value = true;
   try {
     const response = await http.get(
       `/api/repository/${props.repository}/config/auth`,
@@ -116,6 +118,8 @@ async function load() {
     error.value = "Failed to load configuration";
   } finally {
     hasLoaded.value = true;
+    await nextTick();
+    isSyncingRemote.value = false;
   }
 }
 </script>

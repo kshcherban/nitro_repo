@@ -125,7 +125,7 @@ import http from "@/http";
 import router from "@/router";
 import { sessionStore } from "@/stores/session";
 import { siteStore } from "@/stores/site";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import type { InstanceOAuth2Provider } from "@/types/base";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
@@ -186,31 +186,23 @@ const showAutoProvisionMessage = computed(() => {
   }
   return site.siteInfo?.oauth2?.auto_create_users ?? false;
 });
+const alerts = useAlertsStore();
+
 async function login() {
-  http
-    .post("/api/user/login", input.value)
-    .then((response) => {
-      console.log(response);
-      session.login(response.data);
-      router.push(redirectTarget.value);
-    })
-    .catch((error) => {
-      if (error.response.status === 401) {
-        failedLogin.value = true;
-        notify({
-          type: "error",
-          title: "Login Failed",
-          text: "Invalid username or password",
-        });
-      } else {
-        console.log(error);
-        notify({
-          type: "error",
-          title: "Login Failed",
-          text: "An error occurred while trying to login",
-        });
-      }
-    });
+  try {
+    const response = await http.post("/api/user/login", input.value);
+    session.login(response.data);
+    router.push(redirectTarget.value);
+  } catch (error: any) {
+    const status = error?.response?.status;
+    if (status === 401) {
+      failedLogin.value = true;
+      alerts.error("Login failed", "Invalid username or password.");
+    } else {
+      console.error(error);
+      alerts.error("Login failed", "An error occurred while trying to login.");
+    }
+  }
 }
 function startSso() {
   const loginPath = site.siteInfo?.sso?.login_path ?? "/api/user/sso/login";

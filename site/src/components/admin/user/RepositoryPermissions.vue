@@ -121,7 +121,7 @@ import { computed, ref, watch, type PropType } from "vue";
 import type { RepositoryActions, UserResponseType } from "@/types/base";
 import { useRepositoryStore } from "@/stores/repositories";
 import RepositoryDropdown from "@/components/form/dropdown/RepositoryDropdown.vue";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import http from "@/http";
 import { RepositoryActionsType, type FullPermissions } from "@/types/user";
 import SubmitButton from "@/components/form/SubmitButton.vue";
@@ -161,6 +161,8 @@ const newEntry = ref({
   actions: new RepositoryActionsType([]),
 });
 
+const alerts = useAlertsStore();
+
 function deleteRepository(repository: string) {
   for (let i = 0; i < repositoryPermissions.value.length; i++) {
     if (repositoryPermissions.value[i]?.id === repository) {
@@ -177,21 +179,13 @@ async function addRepository() {
   for (const repository of repositoryPermissions.value) {
     if (repository.id === newEntry.value.repository) {
       repository.permissions.update(newEntry.value.actions);
-      notify({
-        type: "success",
-        title: "Repository Already Exists",
-        text: "Values have been updated.",
-      });
+      alerts.success("Repository already exists", "Permissions have been updated.");
       return;
     }
   }
   const repositoryValue = await repoStore.getRepositoryById(newEntry.value.repository);
   if (!repositoryValue) {
-    notify({
-      type: "error",
-      title: "Repository Not Found",
-      text: "The repository could not be found.",
-    });
+    alerts.error("Repository not found", "The repository could not be found.");
     return;
   }
 
@@ -214,11 +208,7 @@ async function loadUserPermissions() {
       originalPermissions.value = response.data;
     })
     .catch((error) => {
-      notify({
-        type: "error",
-        title: "Error Loading Permissions",
-        text: "An error occurred while loading permissions.",
-      });
+      alerts.error("Error loading permissions", "An error occurred while loading permissions.");
       console.error(error);
     });
 }
@@ -289,22 +279,14 @@ async function save() {
   await http
     .put(`/api/user-management/update/${props.user.id}/permissions`, newPermissions)
     .then(() => {
-      notify({
-        type: "success",
-        title: "Permissions Saved",
-        text: "Permissions have been saved.",
-      });
+      alerts.success("Permissions saved", "Permissions have been saved.");
     })
     .catch((error) => {
       let text = "An error occurred while saving permissions.";
       if (error.response?.data) {
         text = error.response.data;
       }
-      notify({
-        type: "error",
-        title: "Error Saving Permissions",
-        text,
-      });
+      alerts.error("Error saving permissions", text);
     });
 }
 </script>

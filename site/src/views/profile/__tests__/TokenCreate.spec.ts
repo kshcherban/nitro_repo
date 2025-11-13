@@ -11,8 +11,13 @@ vi.mock("@/http", () => ({
   },
 }));
 
-vi.mock("@kyvg/vue3-notification", () => ({
-  notify: vi.fn(),
+const mockAlerts = {
+  success: vi.fn(),
+  error: vi.fn(),
+};
+
+vi.mock("@/stores/alerts", () => ({
+  useAlertsStore: () => mockAlerts,
 }));
 
 const controlStubs = {
@@ -143,6 +148,8 @@ describe("TokenCreate.vue", () => {
   const mockLocalStorage = new LocalStorageMock();
 
   beforeEach(async () => {
+    mockAlerts.success.mockReset();
+    mockAlerts.error.mockReset();
     Object.defineProperty(globalThis, "localStorage", {
       value: mockLocalStorage,
       configurable: true,

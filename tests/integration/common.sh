@@ -17,6 +17,9 @@ export TEST_TOKEN="${TEST_TOKEN:-NPDxeLFM8ehXKteIHW7DFy1chf2QaYdf}"
 export TEST_USER="admin"
 export TEST_PASSWORD="TestAdmin"
 export TEST_STORAGE="test-storage"
+export LOG_DIR="${LOG_DIR:-/results/logs}"
+mkdir -p "${LOG_DIR}"
+LAST_CMD_LOG=""
 
 # Test counters
 TESTS_RUN=0
@@ -77,7 +80,59 @@ fail() {
     TESTS_FAILED=$((TESTS_FAILED + 1))
     print_color "$RED" "✗ FAIL"
     print_color "$RED" "    Error: $message"
+    if [[ -n "$LAST_CMD_LOG" && -f "$LAST_CMD_LOG" ]]; then
+        print_color "$YELLOW" "    Command output (stored in $LAST_CMD_LOG):"
+        sed 's/^/      | /' "$LAST_CMD_LOG"
+        LAST_CMD_LOG=""
+    fi
 }
+
+#######################################
+# Run command capturing output to temp log
+# Arguments:
+#   $@: command with arguments
+# Returns:
+#   0 on success, 1 otherwise (log saved in LAST_CMD_LOG)
+#######################################
+run_cmd() {
+    local log_file
+    log_file=$(mktemp -p "${LOG_DIR}" nitro-cmd-XXXX.log)
+    LAST_CMD_LOG="$log_file"
+    echo -e "\n    $@"
+    if "$@" >"$log_file" 2>&1; then
+        clear_last_log
+        return 0
+    else
+        return 1
+    fi
+}
+
+#######################################
+# Record arbitrary output for next failure message
+# Arguments:
+#   $1: string to record
+#######################################
+record_output() {
+    local content="$1"
+    clear_last_log
+    local log_file
+    log_file=$(mktemp -p "${LOG_DIR}" nitro-output-XXXX.log)
+    printf "%s" "$content" >"$log_file"
+    LAST_CMD_LOG="$log_file"
+}
+
+#######################################
+# Clear and delete the last command log
+#######################################
+clear_last_log() {
+    if [[ -n "$LAST_CMD_LOG" ]]; then
+        if [ -f "$LAST_CMD_LOG" ]; then
+            rm -f "$LAST_CMD_LOG"
+        fi
+        LAST_CMD_LOG=""
+    fi
+}
+
 
 #######################################
 # Wait for server to be healthy
@@ -317,7 +372,11 @@ print_summary() {
 verify_repository_exists() {
     local repo_name="$1"
 
-    if api_get "/api/repository/list" | jq -e ".[] | select(.name == \"$repo_name\")" > /dev/null 2>&1; then
+    local repos
+    repos=$(api_get "/api/repository/list" || echo "[]")
+    record_output "$repos"
+    if jq -e ".[] | select(.name == \"$repo_name\")" <<<"$repos" > /dev/null 2>&1; then
+        clear_last_log
         return 0
     else
         return 1
@@ -333,7 +392,11 @@ verify_repository_exists() {
 #######################################
 random_string() {
     local length="${1:-8}"
-    cat /dev/urandom | tr -dc 'a-z0-9' | fold -w "$length" | head -n 1
+    python3 - <<PY
+import random
+alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+print("".join(random.choice(alphabet) for _ in range($length)))
+PY
 }
 
 # Export functions for use in test scripts
@@ -357,3 +420,6 @@ export -f create_workspace
 export -f print_summary
 export -f verify_repository_exists
 export -f random_string
+export -f run_cmd
+export -f record_output
+export -f clear_last_log

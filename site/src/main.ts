@@ -1,6 +1,5 @@
 import "./assets/styles/main.scss";
 import "vue-final-modal/style.css";
-import Notifications from "@kyvg/vue3-notification";
 
 import { createApp } from "vue";
 import { createPinia, setActivePinia } from "pinia";
@@ -51,19 +50,23 @@ const app = createApp(App);
 const vfm = createVfm();
 applyThemeTokens();
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const store = sessionStore(pinia);
-  if (to.meta.requiresAuth && store.session === undefined) {
-    return {
-      name: "login",
-      query: { redirect: to.fullPath },
-    };
-  } else if (to.meta.requiresIdentity === true && store.session === undefined) {
+  const requiresIdentity =
+    to.meta.requiresAuth === true || to.meta.requiresIdentity === true;
+  if (!requiresIdentity) {
+    return true;
+  }
+  if (store.session === undefined) {
+    await store.updateUser();
+  }
+  if (store.session === undefined) {
     return {
       name: "login",
       query: { redirect: to.fullPath },
     };
   }
+  return true;
 });
 
 app.use(router);
@@ -100,7 +103,6 @@ app.use(createMetaManager());
 app.use(pinia);
 app.use(vuetify);
 app.component("font-awesome-icon", FontAwesomeIcon);
-app.use(Notifications);
 app.use(autoAnimatePlugin);
 app.use(vfm);
 app.mount("#app");

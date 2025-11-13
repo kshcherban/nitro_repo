@@ -55,7 +55,7 @@
             variant="tonal"
             class="text-none"
             data-testid="repository-toggle"
-            @click="notify('This feature is not implemented yet')">
+            @click="showNotImplemented">
             <v-icon
               class="mr-2"
               icon="mdi-toggle-switch" />
@@ -81,7 +81,7 @@
 import http from "@/http";
 import router from "@/router";
 import type { RepositoryWithStorageName } from "@/types/repository";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { computed, type PropType } from "vue";
 
 const props = defineProps({
@@ -162,15 +162,21 @@ function formatUpdatedAt(timestamp?: string | null): string {
   }
   return date.toLocaleString();
 }
+const alerts = useAlertsStore();
+
 async function deleteRepository() {
-  http.delete(`/api/repository/${props.repository.id}`).then(() => {
-    notify({
-      type: "success",
-      title: "Deleted",
-      text: "Repository Deleted",
-    });
+  try {
+    await http.delete(`/api/repository/${props.repository.id}`);
+    alerts.success("Repository deleted", "Repository has been deleted.");
     router.push({ name: "RepositoriesList" });
-  });
+  } catch (error) {
+    console.error(error);
+    alerts.error("Failed to delete repository", "An error occurred while deleting repository.");
+  }
+}
+
+function showNotImplemented() {
+  alerts.error("Not implemented", "This feature is not available yet.");
 }
 </script>
 <style lang="scss" scoped>

@@ -9,7 +9,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 
 const props = defineProps({
   code: {
@@ -17,12 +17,11 @@ const props = defineProps({
     required: true,
   },
 });
+
+const alerts = useAlertsStore();
 function copyURL() {
   navigator.clipboard.writeText(props.code);
-  notify({
-    type: "success",
-    title: "Copied",
-  });
+  alerts.success("Copied");
 }
 </script>
 

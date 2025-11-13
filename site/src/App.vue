@@ -14,7 +14,7 @@
         <RouterView />
       </v-slide-x-transition>
     </v-main>
-    <Notifications />
+    <GlobalAlerts />
   </v-app>
 </template>
 <script setup lang="ts">
@@ -24,9 +24,9 @@ import router from "./router";
 import AppBar from "./components/layout/AppBar.vue";
 import { sessionStore } from "./stores/session";
 import { computed } from "vue";
-import { Notifications } from "@kyvg/vue3-notification";
 import { apiURL } from "./config";
 import routesJson from "../src/router/routes.json";
+import GlobalAlerts from "@/components/core/GlobalAlerts.vue";
 
 const site = siteStore();
 const session = sessionStore();

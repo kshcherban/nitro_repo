@@ -23,8 +23,13 @@ vi.mock("@/http", () => ({
   },
 }));
 
-vi.mock("@kyvg/vue3-notification", () => ({
-  notify: vi.fn(),
+const mockAlerts = {
+  success: vi.fn(),
+  error: vi.fn(),
+};
+
+vi.mock("@/stores/alerts", () => ({
+  useAlertsStore: () => mockAlerts,
 }));
 
 vi.mock("@/composables/useResizableColumns", () => ({

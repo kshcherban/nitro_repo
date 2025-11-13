@@ -60,7 +60,7 @@
 
 <script setup lang="ts">
 import { computed, defineProps, onMounted, ref, watch } from "vue";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import DropDown from "@/components/form/dropdown/DropDown.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
@@ -89,6 +89,7 @@ const selectedType = ref<string>(value.value?.type ?? "Hosted");
 const isCreate = computed(() => !props.repository);
 const isSaving = ref(false);
 const isLoading = ref(false);
+const alerts = useAlertsStore();
 
 const isProxy = computed(() => selectedType.value === "Proxy");
 
@@ -139,11 +140,7 @@ async function load() {
     value.value = data;
   } catch (error) {
     console.error("Failed to load Maven config", error);
-    notify({
-      type: "error",
-      title: "Failed to load Maven configuration",
-      text: "Check the server logs for details.",
-    });
+    alerts.error("Failed to load Maven configuration", "Check the server logs for details.");
   } finally {
     isLoading.value = false;
   }
@@ -156,19 +153,11 @@ async function save() {
   isSaving.value = true;
   try {
     await http.put(`/api/repository/${props.repository}/config/maven`, value.value);
-    notify({
-      type: "success",
-      title: "Maven configuration saved",
-      text: "Settings updated successfully.",
-    });
+    alerts.success("Maven configuration saved", "Settings updated successfully.");
     await load();
   } catch (error) {
     console.error("Failed to save Maven config", error);
-    notify({
-      type: "error",
-      title: "Failed to save",
-      text: "Unable to persist Maven configuration.",
-    });
+    alerts.error("Failed to save", "Unable to persist Maven configuration.");
   } finally {
     isSaving.value = false;
   }

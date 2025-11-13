@@ -41,3 +41,13 @@ require_symbol = false
 
 [log.levels]
 default = "Debug"
+[log.levels.others]
+"nitro_repo" = "Debug"
+"nr_core" = "Debug"
+"nr_storage" = "Debug"
+"sqlx" = "Debug"
+"pg_extended_sqlx_queries" = "Debug"
+"h2" = "Debug"
+"tower" = "Debug"
+"tonic" = "Debug"
+"hyper_util" = "Debug"

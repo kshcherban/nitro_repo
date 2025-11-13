@@ -99,7 +99,7 @@ import RepositoryDropdown from "@/components/form/dropdown/RepositoryDropdown.vu
 import { useRepositoryStore } from "@/stores/repositories";
 import { RepositoryActionsType } from "@/types/user";
 import { type NewAuthTokenRepositoryScope } from "@/types/user/token";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { computed, ref } from "vue";
 
 const repositoryStore = useRepositoryStore();
@@ -114,6 +114,7 @@ const newEntry = ref<NewAuthTokenRepositoryScope>({
   repositoryId: "",
   actions: new RepositoryActionsType([]),
 });
+const alerts = useAlertsStore();
 const isNewEntryValid = computed(() => {
   if (!newEntry.value.repositoryId || newEntry.value.repositoryId == "") {
     return false;
@@ -129,11 +130,7 @@ function addEntry() {
   for (const repository of repositoryEntries.value) {
     if (repository.repositoryId === newEntry.value.repositoryId) {
       repository.actions = newEntry.value.actions;
-      notify({
-        type: "success",
-        title: "Repository Already Exists",
-        text: "Values have been updated.",
-      });
+      alerts.success("Repository already exists", "Values have been updated.");
       newEntry.value = {
         repositoryId: "",
         actions: new RepositoryActionsType([]),

@@ -24,8 +24,13 @@ vi.mock("@/stores/site", () => ({
   }),
 }));
 
-vi.mock("@kyvg/vue3-notification", () => ({
-  notify: vi.fn(),
+const mockAlerts = {
+  success: vi.fn(),
+  error: vi.fn(),
+};
+
+vi.mock("@/stores/alerts", () => ({
+  useAlertsStore: () => mockAlerts,
 }));
 
 class LocalStorageMock {
@@ -71,6 +76,8 @@ Object.defineProperty(window, "localStorage", {
 let UserCreateView: any;
 
 beforeEach(async () => {
+  mockAlerts.success.mockReset();
+  mockAlerts.error.mockReset();
   const module = await import("@/views/admin/user/UserCreateView.vue");
   UserCreateView = module.default;
 });

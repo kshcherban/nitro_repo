@@ -66,6 +66,14 @@ pub async fn get_repository_page_by_id(
     {
         return Ok(MissingPermission::EditRepository(repository.id()).into_response());
     }
+    let auth_config = site.get_repository_auth_config(repository.id()).await?;
+    if auth_config.enabled
+        && !auth
+            .has_action(RepositoryActions::Read, repository.id(), &site.database)
+            .await?
+    {
+        return Ok(MissingPermission::EditRepository(repository.id()).into_response());
+    }
     if !repository
         .config_types()
         .contains(&RepositoryPageType::get_type_static())
@@ -109,6 +117,14 @@ pub async fn get_repository_page_by_names(
         return Ok(RepositoryNotFound::RepositoryAndNameLookup(names).into_response());
     };
     if repository.visibility().is_private()
+        && !auth
+            .has_action(RepositoryActions::Read, repository.id(), &site.database)
+            .await?
+    {
+        return Ok(MissingPermission::EditRepository(repository.id()).into_response());
+    }
+    let auth_config = site.get_repository_auth_config(repository.id()).await?;
+    if auth_config.enabled
         && !auth
             .has_action(RepositoryActions::Read, repository.id(), &site.database)
             .await?

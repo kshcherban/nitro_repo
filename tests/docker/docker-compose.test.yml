@@ -31,6 +31,10 @@ services:
     volumes:
       - ./config/nitro_repo.test.toml:/config/nitro_repo.test.toml:ro
       - test-storage:/storage
+    networks:
+      default:
+        aliases:
+          - nitro-repo
 
   db-seeder:
     image: postgres:17
@@ -44,6 +48,23 @@ services:
     command: /bin/bash /seed-database.sh
     restart: "on-failure"
 
+  docker:
+    image: docker:24-dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    command: ["--host=tcp://0.0.0.0:2375", "--insecure-registry=nitro-repo:8888"]
+    volumes:
+      - docker-graph:/var/lib/docker
+    tmpfs:
+      - /run
+      - /var/run
+    healthcheck:
+      test: ["CMD-SHELL", "docker info > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   test-runner:
     build:
       context: .
@@ -51,9 +72,16 @@ services:
     depends_on:
       db-seeder:
         condition: service_completed_successfully
+      docker:
+        condition: service_healthy
     environment:
       - NITRO_URL=http://nitro_repo:8888
       - TEST_TOKEN=NPDxeLFM8ehXKteIHW7DFy1chf2QaYdf
+      - DOCKER_HOST=tcp://docker:2375
+      - DOCKER_TLS_CERTDIR=
+      - DOCKER_API_VERSION=1.43
+      - NITRO_DOCKER_HOST=nitro-repo:8888
+      - DOCKER_API_VERSION=1.43
     volumes:
       - ../integration:/tests:ro
       - ../fixtures:/fixtures:ro
@@ -63,3 +91,4 @@ services:
 volumes:
   test-storage:
   test-results:
+  docker-graph:

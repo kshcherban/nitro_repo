@@ -106,7 +106,7 @@ cat > "$CONSUMER_DIR/composer.json" <<EOF
 }
 EOF
 
-if composer install --no-interaction > /dev/null 2>&1; then
+if run_cmd composer install --no-interaction; then
     pass
 else
     fail "Composer install failed"
@@ -125,9 +125,11 @@ echo Greeter::getVersion() . PHP_EOL;
 EOF
 
 OUTPUT=$(php test.php)
+record_output "$OUTPUT"
 
 if echo "$OUTPUT" | grep -q "Hello, World!" && \
    echo "$OUTPUT" | grep -q "${VERSION_1}"; then
+    clear_last_log
     pass
 else
     fail "Package not functioning correctly"
@@ -223,7 +225,7 @@ cat > "$CONSUMER_DIR_V2/composer.json" <<EOF
 }
 EOF
 
-if composer install --no-interaction > /dev/null 2>&1; then
+if run_cmd composer install --no-interaction; then
     pass
 else
     fail "Failed to install specific version"

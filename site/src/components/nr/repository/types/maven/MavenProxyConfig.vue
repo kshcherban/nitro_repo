@@ -84,7 +84,7 @@
 
 <script setup lang="ts">
 import { reactive } from "vue";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import TextInput from "@/components/form/text/TextInput.vue";
 import { defaultProxy, type MavenProxyRoute, type MavenProxyConfigType } from "./maven";
 
@@ -102,6 +102,7 @@ const draft = reactive<MavenProxyRoute>({
   url: "",
   name: "",
 });
+const alerts = useAlertsStore();
 
 function removeRoute(index: number) {
   if (index < 0 || index >= value.value.routes.length) {
@@ -123,11 +124,7 @@ function addRoute() {
     new URL(trimmedUrl);
   } catch (error) {
     console.error("Invalid Maven proxy URL", error);
-    notify({
-      type: "error",
-      title: "Invalid URL",
-      text: "Provide a valid upstream Maven repository URL.",
-    });
+    alerts.error("Invalid URL", "Provide a valid upstream Maven repository URL.");
     return;
   }
   value.value = {

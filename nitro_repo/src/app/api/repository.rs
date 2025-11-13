@@ -165,6 +165,14 @@ pub async fn find_repository_id(
     {
         return Ok(MissingPermission::ReadRepository(repository.id()).into_response());
     }
+    let auth_config = site.get_repository_auth_config(repository.id()).await?;
+    if auth_config.enabled
+        && !auth
+            .has_action(RepositoryActions::Read, repository.id(), site.as_ref())
+            .await?
+    {
+        return Ok(MissingPermission::ReadRepository(repository.id()).into_response());
+    }
 
     Ok(ResponseBuilder::ok().json(&RepositoryIdResponse {
         repository_id: repository.id(),
@@ -199,6 +207,14 @@ pub async fn get_repository(
     {
         return Ok(MissingPermission::ReadRepository(repository).into_response());
     }
+    let auth_config = site.get_repository_auth_config(config.id).await?;
+    if auth_config.enabled
+        && !auth
+            .has_action(RepositoryActions::Read, config.id, site.as_ref())
+            .await?
+    {
+        return Ok(MissingPermission::ReadRepository(config.id).into_response());
+    }
     let include_usage = query.refresh_usage || query.include_usage;
     let mut storage_usage = normalize_cached_usage(config.storage_usage_bytes);
     let mut storage_usage_updated_at = config.storage_usage_updated_at;
@@ -214,7 +230,6 @@ pub async fn get_repository(
             }
         }
     }
-    let auth_config = site.get_repository_auth_config(config.id).await?;
     let response = RepositoryListEntry {
         id: config.id,
         storage_id: config.storage_id,
@@ -258,6 +273,14 @@ pub async fn list_repositories(
         {
             continue;
         }
+        let auth_config = site.get_repository_auth_config(repository.id).await?;
+        if auth_config.enabled
+            && !auth
+                .has_action(RepositoryActions::Read, repository.id, site.as_ref())
+                .await?
+        {
+            continue;
+        }
         let include_usage = query.refresh_usage || query.include_usage;
         let mut storage_usage_bytes = normalize_cached_usage(repository.storage_usage_bytes);
         let mut storage_usage_updated_at = repository.storage_usage_updated_at;
@@ -273,7 +296,6 @@ pub async fn list_repositories(
                 }
             }
         }
-        let auth_config = site.get_repository_auth_config(repository.id).await?;
         entries.push(RepositoryListEntry {
             id: repository.id,
             storage_id: repository.storage_id,

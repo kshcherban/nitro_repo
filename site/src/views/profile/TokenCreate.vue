@@ -121,7 +121,7 @@ import http from "@/http";
 import type { RepositoryActions, ScopeDescription } from "@/types/base";
 import type { RepositoryToActions } from "@/types/repository";
 import { type NewAuthTokenResponse } from "@/types/user/token";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { ref } from "vue";
 
 const newToken = ref({
@@ -133,6 +133,7 @@ const isSubmitting = ref(false);
 const newResponseTokenResponse = ref<NewAuthTokenResponse | undefined>(undefined);
 const repositoryScopes = ref<Array<RepositoryToActions>>([]);
 const scopes = ref<Array<ScopeDescription>>([]);
+const alerts = useAlertsStore();
 
 function resetForm() {
   newResponseTokenResponse.value = undefined;
@@ -167,18 +168,10 @@ async function createToken() {
 
     const response = await http.post<NewAuthTokenResponse>("/api/user/token/create", request);
     newResponseTokenResponse.value = response.data;
-    notify({
-      type: "success",
-      title: "Token Created",
-      text: "Copy the token now. It will not be shown again.",
-    });
+    alerts.success("Token created", "Copy the token now. It will not be shown again.");
   } catch (error) {
     console.error(error);
-    notify({
-      type: "error",
-      title: "Error Creating Token",
-      text: "An error occurred while creating the token.",
-    });
+    alerts.error("Error creating token", "An error occurred while creating the token.");
   } finally {
     isSubmitting.value = false;
   }

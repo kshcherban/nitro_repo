@@ -108,6 +108,17 @@ describe("PublicRepositoryList.vue", () => {
     expect(wrapper.find('[data-testid="search-help-modal"]').exists()).toBe(true);
   });
 
+  it("applies layout padding classes to offset content from viewport edges", () => {
+    const wrapper = mount(PublicRepositoryList, {
+      props: { repositories },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    expect(wrapper.classes()).toContain("public-repository-list");
+  });
+
   it("applies example queries from the help modal", async () => {
     const wrapper = mount(PublicRepositoryList, {
       props: { repositories },

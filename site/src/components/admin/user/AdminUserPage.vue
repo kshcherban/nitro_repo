@@ -185,7 +185,7 @@ import { computed, ref, type PropType, watch } from "vue";
 import UserPermissions from "./UserPermissions.vue";
 import RepositoryPermissions from "./RepositoryPermissions.vue";
 import http from "@/http";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import ValidatableTextBox from "@/components/form/text/ValidatableTextBox.vue";
 import { EMAIL_VALIDATIONS, USERNAME_VALIDATIONS } from "@/components/form/text/validations";
 import { isAxiosError } from "axios";
@@ -235,6 +235,8 @@ const showError = (title: string, message: string) => {
   errorBanner.value.message = message;
 };
 
+const alerts = useAlertsStore();
+
 watch(
   () => props.user,
   (newUser) => {
@@ -261,38 +263,29 @@ async function changePassword() {
   console.log("Changing Password");
 
   if (!newPassword.value) {
-    notify({
-      type: "error",
-      title: "Password required",
-      text: "Enter and confirm a password before saving.",
-    });
+    alerts.error("Password required", "Enter and confirm a password before saving.");
     return;
   }
 
   console.log("Password is valid");
 
-  http
-    .put(`/api/user-management/update/${props.user.id}/password`, {
+  try {
+    await http.put(`/api/user-management/update/${props.user.id}/password`, {
       password: newPassword.value,
-    })
-    .then(() => {
-      notify({
-        type: "success",
-        title: "Password Changed",
-      text: "Password has been changed",
     });
+    alerts.success("Password changed", "Password has been changed.");
     newPassword.value = undefined;
     console.log("Password Changed");
-  })
-    .catch((error) => {
-      const resolved = resolveUserOperationError(
-        error,
-        "Unable to change password",
-        "Review the password requirements and try again.",
-      );
-      console.error(resolved.debugMessage);
-      showError(resolved.title, resolved.message);
-    });
+  } catch (error) {
+    const resolved = resolveUserOperationError(
+      error,
+      "Unable to change password",
+      "Review the password requirements and try again.",
+    );
+    console.error(resolved.debugMessage);
+    showError(resolved.title, resolved.message);
+    alerts.error(resolved.title, resolved.message);
+  }
 }
 
 async function saveUserDetails() {
@@ -307,11 +300,7 @@ async function saveUserDetails() {
       email: changeUser.value.email,
       username: changeUser.value.username,
     });
-    notify({
-      type: "success",
-      title: "User Updated",
-      text: "User profile details have been saved.",
-    });
+    alerts.success("User updated", "User profile details have been saved.");
     emit("refresh");
   } catch (error) {
     const resolved = resolveUserOperationError(
@@ -320,12 +309,8 @@ async function saveUserDetails() {
       "Review the provided details and try again.",
     );
     console.error(resolved.debugMessage);
-    notify({
-      type: "error",
-      title: resolved.title,
-      text: resolved.message,
-    });
     showError(resolved.title, resolved.message);
+    alerts.error(resolved.title, resolved.message);
   } finally {
     savingUser.value = false;
   }
@@ -340,10 +325,7 @@ async function setActive(active: boolean) {
     await http.put(`/api/user-management/update/${props.user.id}/status`, {
       active,
     });
-    notify({
-      type: "success",
-      title: active ? "User reactivated" : "User deactivated",
-    });
+    alerts.success(active ? "User reactivated" : "User deactivated");
     emit("refresh");
   } catch (error: any) {
     console.error(error);
@@ -352,12 +334,8 @@ async function setActive(active: boolean) {
       "Unable to update status",
       "Failed to update user status.",
     );
-    notify({
-      type: "error",
-      title: resolved.title,
-      text: resolved.message,
-    });
     showError(resolved.title, resolved.message);
+    alerts.error(resolved.title, resolved.message);
   } finally {
     statusUpdating.value = false;
   }
@@ -377,10 +355,7 @@ async function deleteUser() {
   deletingUser.value = true;
   try {
     await http.delete(`/api/user-management/delete/${props.user.id}`);
-    notify({
-      type: "success",
-      title: "User deleted",
-    });
+    alerts.success("User deleted");
     emit("deleted");
   } catch (error: any) {
     console.error(error);
@@ -389,12 +364,8 @@ async function deleteUser() {
       "Unable to delete user",
       "Failed to delete user.",
     );
-    notify({
-      type: "error",
-      title: resolved.title,
-      text: resolved.message,
-    });
     showError(resolved.title, resolved.message);
+    alerts.error(resolved.title, resolved.message);
   } finally {
     deletingUser.value = false;
   }

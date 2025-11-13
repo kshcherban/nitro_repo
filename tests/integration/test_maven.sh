@@ -23,12 +23,17 @@ print_test "Building Maven test artifact"
 WORKSPACE=$(create_workspace "maven")
 cd "$WORKSPACE"
 
-if cp -r "$FIXTURE_DIR" "$WORKSPACE/simple-lib" && \
-   cd "$WORKSPACE/simple-lib" && \
-   mvn clean package -q > /dev/null 2>&1; then
-    pass
+if cp -r "$FIXTURE_DIR" "$WORKSPACE/simple-lib"; then
+    cd "$WORKSPACE/simple-lib"
+    if run_cmd mvn clean package -q; then
+        pass
+    else
+        fail "Failed to build Maven artifact"
+        cleanup_workspace "$WORKSPACE"
+        exit 1
+    fi
 else
-    fail "Failed to build Maven artifact"
+    fail "Failed to copy Maven fixture"
     cleanup_workspace "$WORKSPACE"
     exit 1
 fi
@@ -115,7 +120,9 @@ print_test "Deploy second version (${VERSION_2}) using mvn"
 # Update POM version
 sed -i "s/${VERSION_1}/${VERSION_2}/g" "$POM_FILE"
 cd "$WORKSPACE/simple-lib"
-mvn clean package -q > /dev/null 2>&1
+if ! run_cmd mvn clean package -q; then
+    fail "Failed to rebuild Maven artifact for version ${VERSION_2}"
+fi
 
 JAR_FILE_V2="$WORKSPACE/simple-lib/target/${ARTIFACT_ID}-${VERSION_2}.jar"
 UPLOAD_PATH_V2="/repositories/${MAVEN_HOSTED_REPO}/${GROUP_PATH}/${ARTIFACT_ID}/${VERSION_2}/${ARTIFACT_ID}-${VERSION_2}.jar"
@@ -146,10 +153,12 @@ print_test "Check maven-metadata.xml generation"
 METADATA_PATH="/repositories/${MAVEN_HOSTED_REPO}/${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml"
 
 METADATA=$(curl -sf "${NITRO_URL}${METADATA_PATH}" || echo "")
+record_output "$METADATA"
 
 if echo "$METADATA" | grep -q "<artifactId>${ARTIFACT_ID}</artifactId>" && \
    echo "$METADATA" | grep -q "<version>${VERSION_1}</version>" && \
    echo "$METADATA" | grep -q "<version>${VERSION_2}</version>"; then
+    clear_last_log
     pass
 else
     fail "Maven metadata not generated correctly"
@@ -187,7 +196,7 @@ cat > "$WORKSPACE/consumer/pom.xml" <<EOF
 EOF
 
 cd "$WORKSPACE/consumer"
-if mvn dependency:resolve -q > /dev/null 2>&1; then
+if run_cmd mvn dependency:resolve -q; then
     pass
 else
     fail "Maven failed to resolve dependency"
@@ -201,6 +210,7 @@ if curl -sf "${NITRO_URL}${PROXY_ARTIFACT_PATH}" -o "$WORKSPACE/proxied.jar" && 
    assert_file_exists "$WORKSPACE/proxied.jar"; then
     pass
 else
+    record_output "$(curl -sf "${NITRO_URL}${PROXY_ARTIFACT_PATH}" || echo "")"
     fail "Failed to proxy artifact from Maven Central"
 fi
 

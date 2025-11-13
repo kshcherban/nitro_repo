@@ -30,6 +30,7 @@ const routes = [
     component: HomeView,
     meta: {
       skipRoutesJson: true,
+      requiresAuth: true,
     },
   },
 

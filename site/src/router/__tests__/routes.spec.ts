@@ -1,0 +1,21 @@
+import { beforeAll, describe, expect, it, vi } from "vitest";
+
+beforeAll(() => {
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn().mockReturnValue(null),
+    setItem: vi.fn(),
+    removeItem: vi.fn(),
+    clear: vi.fn(),
+    key: vi.fn(),
+    length: 0,
+  });
+});
+
+describe("router security metadata", () => {
+  it("marks home route as auth protected", async () => {
+    const router = (await import("@/router")).default;
+    const routes = router.getRoutes();
+    const home = routes.find((route) => route.name === "home");
+    expect(home?.meta?.requiresAuth).toBe(true);
+  });
+});

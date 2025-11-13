@@ -1,176 +1,149 @@
 <template>
   <v-container class="pa-6">
-    <!-- Hero Section -->
-    <v-row class="mb-8" justify="center">
-      <v-col cols="12" md="10" lg="8" class="text-center">
-        <div class="d-flex flex-column align-center mb-6">
-          <v-avatar
-            :image="'/icon-128.png'"
-            size="96"
-            class="mb-4" />
-          <h1 class="text-h3 font-weight-bold text-primary mb-2">Nitro Repository</h1>
-          <p class="text-h6 text-medium-emphasis mb-6">
-            Universal package repository manager supporting Maven, NPM, Go, Docker, Helm, Python, and PHP
-          </p>
-          <div class="d-flex gap-4 justify-center flex-wrap">
-            <v-btn
-              color="primary"
-              prepend-icon="mdi-browse"
-              size="large"
-              variant="flat"
-              :to="{ name: 'repositories' }">
-              Browse Repositories
-            </v-btn>
-            <v-btn
-              color="secondary"
-              prepend-icon="mdi-magnify"
-              size="large"
-              variant="outlined"
-              :to="{ name: 'repositories' }">
-              Search Packages
-            </v-btn>
-          </div>
-        </div>
+    <v-row class="mb-4" justify="center">
+      <v-col cols="12" lg="10">
+        <RepositorySearchHeader v-model="searchValue" />
       </v-col>
     </v-row>
 
-    <!-- Loading State -->
-    <v-card v-if="loading && !error" class="text-center py-8">
-      <v-progress-circular indeterminate color="primary" size="48" />
-      <div class="mt-4 text-medium-emphasis">Loading repositories…</div>
-    </v-card>
+    <v-row v-if="showPackageResults" class="mb-4" justify="center">
+      <v-col cols="12" lg="10">
+        <PackageSearchResults
+          :results="packageResults"
+          :loading="packageLoading"
+          :error="packageError"
+          @open="openPackage" />
+      </v-col>
+    </v-row>
 
-    <!-- Error State -->
-    <v-alert
-      v-else-if="error"
-      type="error"
-      variant="tonal"
-      prominent>
-      Failed to load repositories: {{ error }}
-    </v-alert>
+    <v-row class="align-center mb-4" justify="center">
+      <v-col cols="12" lg="10">
+        <h2 class="text-h4 font-weight-medium mb-1">Repository Catalog</h2>
+        <p class="text-body-1 text-medium-emphasis">
+          Review repository status, confirm authentication posture, and drill into details.
+        </p>
+      </v-col>
+    </v-row>
 
-    <!-- Repository Grid -->
-    <div v-else-if="repositories.length >= 1">
-      <v-row class="align-center mb-6">
-        <v-col>
-          <h2 class="text-h4 font-weight-medium">Repositories</h2>
-          <p class="text-body-1 text-medium-emphasis">
-            Browse {{ repositories.length }} available repositories
+    <v-row v-if="loading && !error" justify="center">
+      <v-col cols="12" lg="10">
+        <v-card class="text-center py-8">
+          <v-progress-circular indeterminate color="primary" size="48" />
+          <div class="mt-4 text-medium-emphasis">Loading repositories…</div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-row v-else-if="error" justify="center">
+      <v-col cols="12" lg="10">
+        <v-alert type="error" variant="tonal" prominent>
+          Failed to load repositories: {{ error }}
+        </v-alert>
+      </v-col>
+    </v-row>
+
+    <v-row
+      v-else-if="filteredRepositories.length > 0"
+      justify="center"
+      class="g-4">
+      <v-col
+        v-for="repo in filteredRepositories"
+        :key="repo.id"
+        cols="12"
+        sm="6"
+        md="4"
+        lg="3">
+        <v-card
+          :ripple="false"
+          class="repository-card h-100"
+          @click="navigateToRepository(repo)">
+          <v-card-title class="d-flex align-center pa-4">
+            <span class="repository-card__icon mr-3">
+              <component
+                v-if="hasComponentIcon(repo.repository_type || '')"
+                :is="getComponentIcon(repo.repository_type || '').component"
+                v-bind="getComponentIcon(repo.repository_type || '').props"
+                class="repository-card__brand-icon" />
+              <v-icon
+                v-else
+                :icon="getFallbackIcon(repo.repository_type || '')"
+                color="primary" />
+            </span>
+            <div>
+              <div class="text-h6">{{ repo.name || "Unknown" }}</div>
+              <div class="text-caption text-medium-emphasis">
+                {{ (repo.repository_type || "").toUpperCase() }}
+              </div>
+            </div>
+          </v-card-title>
+
+          <v-card-text class="pa-4 pt-0">
+            <div class="d-flex align-center gap-4 text-caption">
+              <div class="d-flex align-center gap-1">
+                <v-icon size="small">mdi-database</v-icon>
+                {{ repo.storage_name || "Unknown" }}
+              </div>
+              <div class="d-flex align-center gap-1">
+                <v-icon size="small">mdi-shield-check</v-icon>
+                <span :class="repo.auth_enabled ? 'text-success' : 'text-warning'">
+                  {{ repo.auth_enabled ? "Secured" : "Unsecured" }}
+                </span>
+              </div>
+            </div>
+
+            <div v-if="repo.storage_usage_bytes !== undefined" class="mt-2">
+              <div class="d-flex align-center gap-1 text-caption">
+                <v-icon size="small">mdi-hard-disk</v-icon>
+                {{ formatBytes(repo.storage_usage_bytes) }}
+              </div>
+            </div>
+          </v-card-text>
+
+          <v-card-actions class="pa-4 pt-0">
+            <v-btn color="primary" variant="text" prepend-icon="mdi-browse" class="text-none">
+              Browse
+            </v-btn>
+            <v-spacer />
+            <v-chip
+              :color="repo.active ? 'success' : 'default'"
+              :variant="repo.active ? 'flat' : 'outlined'"
+              size="small">
+              {{ repo.active ? "Active" : "Inactive" }}
+            </v-chip>
+          </v-card-actions>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-row v-else justify="center">
+      <v-col cols="12" lg="8">
+        <v-card class="text-center py-12" variant="outlined">
+          <v-icon color="medium-emphasis" size="64" class="mb-4">mdi-package-variant</v-icon>
+          <h2 class="text-h4 text-medium-emphasis mb-2">No repositories available</h2>
+          <p class="text-body-1 text-medium-emphasis mb-6">
+            Contact your administrator to create repositories.
           </p>
-        </v-col>
-        <v-col cols="auto">
-          <v-text-field
-            v-model="searchTerm"
-            label="Search repositories..."
-            prepend-inner-icon="mdi-magnify"
-            variant="outlined"
-            clearable
-            @click:clear="clearSearchTerm"
-            hide-details
-            style="min-width: 300px;" />
-        </v-col>
-      </v-row>
-
-      <v-row>
-        <v-col
-          v-for="repo in filteredRepositories"
-          :key="repo.id"
-          cols="12"
-          sm="6"
-          md="4"
-          lg="3">
-          <v-card
-            :ripple="false"
-            class="repository-card h-100"
-            @click="navigateToRepository(repo)">
-            <v-card-title class="d-flex align-center pa-4">
-              <span class="repository-card__icon mr-3">
-                <component
-                  v-if="hasComponentIcon(repo.repository_type || '')"
-                  :is="getComponentIcon(repo.repository_type || '').component"
-                  v-bind="getComponentIcon(repo.repository_type || '').props"
-                  class="repository-card__brand-icon" />
-                <v-icon
-                  v-else
-                  :icon="getFallbackIcon(repo.repository_type || '')"
-                  color="primary" />
-              </span>
-              <div>
-                <div class="text-h6">{{ repo.name || 'Unknown' }}</div>
-                <div class="text-caption text-medium-emphasis">
-                  {{ (repo.repository_type || '').toUpperCase() }}
-                </div>
-              </div>
-            </v-card-title>
-
-            <v-card-text class="pa-4 pt-0">
-              <div class="d-flex align-center gap-4 text-caption">
-                <div class="d-flex align-center gap-1">
-                  <v-icon size="small">mdi-database</v-icon>
-                  {{ repo.storage_name || 'Unknown' }}
-                </div>
-                <div class="d-flex align-center gap-1">
-                  <v-icon size="small">mdi-shield-check</v-icon>
-                  <span :class="repo.auth_enabled ? 'text-success' : 'text-medium-emphasis'">
-                    {{ repo.auth_enabled ? 'Secured' : 'Public' }}
-                  </span>
-                </div>
-              </div>
-
-              <div v-if="repo.storage_usage_bytes !== undefined" class="mt-2">
-                <div class="d-flex align-center gap-1 text-caption">
-                  <v-icon size="small">mdi-hard-disk</v-icon>
-                  {{ formatBytes(repo.storage_usage_bytes) }}
-                </div>
-              </div>
-            </v-card-text>
-
-            <v-card-actions class="pa-4 pt-0">
-              <v-btn
-                color="primary"
-                variant="text"
-                prepend-icon="mdi-browse"
-                class="text-none">
-                Browse
-              </v-btn>
-              <v-spacer />
-              <v-chip
-                :color="repo.active ? 'success' : 'default'"
-                :variant="repo.active ? 'flat' : 'outlined'"
-                size="small">
-                {{ repo.active ? 'Active' : 'Inactive' }}
-              </v-chip>
-            </v-card-actions>
-          </v-card>
-        </v-col>
-      </v-row>
-    </div>
-
-    <!-- Empty State -->
-    <v-card
-      v-else
-      class="text-center py-12"
-      variant="outlined">
-      <v-icon color="medium-emphasis" size="64" class="mb-4">mdi-package-variant</v-icon>
-      <h2 class="text-h4 text-medium-emphasis mb-2">No repositories available</h2>
-      <p class="text-body-1 text-medium-emphasis mb-6">
-        Contact your administrator to create repositories.
-      </p>
-      <v-btn
-        v-if="user?.admin"
-        color="primary"
-        prepend-icon="mdi-plus"
-        :to="{ name: 'RepositoryCreate' }"
-        variant="flat">
-        Create Repository
-      </v-btn>
-    </v-card>
+          <v-btn
+            v-if="isAdmin"
+            color="primary"
+            prepend-icon="mdi-plus"
+            :to="{ name: 'RepositoryCreate' }"
+            variant="flat">
+            Create Repository
+          </v-btn>
+        </v-card>
+      </v-col>
+    </v-row>
   </v-container>
 </template>
 
 <script setup lang="ts">
+import PackageSearchResults, { type PackageResult } from "@/components/nr/repository/PackageSearchResults.vue";
+import RepositorySearchHeader from "@/components/nr/repository/RepositorySearchHeader.vue";
+import http from "@/http";
+import { shouldFetchPackages, isAdvancedQuery, formatBytes as formatBytesUtil } from "@/utils/repositorySearch";
 import { useRouter } from "vue-router";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Component } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
@@ -181,11 +154,26 @@ const router = useRouter();
 const repositories = ref<RepositoryWithStorageName[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
-const searchTerm = ref("");
+const searchValue = ref("");
+const packageResults = ref<PackageResult[]>([]);
+const packageLoading = ref(false);
+const packageError = ref<string | null>(null);
+let debounceHandle: number | undefined;
 const repoStore = useRepositoryStore();
 const session = sessionStore();
 const user = computed(() => session.user);
+const isAdmin = computed(() => Boolean(user.value?.admin));
 
+interface PackageSearchResponse {
+  repository_id: string;
+  repository_name: string;
+  storage_name: string;
+  repository_type: string;
+  file_name: string;
+  cache_path: string;
+  size: number;
+  modified: string;
+}
 type ComponentIcon = {
   component: Component;
   props?: Record<string, unknown>;
@@ -234,15 +222,49 @@ function getFallbackIcon(type: string): string {
 }
 
 // Filter repositories based on search term
-const filteredRepositories = computed(() => {
-  if (!searchTerm.value?.trim()) {
-    return repositories.value || [];
+const trimmedSearch = computed(() => searchValue.value.trim());
+const showPackageResults = computed(() => shouldFetchPackages(trimmedSearch.value));
+
+watch(trimmedSearch, (value) => {
+  packageResults.value = [];
+  packageError.value = null;
+  if (debounceHandle !== undefined) {
+    window.clearTimeout(debounceHandle);
+    debounceHandle = undefined;
   }
-  const term = searchTerm.value.toLowerCase();
-  return (repositories.value || []).filter(repo =>
-    repo?.name?.toLowerCase().includes(term) ||
-    repo?.repository_type?.toLowerCase().includes(term) ||
-    repo?.storage_name?.toLowerCase().includes(term)
+  if (!shouldFetchPackages(value)) {
+    packageLoading.value = false;
+    return;
+  }
+  packageLoading.value = true;
+  debounceHandle = window.setTimeout(() => {
+    fetchPackages(value);
+  }, 300);
+});
+
+onBeforeUnmount(() => {
+  if (debounceHandle !== undefined) {
+    window.clearTimeout(debounceHandle);
+  }
+});
+
+const filteredRepositories = computed(() => {
+  if (!repositories.value) {
+    return [];
+  }
+  const rawQuery = trimmedSearch.value;
+  if (!rawQuery) {
+    return repositories.value;
+  }
+  if (isAdvancedQuery(rawQuery)) {
+    return repositories.value;
+  }
+  const term = rawQuery.toLowerCase();
+  return repositories.value.filter(
+    (repo) =>
+      repo?.name?.toLowerCase().includes(term) ||
+      repo?.repository_type?.toLowerCase().includes(term) ||
+      repo?.storage_name?.toLowerCase().includes(term),
   );
 });
 
@@ -251,20 +273,14 @@ function formatBytes(bytes?: number | null): string {
   if (bytes === null || bytes === undefined) {
     return "—";
   }
-  if (bytes === 0) {
-    return "0 B";
-  }
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / Math.pow(1024, exponent);
-  return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+  return formatBytesUtil(bytes);
 }
 
 // Navigate to repository
 function navigateToRepository(repo: RepositoryWithStorageName) {
   router.push({
-    name: 'Browse',
-    params: { id: repo.id, catchAll: '' }
+    name: "Browse",
+    params: { id: repo.id, catchAll: "" },
   });
 }
 
@@ -285,8 +301,35 @@ async function getRepositories() {
 
 onMounted(getRepositories);
 
-function clearSearchTerm() {
-  searchTerm.value = "";
+async function fetchPackages(query: string) {
+  try {
+    const { data } = await http.get<PackageSearchResponse[]>("/api/search/packages", {
+      params: { q: query, limit: 25 },
+    });
+    packageResults.value = data.map((item) => ({
+      repositoryId: item.repository_id,
+      repositoryName: item.repository_name,
+      storageName: item.storage_name,
+      repositoryType: item.repository_type,
+      fileName: item.file_name,
+      cachePath: item.cache_path,
+      size: item.size,
+      modified: item.modified,
+    }));
+  } catch (err) {
+    console.error(err);
+    packageError.value = "Failed to search packages";
+  } finally {
+    packageLoading.value = false;
+  }
+}
+
+function openPackage(pkg: PackageResult) {
+  const parentPath = pkg.cachePath.split("/").slice(0, -1).join("/");
+  router.push({
+    name: "Browse",
+    params: { id: pkg.repositoryId, catchAll: parentPath },
+  });
 }
 </script>
 
@@ -314,4 +357,5 @@ function clearSearchTerm() {
 :deep(.v-card--hover) {
   cursor: pointer;
 }
+
 </style>

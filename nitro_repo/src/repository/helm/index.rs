@@ -37,7 +37,6 @@ impl IndexEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexUrlMode {
     Http,
-    Hybrid,
     Oci,
 }
 
@@ -326,7 +325,7 @@ mod tests {
         let config = IndexRenderConfig {
             http_base_url: "https://nitro.example.com/repositories/default/helm-project",
             include_charts_prefix: true,
-            mode: IndexUrlMode::Hybrid,
+            mode: IndexUrlMode::Http,
         };
         let urls = vec![config.chart_download_url(&metadata.name, &metadata.version.to_string())];
         let entry = IndexEntry::new(

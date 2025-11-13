@@ -79,7 +79,7 @@ When reviewing or writing code, check for:
 4. **Refactor**: Clean up while keeping tests green
 5. **Verify**: Run full test suite + fmt + dev.sh
 6. **Document**: Ensure code is self-documenting with clear names and necessary comments
-7. **Memorize**: This project uses bd (beads) for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+7. **Memorize**: Add prompts for bigger features/bug fixes and summary of your work into @history/MEMORY.md for future reference
 
 
 ## Red Flags to Avoid
@@ -110,31 +110,3 @@ Quality is not negotiable. Speed is achieved through discipline, not shortcuts. 
 - logs are available with `docker compose logs nitro_repo`
 - extensive debugging with traces is available in jaeger, being available at http://localhost:16686, check @docker-compose.dev.yml
 - in case something is needed inside running service container, use `docker compose exec`
-
-## Tasks management
-
-IMPORTANT for AI agents: When you finish making issue changes, always run:
-```
-bd sync
-```
-
-### Workflow for AI Agents
-
-Check ready work: `bd ready` shows unblocked issues
-Claim your task: `bd update <id> --status in_progress`
-Work on it: Implement, test, document
-Discover new work? Create linked issue:
-`bd create "Found bug" -p 1 --deps discovered-from:<parent-id>`
-Complete: `bd close <id> --reason "Done"`
-
-### Important Rules
-
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ✅ Store AI planning docs in `history/` directory
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
-- ❌ Do NOT duplicate tracking systems
-- ❌ Do NOT clutter repo root with planning documents

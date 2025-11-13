@@ -32,7 +32,7 @@ cd "$WORKSPACE/test-module"
 
 # Test 1: Create module archive
 print_test "Create Go module archive (${VERSION_1})"
-if zip -r "$WORKSPACE/${MODULE_NAME//\//-}-${VERSION_1}.zip" . > /dev/null 2>&1; then
+if run_cmd zip -r "$WORKSPACE/${MODULE_NAME//\//-}-${VERSION_1}.zip" .; then
     pass
 else
     fail "Failed to create module archive"
@@ -98,8 +98,10 @@ print_test "Fetch version list"
 LIST_PATH="/repositories/${GO_HOSTED_REPO}/${MODULE_NAME}/@v/list"
 
 VERSIONS=$(curl -sf "${NITRO_URL}${LIST_PATH}" || echo "")
+record_output "$VERSIONS"
 
 if echo "$VERSIONS" | grep -q "${VERSION_1}"; then
+    clear_last_log
     pass
 else
     fail "Version not in list"
@@ -163,7 +165,7 @@ func main() {
 }
 EOF
 
-if go mod download > /dev/null 2>&1; then
+if run_cmd go mod download; then
     pass
 else
     fail "Failed to download module via GOPROXY"
@@ -171,9 +173,11 @@ fi
 
 # Test 10: Build and run consumer
 print_test "Build and run consumer application"
-if go build -o consumer > /dev/null 2>&1 && [ -f "consumer" ]; then
+if run_cmd go build -o consumer && [ -f "consumer" ]; then
     OUTPUT=$(./consumer)
+    record_output "$OUTPUT"
     if echo "$OUTPUT" | grep -q "Hello, World!" && echo "$OUTPUT" | grep -q "${VERSION_1}"; then
+        clear_last_log
         pass
     else
         fail "Consumer output incorrect"
@@ -189,7 +193,9 @@ cd "$WORKSPACE/test-module"
 # Update version in code
 sed -i "s/${VERSION_1}/${VERSION_2}/g" greeter.go
 
-zip -r "$WORKSPACE/${MODULE_NAME//\//-}-${VERSION_2}.zip" . > /dev/null 2>&1
+if ! run_cmd zip -r "$WORKSPACE/${MODULE_NAME//\//-}-${VERSION_2}.zip" .; then
+    fail "Failed to create module archive for ${VERSION_2}"
+fi
 
 UPLOAD_PATH_V2="/repositories/${GO_HOSTED_REPO}/${MODULE_NAME}/@v/${VERSION_2}.zip"
 
@@ -206,9 +212,11 @@ fi
 
 # Test 12: Verify both versions in list
 print_test "Verify both versions in list"
-VERSIONS=$(curl -sf "${NITRO_URL}${LIST_PATH}")
+VERSIONS=$(curl -sf "${NITRO_URL}${LIST_PATH}" || echo "")
+record_output "$VERSIONS"
 
 if echo "$VERSIONS" | grep -q "${VERSION_1}" && echo "$VERSIONS" | grep -q "${VERSION_2}"; then
+    clear_last_log
     pass
 else
     fail "Both versions not in list"
@@ -231,7 +239,7 @@ go 1.21
 require github.com/fatih/color v1.16.0
 EOF
 
-if go mod download > /dev/null 2>&1; then
+if run_cmd go mod download; then
     pass
 else
     fail "Failed to proxy module from golang.org"
@@ -251,7 +259,7 @@ go 1.21
 require github.com/fatih/color v1.16.0
 EOF
 
-if go mod download > /dev/null 2>&1; then
+if run_cmd go mod download; then
     pass
 else
     fail "Failed to retrieve cached module"

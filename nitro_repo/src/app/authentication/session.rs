@@ -1,7 +1,6 @@
 use std::{
     fmt::Debug,
-    fs,
-    io,
+    fs, io,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -10,7 +9,9 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Duration, FixedOffset, Local};
 use http::StatusCode;
 use rand::{Rng, SeedableRng, distr::Alphanumeric, rngs::StdRng};
-use redb::{CommitError, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use redb::{
+    CommitError, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -167,10 +168,7 @@ impl Debug for SessionManager {
     }
 }
 impl SessionManager {
-    pub fn new(
-        session_config: SessionManagerConfig,
-        mode: Mode,
-    ) -> Result<Self, SessionError> {
+    pub fn new(session_config: SessionManagerConfig, mode: Mode) -> Result<Self, SessionError> {
         if let Some(parent) = session_config.database_location.parent() {
             fs::create_dir_all(parent)?;
         }

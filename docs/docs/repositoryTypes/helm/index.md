@@ -2,8 +2,7 @@
 
 Nitro Repo delivers first-class Helm repository hosting with support for both classic HTTP chart clients and the OCI-based workflows introduced in Helm v3. Create a Helm repository from the Admin UI and choose the repository mode that matches your deployment:
 
-- **Hybrid (default)** – exposes HTTP endpoints (`index.yaml`, chart downloads) and an OCI registry simultaneously. Uploading a chart via either protocol keeps both surfaces in sync.
-- **HTTP** – behaves like a traditional chart repository (`helm repo add`, `helm install`).
+- **HTTP (default)** – behaves like a traditional chart repository (`helm repo add`, `helm install`).
 - **OCI** – exposes only the distribution-spec API (`helm push`, `helm pull`).
 
 ## Configuration
@@ -39,7 +38,7 @@ helm push webapp-1.0.0.tgz oci://nitro.example.com/repositories/default/helm
 helm push webapp-1.0.0.tgz oci://nitro.example.com/default/helm
 ```
 
-Hybrid repositories automatically mirror uploads between the HTTP and OCI layouts, keeping package metadata and the rendered index synchronized.
+HTTP and OCI modes operate independently—Nitro no longer mirrors uploads between the two protocols.
 
 > **Tip:** The OCI URL path is translated by Nitro so either `oci://nitro/repositories/<storage>/<repo>` or `oci://nitro/<storage>/<repo>` resolves to the same repository.
 

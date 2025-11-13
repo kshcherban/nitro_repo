@@ -8,4 +8,4 @@ artipie/
 *.png
 .claude/
 charts/nitro-repo/charts
-charts/**/*.tgz
+*.tgz

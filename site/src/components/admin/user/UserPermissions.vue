@@ -92,7 +92,7 @@ import SwitchInput from "@/components/form/SwitchInput.vue";
 import http from "@/http";
 import { type UserResponseType } from "@/types/base";
 import { RepositoryActionsType } from "@/types/user";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { computed, ref, watch, type PropType } from "vue";
 
 const props = defineProps({
@@ -101,6 +101,7 @@ const props = defineProps({
     required: true,
   },
 });
+const alerts = useAlertsStore();
 const hasChanged = computed(() => {
   if (userPermissions.value.admin !== props.user.admin) {
     return true;
@@ -131,26 +132,16 @@ async function save() {
     default_repository_actions: userPermissions.value.default_repository_permissions.asArray(),
   };
   console.log(`Saving: ${JSON.stringify(newPermissions)}`);
-  await http
-    .put(`/api/user-management/update/${props.user.id}/permissions`, newPermissions)
-    .then(() => {
-      notify({
-        type: "success",
-        title: "Permissions Saved",
-        text: "Permissions have been saved.",
-      });
-    })
-    .catch((error) => {
-      let text = "An error occurred while saving permissions.";
-      if (error.response.data) {
-        text = error.response.data;
-      }
-      notify({
-        type: "error",
-        title: "Error Saving Permissions",
-        text: text,
-      });
-    });
+  try {
+    await http.put(`/api/user-management/update/${props.user.id}/permissions`, newPermissions);
+    alerts.success("Permissions saved", "Permissions have been saved.");
+  } catch (error: any) {
+    let text = "An error occurred while saving permissions.";
+    if (error?.response?.data) {
+      text = error.response.data;
+    }
+    alerts.error("Error saving permissions", text);
+  }
 }
 </script>
 <style lang="scss" scoped>

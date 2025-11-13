@@ -212,7 +212,7 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO repository_configs (repository_id, key, value) VALUES
-    ('77777777-0000-0000-0000-000000000001'::uuid, 'helm', '{"mode": "hybrid", "overwrite": false, "max_chart_size": 10485760, "max_file_count": 1028, "index_cache_ttl": 300, "public_base_url": null}'::jsonb),
+    ('77777777-0000-0000-0000-000000000001'::uuid, 'helm', '{"mode": "http", "overwrite": false, "max_chart_size": 10485760, "max_file_count": 1028, "index_cache_ttl": 300, "public_base_url": null}'::jsonb),
     ('77777777-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 

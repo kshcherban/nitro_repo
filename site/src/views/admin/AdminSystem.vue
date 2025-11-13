@@ -14,7 +14,7 @@ import type {
   OAuth2ProviderKind,
   SsoConfiguration,
 } from "@/types/base";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { computed, onMounted, ref, watch } from "vue";
 import { isAxiosError } from "axios";
 
@@ -93,6 +93,8 @@ const oauthForm = ref<EditableOAuthConfiguration>(defaultOAuthForm());
 const oauthInitialSignature = ref(JSON.stringify(oauthForm.value));
 const availableRoles = ref<string[]>([]);
 const roleOptionsId = "nitro-role-options";
+
+const alerts = useAlertsStore();
 
 const providerConfigured = computed(() => ssoForm.value.provider_login_url.trim().length > 0);
 const hasSsoChanges = computed(
@@ -207,10 +209,7 @@ async function saveSsoSettings() {
 
   try {
     await http.put("/api/security/sso", payload);
-    notify({
-      type: "success",
-      title: "SSO settings updated",
-    });
+    alerts.success("SSO settings updated");
     ssoForm.value = toSsoEditable(payload);
     ssoInitialSignature.value = JSON.stringify(toSsoPayload(ssoForm.value));
     await site.getInfo();
@@ -274,10 +273,7 @@ async function saveOAuthSettings() {
 
   try {
     await http.put("/api/security/oauth2", payload);
-    notify({
-      type: "success",
-      title: "OAuth2 settings updated",
-    });
+    alerts.success("OAuth2 settings updated");
     await fetchOAuthSettings();
     await site.getInfo();
   } catch (error: any) {

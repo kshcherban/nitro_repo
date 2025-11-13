@@ -3,10 +3,22 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RepositoryAuthConfig {
-    #[serde(default)]
+    #[serde(default = "RepositoryAuthConfig::enabled_default")]
     pub enabled: bool,
+}
+
+impl Default for RepositoryAuthConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl RepositoryAuthConfig {
+    const fn enabled_default() -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -56,9 +68,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_auth_config_is_disabled() {
+    fn default_auth_config_is_enabled() {
         let default = RepositoryAuthConfigType.default().expect("default config");
         let value: RepositoryAuthConfig = serde_json::from_value(default).expect("serde");
-        assert!(!value.enabled, "auth should be disabled by default");
+        assert!(value.enabled, "auth should be enabled by default");
     }
 }

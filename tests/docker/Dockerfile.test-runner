@@ -10,15 +10,14 @@ RUN apt-get update && apt-get install -y \
     wget \
     git \
     jq \
+    zip \
     unzip \
     ca-certificates \
     gnupg \
     lsb-release \
     software-properties-common \
+    openjdk-11-jdk \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Java (required for Maven)
-RUN apt-get update && apt-get install -y openjdk-11-jdk && rm -rf /var/lib/apt/lists/*
 
 # Install Maven 3.9.6 (for HTTP headers support needed for Bearer token auth)
 RUN wget https://archive.apache.org/dist/maven/maven-3/3.9.6/binaries/apache-maven-3.9.6-bin.tar.gz \

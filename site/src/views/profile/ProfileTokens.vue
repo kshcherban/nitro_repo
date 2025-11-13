@@ -106,7 +106,7 @@
 import http from "@/http";
 import { sessionStore } from "@/stores/session";
 import { type RawAuthTokenFullResponse } from "@/types/user/token";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { ref } from "vue";
 
 const session = sessionStore();
@@ -114,6 +114,7 @@ const user = session.user;
 const authTokens = ref<Array<RawAuthTokenFullResponse>>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
+const alerts = useAlertsStore();
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString();
@@ -126,19 +127,11 @@ function formatDateTime(iso: string): string {
 async function deleteToken(id: number) {
   try {
     await http.delete(`/api/user/token/delete/${id}`);
-    notify({
-      type: "success",
-      title: "Token deleted",
-      text: "The token was removed successfully.",
-    });
+    alerts.success("Token deleted", "The token was removed successfully.");
     await getAuthTokens();
   } catch (err) {
     console.error(err);
-    notify({
-      type: "error",
-      title: "Failed to delete token",
-      text: "An unexpected error occurred.",
-    });
+    alerts.error("Failed to delete token", "An unexpected error occurred.");
   }
 }
 

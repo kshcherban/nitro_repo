@@ -98,6 +98,7 @@ impl DBProjectVersion {
         let versions =
             SelectQueryBuilder::with_columns(DBProjectVersion::table_name(), Self::columns())
                 .filter(DBProjectVersionColumn::ProjectId.equals(project_id.value()))
+                .order_by(DBProjectVersionColumn::CreatedAt, SQLOrder::Descending)
                 .query_as()
                 .fetch_all(database)
                 .await?;

@@ -37,14 +37,9 @@ const isOpen = computed(() => {
     padding-left: 1rem;
   }
 }
-.subBar[data-is-open="false"] {
-  display: none;
-}
-
-.subBar[data-is-open="true"] {
-  display: block;
-}
-.subBarParent:hover .subBar {
-  display: block;
+@media (prefers-reduced-motion: no-preference) {
+  .subBar {
+    transition: max-height 0.2s ease, opacity 0.2s ease;
+  }
 }
 </style>

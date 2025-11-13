@@ -8,7 +8,6 @@ use serde_json::Value;
 pub enum HelmRepositoryMode {
     Http,
     Oci,
-    Hybrid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -29,7 +28,7 @@ pub struct HelmRepositoryConfig {
 
 impl HelmRepositoryMode {
     fn default_mode() -> Self {
-        HelmRepositoryMode::Hybrid
+        HelmRepositoryMode::Http
     }
 }
 
@@ -38,7 +37,7 @@ impl Default for HelmRepositoryConfig {
         Self {
             overwrite: false,
             index_cache_ttl: Some(300),
-            mode: HelmRepositoryMode::Hybrid,
+            mode: HelmRepositoryMode::Http,
             public_base_url: None,
             max_chart_size: Some(10 * 1024 * 1024),
             max_file_count: Some(1024),
@@ -130,7 +129,7 @@ mod tests {
         let default_value = config_type.default().expect("default config should build");
         let parsed: HelmRepositoryConfig = serde_json::from_value(default_value).unwrap();
         assert!(!parsed.overwrite);
-        assert_eq!(parsed.mode, HelmRepositoryMode::Hybrid);
+        assert_eq!(parsed.mode, HelmRepositoryMode::Http);
         assert_eq!(parsed.max_chart_size, Some(10 * 1024 * 1024));
         assert_eq!(parsed.max_file_count, Some(1024));
     }
@@ -140,14 +139,14 @@ mod tests {
         let config_type = HelmRepositoryConfigType;
         let valid = json!({
             "overwrite": true,
-            "mode": "hybrid",
+            "mode": "http",
             "public_base_url": "https://charts.example.com/helm",
             "max_chart_size": 20971520
         });
         assert!(config_type.validate_config(valid).is_ok());
 
         let invalid = json!({
-            "mode": "hybrid",
+            "mode": "http",
             "public_base_url": "not a url"
         });
         assert!(config_type.validate_config(invalid).is_err());
@@ -161,5 +160,13 @@ mod tests {
             "max_file_count": -10
         });
         assert!(config_type.validate_config(invalid).is_err());
+    }
+
+    #[test]
+    fn rejects_hybrid_mode_config() {
+        let err = serde_json::from_value::<HelmRepositoryConfig>(json!({
+            "mode": "hybrid"
+        }));
+        assert!(err.is_err(), "hybrid mode should no longer deserialize");
     }
 }

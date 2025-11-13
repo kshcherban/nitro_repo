@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     app::NitroRepo,
     error::InternalError,
-    repository::{Repository, docker::metadata::collect_manifest_entries},
+    repository::{DynRepository, Repository, docker::metadata::collect_manifest_entries},
     utils::ResponseBuilder,
 };
 
@@ -48,7 +48,7 @@ struct PackageSearchQuery {
 
 #[derive(Debug, Clone, Copy)]
 enum SearchStrategy {
-    PackagesDirectory,
+    PackagesDirectory { base: Option<&'static str> },
     Docker,
     GoModules,
     Database,
@@ -58,13 +58,39 @@ const fn default_limit() -> usize {
     25
 }
 
-fn determine_search_strategy(repository_type: &str) -> Option<SearchStrategy> {
-    match repository_type.to_lowercase().as_str() {
-        "python" | "npm" | "php" => Some(SearchStrategy::PackagesDirectory),
-        "docker" => Some(SearchStrategy::Docker),
-        "go" => Some(SearchStrategy::GoModules),
-        "helm" | "maven" => Some(SearchStrategy::Database),
-        _ => None,
+fn determine_search_strategy(repository: &DynRepository) -> Option<SearchStrategy> {
+    match repository {
+        DynRepository::Python(inner) => match inner {
+            crate::repository::python::PythonRepository::Hosted(_) => {
+                Some(SearchStrategy::PackagesDirectory { base: None })
+            }
+            _ => Some(SearchStrategy::PackagesDirectory {
+                base: Some("packages"),
+            }),
+        },
+        DynRepository::NPM(inner) => match inner {
+            crate::repository::npm::NPMRegistry::Hosted(_) => {
+                Some(SearchStrategy::PackagesDirectory { base: None })
+            }
+            crate::repository::npm::NPMRegistry::Proxy(_) => {
+                Some(SearchStrategy::PackagesDirectory {
+                    base: Some("packages"),
+                })
+            }
+        },
+        DynRepository::Php(_) => Some(SearchStrategy::PackagesDirectory {
+            base: Some("packages"),
+        }),
+        DynRepository::Docker(_) => Some(SearchStrategy::Docker),
+        DynRepository::Go(inner) => match inner {
+            crate::repository::go::GoRepository::Hosted(_) => Some(SearchStrategy::GoModules),
+            crate::repository::go::GoRepository::Proxy(_) => {
+                Some(SearchStrategy::PackagesDirectory {
+                    base: Some("packages"),
+                })
+            }
+        },
+        DynRepository::Helm(_) | DynRepository::Maven(_) => Some(SearchStrategy::Database),
     }
 }
 
@@ -121,8 +147,7 @@ async fn search_packages(
             break;
         }
 
-        let repo_type = repository.get_type();
-        let Some(strategy) = determine_search_strategy(repo_type) else {
+        let Some(strategy) = determine_search_strategy(&repository) else {
             continue;
         };
 
@@ -182,8 +207,8 @@ async fn search_repository_storage(
     limit: usize,
 ) -> Result<Vec<PackageSearchResult>, InternalError> {
     match strategy {
-        SearchStrategy::PackagesDirectory => {
-            search_packages_directory(storage, summary, query, limit).await
+        SearchStrategy::PackagesDirectory { base } => {
+            search_packages_directory(storage, summary, base, query, limit).await
         }
         SearchStrategy::Docker => search_docker_manifests(storage, summary, query, limit).await,
         SearchStrategy::GoModules | SearchStrategy::Database => unreachable!(
@@ -195,6 +220,7 @@ async fn search_repository_storage(
 async fn search_packages_directory(
     storage: &DynStorage,
     summary: &RepositorySummary,
+    base: Option<&str>,
     query: &SearchQuery,
     limit: usize,
 ) -> Result<Vec<PackageSearchResult>, InternalError> {
@@ -202,13 +228,21 @@ async fn search_packages_directory(
         return Ok(Vec::new());
     }
     let mut matches = Vec::new();
-    let mut stack = vec!["packages".to_string()];
+    let mut stack = Vec::new();
+    match base {
+        Some(dir) if !dir.is_empty() => stack.push(dir.trim_matches('/').to_string()),
+        _ => stack.push(String::new()),
+    }
 
     while let Some(directory) = stack.pop() {
         if matches.len() >= limit {
             break;
         }
-        let storage_path = StoragePath::from(format!("{directory}/"));
+        let storage_path = if directory.is_empty() {
+            StoragePath::from("/")
+        } else {
+            StoragePath::from(format!("{directory}/"))
+        };
         let Some(entry) = storage
             .open_file(summary.repository_id, &storage_path)
             .await?
@@ -409,24 +443,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn determine_search_strategy_includes_database_repos() {
-        let result = super::determine_search_strategy("maven");
-        assert!(matches!(result, Some(SearchStrategy::Database)));
-    }
-
-    #[test]
-    fn determine_search_strategy_includes_go_modules() {
-        let result = super::determine_search_strategy("go");
-        assert!(matches!(result, Some(SearchStrategy::GoModules)));
-    }
-
-    #[test]
-    fn determine_search_strategy_supports_php() {
-        let result = super::determine_search_strategy("php");
-        assert!(matches!(result, Some(SearchStrategy::PackagesDirectory)));
-    }
-
     #[tokio::test]
     async fn search_repository_storage_finds_packages() {
         let storage = test_storage().await;
@@ -452,7 +468,9 @@ mod tests {
         let results = super::search_repository_storage(
             &storage,
             &summary,
-            SearchStrategy::PackagesDirectory,
+            SearchStrategy::PackagesDirectory {
+                base: Some("packages"),
+            },
             &simple_query("parallel"),
             10,
         )
@@ -460,6 +478,39 @@ mod tests {
         .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_name, "parallel_ssh-2.12.0-py3-none-any.whl");
+    }
+
+    #[tokio::test]
+    async fn search_repository_storage_handles_root_packages() {
+        let storage = test_storage().await;
+        let repo_id = Uuid::new_v4();
+        let path = StoragePath::from("left-pad/1.0.0/package.tgz");
+        storage
+            .save_file(
+                repo_id,
+                FileContent::Bytes(Bytes::from_static(b"data")),
+                &path,
+            )
+            .await
+            .unwrap();
+        let summary = RepositorySummary {
+            repository_id: repo_id,
+            repository_name: "npm-hosted".into(),
+            storage_name: "test".into(),
+            repository_type: "npm".into(),
+        };
+
+        let results = super::search_repository_storage(
+            &storage,
+            &summary,
+            SearchStrategy::PackagesDirectory { base: None },
+            &simple_query("left-pad"),
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].cache_path, "left-pad/1.0.0/package.tgz");
     }
 
     #[tokio::test]
@@ -495,7 +546,9 @@ mod tests {
         let results = super::search_repository_storage(
             &storage,
             &summary,
-            SearchStrategy::PackagesDirectory,
+            SearchStrategy::PackagesDirectory {
+                base: Some("packages"),
+            },
             &simple_query("artifact"),
             10,
         )
@@ -530,7 +583,9 @@ mod tests {
         let results = super::search_repository_storage(
             &storage,
             &summary,
-            SearchStrategy::PackagesDirectory,
+            SearchStrategy::PackagesDirectory {
+                base: Some("packages"),
+            },
             &simple_query("package"),
             2,
         )

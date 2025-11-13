@@ -3,7 +3,6 @@ services:
     volumes:
       - ./target/debug/nitro_repo:/app/nitro_repo:ro
     environment:
-      - RUST_LOG=sqlx::query=trace,nitro_repo=debug
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=nitro-repo
       - NITRO_TRACING_ENABLED=true

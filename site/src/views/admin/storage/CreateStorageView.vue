@@ -53,7 +53,7 @@ import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
 import { getStorageType, storageTypes } from "@/components/nr/storage/storageTypes";
 import http from "@/http";
 import router from "@/router";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { computed, ref, watch } from "vue";
 import { isAxiosError } from "axios";
 const input = ref({
@@ -75,6 +75,7 @@ const errorBanner = ref({
   title: "",
   message: "",
 });
+const alerts = useAlertsStore();
 
 const resetError = () => {
   errorBanner.value.visible = false;
@@ -100,27 +101,23 @@ async function createStorage() {
   };
 
   resetError();
-  await http
-    .post(`/api/storage/new/${input.value.storageType}`, data)
-    .then((response) => {
-      console.log(response);
-      notify({
-        type: "success",
-        title: "Storage Created",
-        text: "The storage has been created.",
-      });
-      router.push({
-        name: "ViewStorage",
-        params: { id: response.data.id },
-      });
-    })
-    .catch((err) => {
-      const resolved = resolveStorageError(err);
-      errorBanner.value.visible = true;
-      errorBanner.value.title = resolved.title;
-      errorBanner.value.message = resolved.message;
-      console.error(resolved.debugMessage);
+  const alerts = useAlertsStore();
+  try {
+    const response = await http.post(`/api/storage/new/${input.value.storageType}`, data);
+    console.log(response);
+    alerts.success("Storage created", "The storage has been created.");
+    router.push({
+      name: "ViewStorage",
+      params: { id: response.data.id },
     });
+  } catch (err) {
+    const resolved = resolveStorageError(err);
+    errorBanner.value.visible = true;
+    errorBanner.value.title = resolved.title;
+    errorBanner.value.message = resolved.message;
+    console.error(resolved.debugMessage);
+    alerts.error(resolved.title, resolved.message);
+  }
 }
 
 function resolveStorageError(error: unknown): {

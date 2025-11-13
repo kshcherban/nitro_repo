@@ -25,8 +25,48 @@ allow_basic_without_tokens = false
 [log.levels]
 default = "Debug"
 
+[log.loggers.console]
+type = "Console"
+
+[log.loggers.console.config]
+pretty = false
+include_time = true
+include_level = true
+include_line_numbers = false
+include_file = false
+include_target = true
+ansi_color = true
+include_thread_ids = false
+include_thread_names = false
+
 [log.loggers.console.config.levels]
 default = "Debug"
 
+[log.loggers.console.config.levels.others]
+
+[log.loggers.file]
+type = "RollingFile"
+
+[log.loggers.file.config]
+path = "/storage"
+file_prefix = "nitro-repo.log"
+interval = "Daily"
+include_time = true
+include_level = true
+include_line_numbers = false
+include_file = false
+include_target = true
+ansi_color = false
+include_thread_ids = false
+include_thread_names = false
+
 [log.loggers.file.config.levels]
 default = "Debug"
+
+[log.loggers.file.config.levels.others]
+
+[log.levels.others]
+nitro_repo = "Debug"
+nr_core = "Debug"
+nr_storage = "Debug"
+sqlx = "Debug"

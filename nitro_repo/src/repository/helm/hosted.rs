@@ -33,7 +33,6 @@ use nr_core::{
 use nr_storage::{DynStorage, FileContent, Storage};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tracing::instrument;
@@ -47,7 +46,6 @@ use super::{
     },
     configs::{HelmRepositoryConfig, HelmRepositoryConfigType, HelmRepositoryMode},
     index::{IndexEntry, IndexRenderConfig, IndexUrlMode, render_index_yaml},
-    oci::{HelmOciManifestInput, build_helm_manifest},
     types::HelmChartVersionExtra,
 };
 use crate::{
@@ -232,110 +230,6 @@ fn parse_chart_artifact(path: &StoragePath) -> Option<ChartArtifactPath> {
     })
 }
 
-#[derive(Debug, Clone)]
-struct HybridOciArtifacts {
-    repository: String,
-    config_bytes: Vec<u8>,
-    config_digest: String,
-    manifest_bytes: Vec<u8>,
-    manifest_digest: String,
-}
-
-fn build_oci_config(metadata: &super::chart::HelmChartMetadata) -> JsonValue {
-    let mut map = JsonMap::new();
-    map.insert("name".into(), JsonValue::String(metadata.name.clone()));
-    map.insert(
-        "version".into(),
-        JsonValue::String(metadata.version.to_string()),
-    );
-    if let Some(description) = &metadata.description {
-        map.insert("description".into(), JsonValue::String(description.clone()));
-    }
-    if let Some(home) = &metadata.home {
-        map.insert("home".into(), JsonValue::String(home.clone()));
-    }
-    if let Some(icon) = &metadata.icon {
-        map.insert("icon".into(), JsonValue::String(icon.clone()));
-    }
-    if let Some(app_version) = &metadata.app_version {
-        map.insert("appVersion".into(), JsonValue::String(app_version.clone()));
-    }
-    if let Some(kube_version) = &metadata.kube_version {
-        map.insert(
-            "kubeVersion".into(),
-            JsonValue::String(kube_version.clone()),
-        );
-    }
-    if let Some(engine) = &metadata.engine {
-        map.insert("engine".into(), JsonValue::String(engine.clone()));
-    }
-    if let Some(tiller_version) = &metadata.tiller_version {
-        map.insert(
-            "tillerVersion".into(),
-            JsonValue::String(tiller_version.clone()),
-        );
-    }
-    let keywords: Vec<JsonValue> = metadata
-        .keywords
-        .iter()
-        .cloned()
-        .map(JsonValue::String)
-        .collect();
-    if !keywords.is_empty() {
-        map.insert("keywords".into(), JsonValue::Array(keywords));
-    }
-    let sources: Vec<JsonValue> = metadata
-        .sources
-        .iter()
-        .cloned()
-        .map(JsonValue::String)
-        .collect();
-    if !sources.is_empty() {
-        map.insert("sources".into(), JsonValue::Array(sources));
-    }
-    if let Ok(dependencies) = serde_json::to_value(&metadata.dependencies) {
-        if dependencies.is_array() && !dependencies.as_array().unwrap().is_empty() {
-            map.insert("dependencies".into(), dependencies);
-        }
-    }
-    if !metadata.maintainers.is_empty() {
-        let maintainers = metadata
-            .maintainers
-            .iter()
-            .map(|maintainer| {
-                let mut maintainer_map = JsonMap::new();
-                maintainer_map.insert("name".into(), JsonValue::String(maintainer.name.clone()));
-                if let Some(email) = &maintainer.email {
-                    maintainer_map.insert("email".into(), JsonValue::String(email.clone()));
-                }
-                if let Some(url) = &maintainer.url {
-                    maintainer_map.insert("url".into(), JsonValue::String(url.clone()));
-                }
-                JsonValue::Object(maintainer_map)
-            })
-            .collect();
-        map.insert("maintainers".into(), JsonValue::Array(maintainers));
-    }
-    if !metadata.annotations.is_empty() {
-        let mut annotations = JsonMap::new();
-        for (key, value) in &metadata.annotations {
-            annotations.insert(key.clone(), JsonValue::String(value.clone()));
-        }
-        map.insert("annotations".into(), JsonValue::Object(annotations));
-    }
-
-    map.insert(
-        "apiVersion".into(),
-        JsonValue::String(metadata.api_version.as_str().to_string()),
-    );
-    map.insert(
-        "type".into(),
-        JsonValue::String(metadata.chart_type.as_str().to_string()),
-    );
-
-    JsonValue::Object(map)
-}
-
 fn sha256_digest(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("sha256:{:x}", digest)
@@ -406,7 +300,6 @@ impl HelmHosted {
         match self.config().mode {
             HelmRepositoryMode::Http => IndexUrlMode::Http,
             HelmRepositoryMode::Oci => IndexUrlMode::Oci,
-            HelmRepositoryMode::Hybrid => IndexUrlMode::Hybrid,
         }
     }
 
@@ -492,195 +385,17 @@ impl HelmHosted {
         options
     }
 
-    fn prepare_hybrid_oci_artifacts(
-        &self,
-        parsed: &ParsedChartArchive,
-    ) -> Result<HybridOciArtifacts, HelmRepositoryError> {
-        let repository = parsed.metadata.name.clone();
-        let config_value = build_oci_config(&parsed.metadata);
-        let config_bytes = serde_json::to_vec(&config_value)?;
-        let config_digest = sha256_digest(&config_bytes);
-
-        let manifest = build_helm_manifest(HelmOciManifestInput {
-            chart_digest: parsed.digest.clone(),
-            chart_size: parsed.size_bytes,
-            chart_name: parsed.metadata.name.clone(),
-            chart_version: parsed.metadata.version.to_string(),
-            config_digest: config_digest.clone(),
-            config_size: config_bytes.len() as u64,
-        })?;
-
-        let manifest_bytes = serde_json::to_vec(&manifest)?;
-        let manifest_digest = sha256_digest(&manifest_bytes);
-
-        Ok(HybridOciArtifacts {
-            repository,
-            config_bytes,
-            config_digest,
-            manifest_bytes,
-            manifest_digest,
-        })
-    }
-
-    async fn persist_hybrid_oci_artifacts(
-        &self,
-        artifacts: &HybridOciArtifacts,
-        parsed: &ParsedChartArchive,
-    ) -> Result<(), HelmRepositoryError> {
-        let storage = self.storage();
-        let repository_id = self.id();
-        let chart_blob_path = StoragePath::from(format!(
-            "v2/{}/blobs/{}",
-            artifacts.repository, parsed.digest
-        ));
-        storage
-            .save_file(
-                repository_id,
-                FileContent::Bytes(Bytes::from(parsed.archive_bytes.clone())),
-                &chart_blob_path,
-            )
-            .await?;
-
-        let config_blob_path = StoragePath::from(format!(
-            "v2/{}/blobs/{}",
-            artifacts.repository, artifacts.config_digest
-        ));
-        storage
-            .save_file(
-                repository_id,
-                FileContent::Bytes(Bytes::from(artifacts.config_bytes.clone())),
-                &config_blob_path,
-            )
-            .await?;
-
-        let version_tag = parsed.metadata.version.to_string();
-        let manifest_tag_path = StoragePath::from(format!(
-            "v2/{}/manifests/{}",
-            artifacts.repository, version_tag
-        ));
-        storage
-            .save_file(
-                repository_id,
-                FileContent::Bytes(Bytes::from(artifacts.manifest_bytes.clone())),
-                &manifest_tag_path,
-            )
-            .await?;
-
-        let manifest_digest_path = StoragePath::from(format!(
-            "v2/{}/manifests/{}",
-            artifacts.repository, artifacts.manifest_digest
-        ));
-        storage
-            .save_file(
-                repository_id,
-                FileContent::Bytes(Bytes::from(artifacts.manifest_bytes.clone())),
-                &manifest_digest_path,
-            )
-            .await?;
-
-        Ok(())
-    }
-
-    async fn update_version_oci_metadata(
-        &self,
-        chart_name: &str,
-        chart_version: &str,
-        artifacts: &HybridOciArtifacts,
-    ) -> Result<(), HelmRepositoryError> {
-        let db = &self.site().database;
-
-        tracing::debug!(
-            "Looking for project: {} in repository: {}",
-            chart_name,
-            self.id()
-        );
-        let project = DBProject::find_by_project_key(chart_name, self.id(), db).await?;
-
-        if project.is_none() {
-            tracing::debug!("Project not found: {}", chart_name);
-            return Ok(());
-        }
-        let project = project.unwrap();
-
-        tracing::debug!(
-            "Looking for version: {} for project_id: {}",
-            chart_version,
-            project.id
-        );
-        let version_result =
-            DBProjectVersion::find_by_version_and_project(chart_version, project.id, db).await?;
-
-        if version_result.is_none() {
-            tracing::debug!("Version not found: {}@{}", chart_name, chart_version);
-            return Ok(());
-        }
-        let version = version_result.unwrap();
-
-        let mut version_data = version.extra.0;
-        let extra_value = version_data
-            .extra
-            .clone()
-            .ok_or_else(|| HelmRepositoryError::InvalidRequest("missing chart metadata".into()))?;
-        let mut stored: HelmChartVersionExtra = serde_json::from_value(extra_value)?;
-        stored.oci_manifest_digest = Some(artifacts.manifest_digest.clone());
-        stored.oci_config_digest = Some(artifacts.config_digest.clone());
-        stored.oci_repository = Some(artifacts.repository.clone());
-        version_data.extra = Some(serde_json::to_value(stored)?);
-
-        let update = UpdateProjectVersion {
-            release_type: None,
-            publisher: None,
-            version_page: None,
-            extra: Some(version_data),
-        };
-        tracing::debug!(
-            "Updating OCI metadata for chart {}@{}, version_id: {:?}",
-            chart_name,
-            chart_version,
-            version.id
-        );
-
-        // Log the JSON data we're trying to save
-        if let Some(ref extra_data) = update.extra {
-            tracing::debug!(
-                "VersionData.extra content: {}",
-                serde_json::to_string_pretty(&extra_data)
-                    .unwrap_or_else(|_| "Invalid JSON".to_string())
-            );
-        }
-
-        if let Err(err) = update.update(version.id, db).await {
-            tracing::error!(
-                "Failed to update OCI metadata for chart {}@{}, error: {:?}",
-                chart_name,
-                chart_version,
-                err
-            );
-            return Err(HelmRepositoryError::InvalidRequest(format!(
-                "Failed to update OCI metadata: {}",
-                err
-            )));
-        }
-        Ok(())
-    }
-
     fn invalidate_index_cache(&self) {
         let mut cache = self.0.index_cache.write();
         cache.take();
     }
 
     fn http_enabled(&self) -> bool {
-        matches!(
-            self.config().mode,
-            HelmRepositoryMode::Http | HelmRepositoryMode::Hybrid
-        )
+        matches!(self.config().mode, HelmRepositoryMode::Http)
     }
 
     fn oci_enabled(&self) -> bool {
-        matches!(
-            self.config().mode,
-            HelmRepositoryMode::Oci | HelmRepositoryMode::Hybrid
-        )
+        matches!(self.config().mode, HelmRepositoryMode::Oci)
     }
 
     async fn with_docker_repo<F, Fut>(
@@ -1179,13 +894,6 @@ impl HelmHosted {
 
         let parsed = parse_chart_archive(bytes.as_ref(), &validation_options)?;
 
-        let hybrid_plan =
-            if self.oci_enabled() && matches!(self.config().mode, HelmRepositoryMode::Hybrid) {
-                Some(self.prepare_hybrid_oci_artifacts(&parsed)?)
-            } else {
-                None
-            };
-
         if parsed.metadata.name != artifact.name {
             return Err(HelmRepositoryError::InvalidRequest(format!(
                 "chart name mismatch: archive declares '{}' but path expects '{}'",
@@ -1219,19 +927,6 @@ impl HelmHosted {
         }
 
         let created = persist_result?;
-
-        if let Some(artifacts) = &hybrid_plan {
-            self.persist_hybrid_oci_artifacts(artifacts, &parsed)
-                .await?;
-            // TODO: Fix OCI metadata update SQL syntax error (pg_extended_sqlx_queries issue)
-            tracing::debug!(
-                "Skipping OCI metadata update for chart {}@{} due to known SQL issue",
-                parsed.metadata.name,
-                artifact.version
-            );
-            // self.update_version_oci_metadata(&parsed.metadata.name, &artifact.version, artifacts)
-            //     .await?;
-        }
 
         self.invalidate_index_cache();
 
@@ -1346,16 +1041,15 @@ impl HelmHosted {
                     config_digest
                 ))
             })?;
-        let mut config_bytes = Vec::new();
-        if let StorageFile::File { mut content, .. } = config_file {
-            content
-                .read_to_end(&mut config_bytes)
-                .await
-                .map_err(|err| HelmRepositoryError::InvalidRequest(err.to_string()))?;
-        } else {
-            return Err(HelmRepositoryError::InvalidRequest(
-                "config path refers to directory".to_string(),
-            ));
+        match config_file {
+            StorageFile::File { .. } => {
+                // config blob exists and is stored as a file
+            }
+            _ => {
+                return Err(HelmRepositoryError::InvalidRequest(
+                    "config path refers to directory".to_string(),
+                ));
+            }
         }
 
         let chart_blob_path =
@@ -1408,13 +1102,6 @@ impl HelmHosted {
         }
 
         let manifest_digest = sha256_digest(&manifest_bytes);
-        let artifacts = HybridOciArtifacts {
-            repository: repository_name.clone(),
-            config_bytes,
-            config_digest,
-            manifest_bytes,
-            manifest_digest: manifest_digest.clone(),
-        };
 
         let persist_result = self
             .persist_chart_archive(&parsed, &artifact, &canonical_path, user_id)
@@ -1443,27 +1130,6 @@ impl HelmHosted {
                 return Err(err);
             }
         }
-
-        // TODO: Fix OCI metadata update SQL syntax error (pg_extended_sqlx_queries issue)
-        // For now, skip OCI metadata update to allow chart uploads to succeed
-        tracing::debug!(
-            "Skipping OCI metadata update for chart {}@{} due to known SQL issue",
-            parsed.metadata.name,
-            chart_version
-        );
-        /*
-        if let Err(err) = self
-            .update_version_oci_metadata(&parsed.metadata.name, &chart_version, &artifacts)
-            .await
-        {
-            if self.http_enabled() {
-                let _ = storage.delete_file(self.id(), &canonical_path).await;
-            }
-            self.cleanup_manifest_entries(&repository_name, &reference, &manifest_digest)
-                .await?;
-            return Err(err);
-        }
-        */
 
         self.invalidate_index_cache();
 
@@ -2161,16 +1827,6 @@ mod tests {
     }
 
     #[test]
-    fn oci_config_contains_chart_metadata() {
-        let metadata = sample_metadata();
-        let config = build_oci_config(&metadata);
-        assert_eq!(config["name"].as_str(), Some("webapp"));
-        assert_eq!(config["version"].as_str(), Some("1.0.0"));
-        assert_eq!(config["apiVersion"].as_str(), Some("v2"));
-        assert_eq!(config["type"].as_str(), Some("application"));
-    }
-
-    #[test]
     fn sha256_digest_includes_prefix() {
         let digest = sha256_digest(b"example-bytes");
         assert!(digest.starts_with("sha256:"));
@@ -2213,7 +1869,7 @@ mod tests {
         let config = HelmRepositoryConfig {
             overwrite: false,
             index_cache_ttl: Some(42),
-            mode: HelmRepositoryMode::Hybrid,
+            mode: HelmRepositoryMode::Http,
             public_base_url: None,
             max_chart_size: Some(1_000),
             max_file_count: Some(50),

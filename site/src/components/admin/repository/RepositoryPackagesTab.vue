@@ -136,7 +136,7 @@
 <script setup lang="ts">
 import http from "@/http";
 import { computed, onMounted, ref, watch } from "vue";
-import { notify } from "@kyvg/vue3-notification";
+import { useAlertsStore } from "@/stores/alerts";
 import { useResizableColumns } from "@/composables/useResizableColumns";
 
 interface PackageEntry {
@@ -165,6 +165,7 @@ const isDeleting = ref(false);
 const searchTerm = ref("");
 const pendingDeletionPaths = ref<string[]>([]);
 const pendingDeletionCount = ref(0);
+const alerts = useAlertsStore();
 
 function clearSearch() {
   searchTerm.value = "";
@@ -377,11 +378,7 @@ async function deleteSelected() {
       : isHostedRepository.value
         ? `${count} package(s) removed`
         : `${count} cached package(s) removed`;
-    notify({
-      type: "success",
-      title: successTitle,
-      text: successText,
-    });
+    alerts.success(successTitle, successText);
     pendingDeletionPaths.value = paths;
     pendingDeletionCount.value = paths.length;
     selected.value = [];
@@ -389,11 +386,7 @@ async function deleteSelected() {
   } catch (err: any) {
     console.error(err);
     const message = err?.response?.data?.message ?? err?.message ?? "Failed to delete packages";
-    notify({
-      type: "error",
-      title: "Deletion failed",
-      text: message,
-    });
+    alerts.error("Deletion failed", message);
   } finally {
     isDeleting.value = false;
   }

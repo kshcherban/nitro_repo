@@ -57,6 +57,7 @@ const VAlertStub = defineComponent({
 });
 
 const RepositoryAuthConfig = (await import("@/components/admin/repository/configs/RepositoryAuthConfig.vue")).default;
+const http = (await import("@/http")).default;
 
 function mountHarness() {
   const Harness = defineComponent({
@@ -80,12 +81,39 @@ function mountHarness() {
   });
 }
 
+function mountCreateHarness() {
+  const Harness = defineComponent({
+    components: { RepositoryAuthConfig },
+    template: `<RepositoryAuthConfig />`,
+  });
+
+  return mount(Harness, {
+    global: {
+      stubs: {
+        SwitchInput: SwitchInputStub,
+        "v-card": VCardStub,
+        "v-card-text": VCardTextStub,
+        "v-alert": VAlertStub,
+      },
+    },
+  });
+}
+
 describe("RepositoryAuthConfig", () => {
+  it("enables authentication by default for new repositories", async () => {
+    const wrapper = mountCreateHarness();
+    await flushPromises();
+
+    const toggle = wrapper.getComponent(SwitchInputStub);
+    expect(toggle.props("modelValue")).toBe(true);
+  });
+
   it("does not show success message before user interacts", async () => {
     const wrapper = mountHarness();
     await flushPromises();
 
     expect(wrapper.find('[data-testid="auth-alert"]').exists()).toBe(false);
+    expect(http.put).not.toHaveBeenCalled();
   });
 
   it("shows success message after toggling", async () => {

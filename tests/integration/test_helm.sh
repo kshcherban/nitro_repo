@@ -25,7 +25,7 @@ cd "$WORKSPACE"
 
 # Test 1: Package Helm chart
 print_test "Package Helm chart (${VERSION_1})"
-if helm package test-chart > /dev/null 2>&1; then
+if run_cmd helm package test-chart; then
     CHART_PACKAGE="${CHART_NAME}-${VERSION_1}.tgz"
     if assert_file_exists "$CHART_PACKAGE"; then
         pass
@@ -63,7 +63,9 @@ cd test-chart
 sed -i "s/version: ${VERSION_1}/version: ${VERSION_2}/" Chart.yaml
 cd ..
 
-helm package test-chart > /dev/null 2>&1
+if ! run_cmd helm package test-chart; then
+    fail "Failed to package chart ${VERSION_2}"
+fi
 CHART_PACKAGE_V2="${CHART_NAME}-${VERSION_2}.tgz"
 
 STATUS=$(get_http_status "${NITRO_URL}/repositories/${HELM_HOSTED_REPO}/api/charts" \
@@ -82,9 +84,11 @@ print_test "Fetch index.yaml"
 INDEX_PATH="/repositories/${HELM_HOSTED_REPO}/index.yaml"
 
 INDEX_CONTENT=$(curl -sf "${NITRO_URL}${INDEX_PATH}" || echo "")
+record_output "$INDEX_CONTENT"
 
 if echo "$INDEX_CONTENT" | grep -q "apiVersion: v1" && \
    echo "$INDEX_CONTENT" | grep -q "${CHART_NAME}"; then
+    clear_last_log
     pass
 else
     fail "index.yaml not generated correctly"
@@ -95,6 +99,7 @@ print_test "Verify both versions in index.yaml"
 
 if echo "$INDEX_CONTENT" | grep -q "${VERSION_1}" && \
    echo "$INDEX_CONTENT" | grep -q "${VERSION_2}"; then
+    clear_last_log
     pass
 else
     fail "Both versions not in index"
@@ -104,7 +109,7 @@ fi
 print_test "Add Helm repository"
 REPO_NAME="nitro-test-$(random_string 6)"
 
-if helm repo add "$REPO_NAME" "${NITRO_URL}/repositories/${HELM_HOSTED_REPO}" > /dev/null 2>&1; then
+if run_cmd helm repo add "$REPO_NAME" "${NITRO_URL}/repositories/${HELM_HOSTED_REPO}"; then
     pass
 else
     fail "Failed to add Helm repository"
@@ -112,7 +117,7 @@ fi
 
 # Test 7: Update Helm repository
 print_test "Update Helm repository"
-if helm repo update > /dev/null 2>&1; then
+if run_cmd helm repo update; then
     pass
 else
     fail "Failed to update Helm repository"
@@ -121,8 +126,10 @@ fi
 # Test 8: Search for chart
 print_test "Search for chart in repository"
 SEARCH_RESULT=$(helm search repo "$REPO_NAME/${CHART_NAME}" || echo "")
+record_output "$SEARCH_RESULT"
 
 if echo "$SEARCH_RESULT" | grep -q "${CHART_NAME}"; then
+    clear_last_log
     pass
 else
     fail "Chart not found in search results"
@@ -134,7 +141,7 @@ PULL_DIR="$WORKSPACE/pulled"
 mkdir -p "$PULL_DIR"
 cd "$PULL_DIR"
 
-if helm pull "$REPO_NAME/${CHART_NAME}" --version "${VERSION_1}" > /dev/null 2>&1 && \
+if run_cmd helm pull "$REPO_NAME/${CHART_NAME}" --version "${VERSION_1}" && \
    assert_file_exists "${CHART_NAME}-${VERSION_1}.tgz"; then
     pass
 else
@@ -159,7 +166,7 @@ PULL_DIR_LATEST="$WORKSPACE/pulled-latest"
 mkdir -p "$PULL_DIR_LATEST"
 cd "$PULL_DIR_LATEST"
 
-if helm pull "$REPO_NAME/${CHART_NAME}" > /dev/null 2>&1 && \
+if run_cmd helm pull "$REPO_NAME/${CHART_NAME}" && \
    assert_file_exists "${CHART_NAME}-${VERSION_2}.tgz"; then
     pass
 else

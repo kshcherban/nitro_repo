@@ -11,13 +11,22 @@ vi.mock("vue-router", () => ({
 
 const repositoriesMock = vi.fn().mockResolvedValue([
   {
-    id: 1,
+    id: "repo-1",
     name: "Alpha",
     repository_type: "npm",
     storage_name: "Primary",
     auth_enabled: true,
     storage_usage_bytes: 0,
     active: true,
+  },
+  {
+    id: "repo-2",
+    name: "Bravo",
+    repository_type: "maven",
+    storage_name: "Secondary",
+    auth_enabled: false,
+    storage_usage_bytes: 1024,
+    active: false,
   },
 ]);
 
@@ -29,7 +38,7 @@ vi.mock("@/stores/repositories", () => ({
 
 vi.mock("@/stores/session", () => ({
   sessionStore: () => ({
-    user: { admin: false },
+    user: { admin: true, name: "Commander Shepard" },
   }),
 }));
 
@@ -101,8 +110,13 @@ const VAlertStub = defineComponent({
 });
 
 const VTextFieldStub = defineComponent({
+  inheritAttrs: false,
   props: {
     modelValue: {
+      type: String,
+      default: "",
+    },
+    placeholder: {
       type: String,
       default: "",
     },
@@ -112,11 +126,20 @@ const VTextFieldStub = defineComponent({
     },
   },
   emits: ["update:modelValue", "click:clear"],
+  setup(props, { emit, slots, attrs }) {
+    const onInput = (event: Event) => {
+      emit("update:modelValue", (event.target as HTMLInputElement).value);
+    };
+    const dataTestid = (attrs["data-testid"] as string) ?? "v-text-field-input";
+    return { props, slots, onInput, dataTestid };
+  },
   template: `
     <label class="v-text-field">
       <input
-        :value="modelValue"
-        @input="$emit('update:modelValue', $event.target.value)" />
+        :value="props.modelValue"
+        :placeholder="props.placeholder"
+        :data-testid="dataTestid"
+        @input="onInput" />
       <button
         type="button"
         class="v-text-field__clear"
@@ -149,6 +172,37 @@ const vuetifyStubs = {
 };
 
 describe("HomeView.vue", () => {
+  it("does not render welcome banner for authenticated user", async () => {
+    const wrapper = mount(HomeView, {
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("Welcome back, Commander Shepard");
+    expect(wrapper.text()).not.toContain("Secure Artifacts");
+  });
+
+  it("exposes advanced package search help", async () => {
+    const wrapper = mount(HomeView, {
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get('input[data-testid="repository-search-input"]');
+    expect(input.attributes("placeholder")).toBe("Search packages or repositories");
+
+    const helpButton = wrapper.get('[data-testid="search-help-button"]');
+    await helpButton.trigger("click");
+
+    expect(wrapper.find('[data-testid="search-help-modal"]').exists()).toBe(true);
+  });
+
   it("provides a clearable repository search input", async () => {
     const wrapper = mount(HomeView, {
       global: {
@@ -163,10 +217,10 @@ describe("HomeView.vue", () => {
 
     field.vm.$emit("update:modelValue", "alp");
     await nextTick();
-    expect(wrapper.vm.searchTerm).toBe("alp");
+    expect((wrapper.vm as any).searchValue).toBe("alp");
 
     field.vm.$emit("click:clear");
     await nextTick();
-    expect(wrapper.vm.searchTerm).toBe("");
+    expect((wrapper.vm as any).searchValue).toBe("");
   });
 });

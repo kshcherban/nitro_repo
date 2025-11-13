@@ -59,7 +59,7 @@ describe("HelmConfig.vue", () => {
       data: {
         overwrite: true,
         index_cache_ttl: 600,
-        mode: "hybrid",
+        mode: "http",
         public_base_url: "https://charts.example.com/repo",
         max_chart_size: 10485760,
         max_file_count: 128,
@@ -98,7 +98,7 @@ describe("HelmConfig.vue", () => {
       data: {
         overwrite: false,
         index_cache_ttl: 300,
-        mode: "hybrid",
+        mode: "http",
         public_base_url: null,
         max_chart_size: null,
         max_file_count: null,
@@ -108,7 +108,7 @@ describe("HelmConfig.vue", () => {
       data: {
         overwrite: true,
         index_cache_ttl: 600,
-        mode: "hybrid",
+        mode: "oci",
         public_base_url: "https://charts.example.com/helm",
         max_chart_size: 1024,
         max_file_count: 10,

@@ -126,9 +126,15 @@ impl SearchQuery {
             return true;
         }
         let lowered: Vec<String> = fields.iter().map(|value| value.to_lowercase()).collect();
+        let comparator: Box<dyn Fn(&String, &String) -> bool> = if self.has_filters() {
+            Box::new(|value, term| value.contains(term))
+        } else {
+            Box::new(|value, term| value == term)
+        };
+
         self.terms
             .iter()
-            .all(|term| lowered.iter().any(|value| value.contains(term)))
+            .all(|term| lowered.iter().any(|value| comparator(value, term)))
     }
 
     #[must_use]
@@ -148,48 +154,64 @@ pub fn parse_search_query(input: &str) -> Result<SearchQuery, ParseError> {
     }
 
     let mut query = SearchQuery::default();
-    let tokens = tokenize(trimmed);
+    let mut tokens = tokenize(trimmed).into_iter().peekable();
 
-    for token in tokens {
+    while let Some(token) = tokens.next() {
         if let Some(index) = token.find(':') {
             let (field_str, raw_value) = token.split_at(index);
             let field = parse_field(field_str)?;
-            let mut value = raw_value[1..].trim();
-            if value.is_empty() {
+            let mut value_segment = raw_value[1..].trim().to_string();
+
+            if value_segment.is_empty() {
+                if let Some(next_token) = tokens.next() {
+                    value_segment = next_token.trim().to_string();
+                }
+            }
+
+            if value_segment.is_empty() {
                 return Err(ParseError::MissingValue(field));
             }
 
-            if field == Field::Version && (value.starts_with('^') || value.starts_with('~')) {
-                if let Ok(req) = VersionReq::parse(value) {
+            if field == Field::Version
+                && (value_segment.starts_with('^') || value_segment.starts_with('~'))
+            {
+                if let Ok(req) = VersionReq::parse(&value_segment) {
                     query.version_constraint = Some(VersionConstraint::Semver(req));
                     continue;
                 }
             }
 
-            let (operator, remainder) = extract_operator(value);
-            value = remainder.trim();
+            let (operator, remainder) = extract_operator(&value_segment);
+            let mut value = remainder.trim().to_string();
+
+            if value.is_empty() {
+                if let Some(next_token) = tokens.next() {
+                    value = next_token.trim().to_string();
+                }
+            }
+
             if value.is_empty() {
                 return Err(ParseError::MissingValue(field));
             }
             match field {
                 Field::Package => {
-                    let op = operator.unwrap_or(Operator::Equals);
+                    let op = operator.unwrap_or(Operator::Contains);
                     if !matches!(op, Operator::Equals | Operator::Contains) {
                         return Err(ParseError::InvalidOperator(operator_to_string(op), field));
                     }
-                    query.package_filter = Some((op, value.to_lowercase().trim().to_string()));
+                    query.package_filter = Some((op, value.to_lowercase()));
                 }
                 Field::Repository => {
                     validate_string_operator(operator, field)?;
-                    query.repository_filter = Some(value.to_lowercase().to_string());
+                    query.repository_filter = Some(value.to_lowercase());
                 }
                 Field::Type => {
                     validate_string_operator(operator, field)?;
-                    query.type_filter = Some(value.to_lowercase().to_string());
+                    query.type_filter = Some(value.to_lowercase());
                 }
                 Field::Storage => {
                     validate_string_operator(operator, field)?;
-                    query.storage_filter = Some(value.to_lowercase().to_string());
+                    query.storage_filter = Some(value.to_lowercase());
                 }
                 Field::Version => {
                     if let Some(op) = operator {
@@ -201,7 +223,7 @@ pub fn parse_search_query(input: &str) -> Result<SearchQuery, ParseError> {
                             Operator::Contains => {
                                 query.version_constraint = Some(VersionConstraint::Range {
                                     op,
-                                    version: value.to_lowercase().to_string(),
+                                    version: value.to_lowercase(),
                                 });
                             }
                             Operator::GreaterThan
@@ -214,7 +236,7 @@ pub fn parse_search_query(input: &str) -> Result<SearchQuery, ParseError> {
                                 });
                             }
                         }
-                    } else if let Ok(req) = VersionReq::parse(value) {
+                    } else if let Ok(req) = VersionReq::parse(&value) {
                         query.version_constraint = Some(VersionConstraint::Semver(req));
                     } else {
                         query.version_constraint =
@@ -341,9 +363,28 @@ mod tests {
         let result = parse_search_query("package:gin").expect("query should parse");
         assert_eq!(
             result.package_filter,
-            Some((Operator::Equals, "gin".to_string()))
+            Some((Operator::Contains, "gin".to_string()))
         );
         assert!(result.terms.is_empty());
+    }
+
+    #[test]
+    fn parse_package_filter_with_whitespace_after_colon() {
+        let result = parse_search_query("pkg: hello-pkg").expect("query should parse");
+        assert_eq!(
+            result.package_filter,
+            Some((Operator::Contains, "hello-pkg".to_string()))
+        );
+        assert!(result.terms.is_empty());
+    }
+
+    #[test]
+    fn parse_package_filter_with_explicit_equals_operator() {
+        let result = parse_search_query("pkg:=hello").expect("query should parse");
+        assert_eq!(
+            result.package_filter,
+            Some((Operator::Equals, "hello".to_string()))
+        );
     }
 
     #[test]
@@ -386,6 +427,13 @@ mod tests {
                 VersionReq::parse("^1.5").expect("valid semver requirement")
             ))
         );
+    }
+
+    #[test]
+    fn simple_term_defaults_to_equals_match() {
+        let query = parse_search_query("hello").expect("query should parse");
+        assert!(query.matches_terms(&["hello"]));
+        assert!(!query.matches_terms(&["hello-world"]));
     }
 
     #[test]

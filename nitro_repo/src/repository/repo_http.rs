@@ -614,16 +614,41 @@ async fn handle_repo_request_core(
         path,
         docker_scope,
     } = request_path;
+    let is_docker_request = docker_scope.is_some();
     let docker_scope = docker_scope.unwrap_or_else(|| format!("{}/{}", storage, repository));
+    let method = request.method().clone();
     let names = RepositoryStorageName::from((storage, repository));
     let Some(repository) = site.get_repository_from_names(&names).await? else {
+        if matches!(
+            authentication,
+            RepositoryAuthentication::NoIdentification | RepositoryAuthentication::Other(_, _)
+        ) {
+            if is_docker_request {
+                let actions: &[&str] = match method {
+                    Method::GET | Method::HEAD => &["pull"],
+                    _ => &["pull", "push"],
+                };
+                let challenge = build_docker_bearer_challenge(&site, None, &docker_scope, actions);
+                let body = docker_unauthorized_body(&docker_scope, actions);
+                let response = Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header("WWW-Authenticate", challenge)
+                    .header("Docker-Distribution-API-Version", "registry/2.0")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap();
+                return Ok(response);
+            } else {
+                return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
+                    .into_response_default());
+            }
+        }
         let not_found = RepositoryNotFound::from(names);
         return Ok(not_found.into_response());
     };
     if !repository.is_active() {
         return Ok(RepoResponse::disabled_repository().into_response_default());
     }
-    let method = request.method().clone();
     let (parts, body) = request.into_parts();
     let path = path.unwrap_or_default();
     let trace =

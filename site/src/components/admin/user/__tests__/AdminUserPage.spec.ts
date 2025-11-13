@@ -3,9 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, nextTick } from "vue";
 import { flushPromises } from "@vue/test-utils";
 import SubmitButton from "@/components/form/SubmitButton.vue";
-import { notify } from "@kyvg/vue3-notification";
-
 vi.mock("@vue/devtools-kit", () => ({}));
+
+const mockAlerts = {
+  success: vi.fn(),
+  error: vi.fn(),
+};
+
+vi.mock("@/stores/alerts", () => ({
+  useAlertsStore: () => mockAlerts,
+}));
 
 vi.mock("@/stores/site", () => ({
   siteStore: () => ({
@@ -34,9 +41,10 @@ vi.mock("@/http", () => ({
   },
 }));
 
-vi.mock("@kyvg/vue3-notification", () => ({
-  notify: vi.fn(),
-}));
+beforeEach(() => {
+  mockAlerts.success.mockReset();
+  mockAlerts.error.mockReset();
+});
 
 class LocalStorageMock {
   private store = new Map<string, string>();
@@ -345,8 +353,9 @@ describe("AdminUserPage.vue", () => {
         username: "updated-user",
       }),
     );
-    expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "User Updated" }),
+    expect(mockAlerts.success).toHaveBeenCalledWith(
+      "User updated",
+      "User profile details have been saved.",
     );
   });
 });
