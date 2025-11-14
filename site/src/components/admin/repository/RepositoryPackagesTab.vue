@@ -267,16 +267,15 @@ const derivedHostedFromPackages = computed(() => {
   return !packages.value.some((pkg) => pkg.cachePath.startsWith("packages/"));
 });
 
-const isDockerRepository = computed(() => {
-  const type = props.repositoryType?.toLowerCase();
-  return type === "docker";
-});
+const repositoryType = computed(() => props.repositoryType?.toLowerCase() ?? "");
+const isDockerRepository = computed(() => repositoryType.value === "docker");
+const isDebRepository = computed(() => repositoryType.value === "deb");
 
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
     return props.repositoryKind.toLowerCase() === "hosted";
   }
-  if (isDockerRepository.value) {
+  if (isDockerRepository.value || isDebRepository.value) {
     return true;
   }
   if (props.repositoryType === "python") {
@@ -292,7 +291,15 @@ const headerTitle = computed(() => {
   return "Packages";
 });
 const packageColumnTitle = computed(() => (isDockerRepository.value ? "Repository" : "Package"));
-const nameColumnTitle = computed(() => (isDockerRepository.value ? "Tag" : "Name"));
+const nameColumnTitle = computed(() => {
+  if (isDockerRepository.value) {
+    return "Tag";
+  }
+  if (isDebRepository.value) {
+    return "Version";
+  }
+  return "Name";
+});
 const pathColumnTitle = computed(() => {
   if (isDockerRepository.value) {
     return "Manifest Path";

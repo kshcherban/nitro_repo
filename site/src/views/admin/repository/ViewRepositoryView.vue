@@ -84,7 +84,7 @@ const showPackagesTab = computed(() => {
   if (!type) {
     return false;
   }
-  return ["python", "npm", "maven", "docker", "go", "helm"].includes(type);
+  return ["python", "npm", "maven", "docker", "go", "helm", "deb"].includes(type);
 });
 
 function getConfigTitleOrFallback(config: string) {

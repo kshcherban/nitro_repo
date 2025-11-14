@@ -4,6 +4,7 @@ import PythonConfig from "@/components/nr/repository/types/python/PythonConfig.v
 import PhpConfig from "@/components/nr/repository/types/php/PhpConfig.vue";
 import GoConfig from "@/components/nr/repository/types/go/GoConfig.vue";
 import HelmConfig from "@/components/nr/repository/types/helm/HelmConfig.vue";
+import DebConfig from "@/components/nr/repository/types/deb/DebConfig.vue";
 
 import type { Component } from "vue";
 import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
@@ -17,6 +18,7 @@ import { NpmFrontendDefinition } from "@/components/nr/repository/types/npm/npm"
 import { GoFrontendDefinition } from "@/components/nr/repository/types/go/go";
 import { HelmFrontendDefinition } from "@/components/nr/repository/types/helm/helm";
 import { DockerFrontendDefinition } from "@/components/nr/repository/types/docker/docker";
+import { DebFrontendDefinition } from "@/components/nr/repository/types/deb/deb";
 import NPMConfig from "@/components/nr/repository/types/npm/NPMConfig.vue";
 import type { RepositoryActionsType } from "./user";
 
@@ -100,6 +102,11 @@ export const configTypes: ConfigType[] = [
     title: "Helm Repository Config",
     component: HelmConfig,
   },
+  {
+    name: "deb",
+    title: "Debian Repository Config",
+    component: DebConfig,
+  },
 ];
 export interface RepositoryIconDef {
   name: string;
@@ -128,6 +135,7 @@ export const repositoryTypes: FrontendRepositoryType[] = [
   GoFrontendDefinition,
   HelmFrontendDefinition,
   DockerFrontendDefinition,
+  DebFrontendDefinition,
 ];
 export function findRepositoryType(name: string): FrontendRepositoryType | undefined {
   return repositoryTypes.find((repositoryType) => repositoryType.name === name);

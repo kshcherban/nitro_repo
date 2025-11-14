@@ -12,8 +12,9 @@ use axum::{
 use chrono::{DateTime, FixedOffset};
 use nr_storage::{DynStorage, FileType, Storage, StorageFile};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::{Row, types::Json as SqlxJson};
 use tokio::io::AsyncReadExt;
 use tracing::{debug, instrument, warn};
 use utoipa::{IntoParams, ToSchema};
@@ -38,7 +39,7 @@ use crate::{
     },
     utils::ResponseBuilder,
 };
-use nr_core::repository::project::VersionData;
+use nr_core::repository::project::{DebPackageMetadata, VersionData};
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
 
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
@@ -88,6 +89,7 @@ enum PackageStrategy {
     Helm,
     GoHosted,
     GoProxy,
+    DebHosted,
 }
 
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
@@ -104,6 +106,7 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
         },
         DynRepository::Helm(_) => PackageStrategy::Helm,
         DynRepository::Docker(_) => PackageStrategy::Docker,
+        DynRepository::Deb(_) => PackageStrategy::DebHosted,
         DynRepository::Go(go_repo) => match go_repo {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::GoHosted,
             crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::GoProxy,
@@ -180,6 +183,9 @@ pub async fn list_cached_packages(
         }
         PackageStrategy::GoProxy => {
             list_go_packages(repository, "go-proxy-cache/", query.page, query.per_page).await
+        }
+        PackageStrategy::DebHosted => {
+            list_deb_packages(site, repository, query.page, query.per_page).await
         }
     }
 }
@@ -394,6 +400,20 @@ async fn collect_go_package_entries(
 struct GoDeletionResult {
     removed: usize,
     missing: Vec<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DebPackageRow {
+    project_name: String,
+    version: String,
+    extra: SqlxJson<VersionData>,
+    created_at: DateTime<FixedOffset>,
+}
+
+fn deb_metadata(data: &VersionData) -> Option<DebPackageMetadata> {
+    data.extra
+        .as_ref()
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
 fn go_related_paths(path: &str) -> Option<Vec<String>> {
@@ -685,6 +705,90 @@ async fn list_maven_hosted_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+async fn list_deb_packages(
+    site: NitroRepo,
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let offset = ((current_page - 1) * per_page) as i64;
+
+    let total_versions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        "#,
+    )
+    .bind(repository.id())
+    .fetch_one(&site.database)
+    .await?;
+
+    if total_versions == 0 {
+        let response = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
+
+    if offset >= total_versions {
+        let response = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions as usize,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
+
+    let rows = sqlx::query_as::<_, DebPackageRow>(
+        r#"
+        SELECT
+            p.name AS project_name,
+            pv.version,
+            pv.extra,
+            pv.created_at
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        ORDER BY pv.created_at DESC
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(repository.id())
+    .bind(per_page as i64)
+    .bind(offset)
+    .fetch_all(&site.database)
+    .await?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        if let Some(metadata) = deb_metadata(&row.extra.0) {
+            items.push(PackageFileEntry {
+                package: row.project_name.clone(),
+                name: row.version.clone(),
+                cache_path: metadata.filename.clone(),
+                size: metadata.size,
+                modified: row.created_at,
+            });
+        }
+    }
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions as usize,
+        items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
 async fn list_maven_proxy_packages(
     repository: DynRepository,
     page: usize,
@@ -910,7 +1014,9 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
             }
             is_valid_repository_path(path)
         }
-        PackageStrategy::GoHosted | PackageStrategy::GoProxy => is_valid_repository_path(path),
+        PackageStrategy::GoHosted | PackageStrategy::GoProxy | PackageStrategy::DebHosted => {
+            is_valid_repository_path(path)
+        }
     }
 }
 

@@ -1,0 +1,38 @@
+# Debian Repositories
+
+Nitro Repo can now host Debian package repositories that expose the standard `dists/` and `pool/` layout used by `apt`. Debian repositories are always hosted (there is no proxy mode) and can serve metadata for any combination of suites, components, and architectures that you enable in the repository configuration.
+
+The backend generates `Packages`, `Packages.gz`, and `Packages.xz` indexes for every component/architecture pair and emits a `Release` file so that `apt update` behaves as expected.
+
+## Uploading packages
+
+Uploads require write access to the repository and must use `multipart/form-data`. The simplest workflow is to select a distribution and component and post the `.deb` file in the `package` field:
+
+```bash
+curl -u username:password \
+  -F distribution=stable \
+  -F component=main \
+  -F package=@nitro_repo_1.0.0_amd64.deb \
+  https://nitro.example.com/repositories/<storage>/<repository>
+```
+
+If `distribution` or `component` are omitted the first value from the repository configuration will be used. Architectures are detected from the package metadata and must match one of the allowed entries (include `all` if you need architecture-independent packages).
+
+Every upload is stored under `pool/<component>/<first-letter>/<package>/` and automatically indexed inside the appropriate `dists/<suite>/<component>/binary-<arch>/Packages*` files.
+
+## Using the repository with apt
+
+Add the repository to `/etc/apt/sources.list.d/nitro.list` (replace placeholders with your storage and repository names):
+
+```text
+# /etc/apt/sources.list.d/nitro.list
+deb [trusted=yes] https://nitro.example.com/repositories/<storage>/<repository> stable main
+```
+
+Release signatures are not generated yet, so include the `trusted=yes` option or configure your host to allow unsigned repositories. Once added, run `sudo apt update` followed by the usual `apt install` commands. Nitro serves the `Packages`, `Packages.gz`, and `Packages.xz` files that `apt` expects.
+
+## Current limitations
+
+- Only hosted repositories are supported; there is no proxy mode.
+- Release files are unsigned. Configure clients with `trusted=yes` until signing is available.
+- Uploads must be `.deb` artifacts; source packages and `apt` by-hash lookups are not implemented yet.
