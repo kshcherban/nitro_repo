@@ -12,6 +12,8 @@ pub mod php;
 pub use php::PhpPackageMetadata;
 pub mod python;
 pub use python::PythonPackageMetadata;
+pub mod cargo;
+pub use cargo::{CargoDependencyMetadata, CargoPackageMetadata};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 pub struct ProjectResolution {
     pub project_id: Option<Uuid>,

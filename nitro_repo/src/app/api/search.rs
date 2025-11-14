@@ -90,6 +90,7 @@ fn determine_search_strategy(repository: &DynRepository) -> Option<SearchStrateg
                 })
             }
         },
+        DynRepository::Cargo(_) => Some(SearchStrategy::Database),
         DynRepository::Helm(_) | DynRepository::Maven(_) => Some(SearchStrategy::Database),
     }
 }
@@ -328,12 +329,17 @@ async fn search_docker_manifests(
             format!("{}:{}", entry.repository, entry.reference)
         };
 
-        if !query.matches_terms(&[
-            entry.repository.as_str(),
-            entry.reference.as_str(),
-            file_name.as_str(),
-        ]) {
-            continue;
+        if !query.terms.is_empty() {
+            let repo_lower = entry.repository.to_lowercase();
+            let reference_lower = entry.reference.to_lowercase();
+            let file_lower = file_name.to_lowercase();
+            if !query.terms.iter().all(|term| {
+                repo_lower.contains(term)
+                    || reference_lower.contains(term)
+                    || file_lower.contains(term)
+            }) {
+                continue;
+            }
         }
 
         if !query.matches_version(entry.reference.as_str()) {
@@ -360,8 +366,16 @@ fn matches_directory_entry(query: &SearchQuery, name: &str, path: &str) -> bool 
         return false;
     }
 
-    if !query.matches_terms(&[name, path]) {
-        return false;
+    if !query.terms.is_empty() {
+        let lowered_name = name.to_lowercase();
+        let lowered_path = path.to_lowercase();
+        if !query
+            .terms
+            .iter()
+            .all(|term| lowered_name.contains(term) || lowered_path.contains(term))
+        {
+            return false;
+        }
     }
 
     if let Some(_) = query.version_constraint {

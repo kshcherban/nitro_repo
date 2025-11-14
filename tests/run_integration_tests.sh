@@ -67,7 +67,7 @@ EXAMPLES:
     $0 --keep-running maven
 
 ENVIRONMENT VARIABLES:
-    NITRO_URL       Nitro Repo server URL (default: http://nitro_repo:8888)
+    NITRO_URL       Nitro Repo server URL (default: http://nitro-repo:8888)
     TEST_TOKEN      Authentication token (default: NPDxeLFM8ehXKteIHW7DFy1chf2QaYdf)
 
 EOF
@@ -185,9 +185,9 @@ if [ $ELAPSED -ge $MAX_WAIT ]; then
     exit 1
 fi
 
-# Restart nitro_repo to load seeded repositories
+# Restart nitro-repo to load seeded repositories
 print_color "$YELLOW" "Restarting Nitro Repo to load seeded repositories..."
-docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" restart nitro_repo
+docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" restart nitro-repo
 sleep 2  # Give it time to restart
 print_color "$GREEN" "✓ Nitro Repo restarted"
 

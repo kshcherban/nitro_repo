@@ -28,6 +28,7 @@ pub use staging::*;
 mod repo_http;
 pub use repo_http::*;
 mod auth_config;
+pub mod cargo;
 pub mod commands;
 pub mod docker;
 pub mod go;
@@ -165,6 +166,7 @@ pub enum DynRepository {
     Docker(docker::DockerRegistry),
     Go(go::GoRepository),
     Helm(helm::HelmRepository),
+    Cargo(cargo::CargoRegistry),
     Maven(maven::MavenRepository),
     NPM(npm::NPMRegistry),
     Python(python::PythonRepository),

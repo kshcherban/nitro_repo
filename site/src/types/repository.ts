@@ -4,6 +4,7 @@ import PythonConfig from "@/components/nr/repository/types/python/PythonConfig.v
 import PhpConfig from "@/components/nr/repository/types/php/PhpConfig.vue";
 import GoConfig from "@/components/nr/repository/types/go/GoConfig.vue";
 import HelmConfig from "@/components/nr/repository/types/helm/HelmConfig.vue";
+import CargoConfig from "@/components/nr/repository/types/cargo/CargoConfig.vue";
 
 import type { Component } from "vue";
 import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
@@ -17,6 +18,7 @@ import { NpmFrontendDefinition } from "@/components/nr/repository/types/npm/npm"
 import { GoFrontendDefinition } from "@/components/nr/repository/types/go/go";
 import { HelmFrontendDefinition } from "@/components/nr/repository/types/helm/helm";
 import { DockerFrontendDefinition } from "@/components/nr/repository/types/docker/docker";
+import { CargoFrontendDefinition } from "@/components/nr/repository/types/cargo/cargo";
 import NPMConfig from "@/components/nr/repository/types/npm/NPMConfig.vue";
 import type { RepositoryActionsType } from "./user";
 
@@ -64,6 +66,11 @@ export const configTypes: ConfigType[] = [
     name: "maven",
     title: "Maven Repository Config",
     component: MavenConfig,
+  },
+  {
+    name: "cargo",
+    title: "Cargo Repository Config",
+    component: CargoConfig,
   },
   {
     name: "python",
@@ -122,6 +129,7 @@ export interface FrontendRepositoryType {
 }
 export const repositoryTypes: FrontendRepositoryType[] = [
   MavenFrontendDefinition,
+  CargoFrontendDefinition,
   NpmFrontendDefinition,
   PythonFrontendDefinition,
   PhpFrontendDefinition,

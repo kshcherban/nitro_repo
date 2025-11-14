@@ -75,9 +75,6 @@ async fn collect_from_base(
                         if !query.matches_package_names(&name_refs) {
                             continue;
                         }
-                        if !query.matches_terms(&[module.as_str(), version.as_str()]) {
-                            continue;
-                        }
                         if !query.matches_version(&version) {
                             continue;
                         }

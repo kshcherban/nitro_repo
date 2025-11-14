@@ -13,7 +13,7 @@ services:
     volumes:
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
 
-  nitro_repo:
+  nitro-repo:
     image: nitro_repo:test
     build:
       context: ../..
@@ -31,15 +31,10 @@ services:
     volumes:
       - ./config/nitro_repo.test.toml:/config/nitro_repo.test.toml:ro
       - test-storage:/storage
-    networks:
-      default:
-        aliases:
-          - nitro-repo
-
   db-seeder:
     image: postgres:17
     depends_on:
-      - nitro_repo
+      - nitro-repo
     environment:
       - PGPASSWORD=nitro
     volumes:
@@ -75,13 +70,12 @@ services:
       docker:
         condition: service_healthy
     environment:
-      - NITRO_URL=http://nitro_repo:8888
+      - NITRO_URL=http://nitro-repo:8888
       - TEST_TOKEN=NPDxeLFM8ehXKteIHW7DFy1chf2QaYdf
       - DOCKER_HOST=tcp://docker:2375
       - DOCKER_TLS_CERTDIR=
       - DOCKER_API_VERSION=1.43
       - NITRO_DOCKER_HOST=nitro-repo:8888
-      - DOCKER_API_VERSION=1.43
     volumes:
       - ../integration:/tests:ro
       - ../fixtures:/fixtures:ro

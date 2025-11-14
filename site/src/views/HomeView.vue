@@ -149,6 +149,7 @@ import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
 import type { RepositoryWithStorageName } from "@/types/repository";
 import { HelmIcon, DockerIcon } from "vue3-simple-icons";
+import CargoIcon from "@/components/nr/repository/types/cargo/CargoIcon.vue";
 
 const router = useRouter();
 const repositories = ref<RepositoryWithStorageName[]>([]);
@@ -194,6 +195,9 @@ const componentIconMap: Record<string, ComponentIcon> = {
       color: "#2496ED",
     },
   },
+  cargo: {
+    component: CargoIcon,
+  },
 };
 
 const fallbackIconMap: Record<string, string> = {
@@ -202,6 +206,7 @@ const fallbackIconMap: Record<string, string> = {
   go: "mdi-language-go",
   python: "mdi-language-python",
   php: "mdi-language-php",
+  cargo: "mdi-language-rust",
 };
 
 function normalizeType(type: string): string {

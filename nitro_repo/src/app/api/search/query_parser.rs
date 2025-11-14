@@ -117,7 +117,13 @@ impl SearchQuery {
         if self.terms.is_empty() {
             return true;
         }
-        self.matches_terms(candidates)
+        let lowered: Vec<String> = candidates
+            .iter()
+            .map(|candidate| candidate.to_lowercase())
+            .collect();
+        self.terms
+            .iter()
+            .all(|term| lowered.iter().any(|value| value.contains(term)))
     }
 
     #[must_use]
@@ -195,11 +201,19 @@ pub fn parse_search_query(input: &str) -> Result<SearchQuery, ParseError> {
             }
             match field {
                 Field::Package => {
-                    let op = operator.unwrap_or(Operator::Contains);
+                    let value_owned = value;
+                    let inferred_exact = value_owned.chars().any(char::is_whitespace);
+                    let op = operator.unwrap_or_else(|| {
+                        if inferred_exact {
+                            Operator::Equals
+                        } else {
+                            Operator::Contains
+                        }
+                    });
                     if !matches!(op, Operator::Equals | Operator::Contains) {
                         return Err(ParseError::InvalidOperator(operator_to_string(op), field));
                     }
-                    query.package_filter = Some((op, value.to_lowercase()));
+                    query.package_filter = Some((op, value_owned.to_lowercase()));
                 }
                 Field::Repository => {
                     validate_string_operator(operator, field)?;

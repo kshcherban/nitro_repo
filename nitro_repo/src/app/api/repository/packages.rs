@@ -38,7 +38,7 @@ use crate::{
     },
     utils::ResponseBuilder,
 };
-use nr_core::repository::project::VersionData;
+use nr_core::repository::project::{CargoPackageMetadata, VersionData};
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
 
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
@@ -88,6 +88,7 @@ enum PackageStrategy {
     Helm,
     GoHosted,
     GoProxy,
+    Cargo,
 }
 
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
@@ -112,6 +113,7 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             },
         },
         DynRepository::Docker(_) => PackageStrategy::Docker,
+        DynRepository::Cargo(_) => PackageStrategy::Cargo,
         DynRepository::Go(go_repo) => match go_repo {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::GoHosted,
             crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::GoProxy,
@@ -188,6 +190,9 @@ pub async fn list_cached_packages(
         }
         PackageStrategy::GoProxy => {
             list_go_packages(repository, "go-proxy-cache/", query.page, query.per_page).await
+        }
+        PackageStrategy::Cargo => {
+            list_cargo_packages(site, repository, query.page, query.per_page).await
         }
     }
 }
@@ -578,6 +583,130 @@ async fn list_helm_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+async fn list_cargo_packages(
+    site: NitroRepo,
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let offset = ((current_page - 1) * per_page) as i64;
+
+    let total_versions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        "#,
+    )
+    .bind(repository.id())
+    .fetch_one(&site.database)
+    .await?;
+
+    if total_versions == 0 {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    if offset >= total_versions {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions as usize,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            p.name AS crate_name,
+            p.key AS project_key,
+            pv.version AS version,
+            pv.extra AS extra,
+            pv.updated_at
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        ORDER BY p.name ASC, pv.version ASC
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(repository.id())
+    .bind(per_page as i64)
+    .bind(offset)
+    .fetch_all(&site.database)
+    .await?;
+
+    let mut items = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let crate_name: String = row.try_get("crate_name")?;
+        let project_key: String = row.try_get("project_key")?;
+        let version: String = row.try_get("version")?;
+        let version_data: sqlx::types::Json<VersionData> = row.try_get("extra")?;
+        let updated_at: DateTime<FixedOffset> = row.try_get("updated_at")?;
+
+        let VersionData { extra, .. } = version_data.0;
+        let Some(extra_value) = extra else {
+            debug!(
+                crate = %crate_name,
+                version = %version,
+                "Skipping Cargo version without metadata"
+            );
+            continue;
+        };
+        let metadata: CargoPackageMetadata = serde_json::from_value(extra_value)?;
+        items.push(build_cargo_package_entry(
+            &crate_name,
+            &project_key,
+            &version,
+            updated_at,
+            &metadata,
+        ));
+    }
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions as usize,
+        items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
+fn build_cargo_package_entry(
+    crate_name: &str,
+    project_key: &str,
+    version: &str,
+    updated_at: DateTime<FixedOffset>,
+    metadata: &CargoPackageMetadata,
+) -> PackageFileEntry {
+    PackageFileEntry {
+        package: crate_name.to_string(),
+        name: version.to_string(),
+        cache_path: cargo_cache_path(project_key, version),
+        size: metadata.crate_size,
+        modified: updated_at,
+    }
+}
+
+fn cargo_cache_path(project_key: &str, version: &str) -> String {
+    format!(
+        "crates/{key}/{ver}/{key}-{ver}.crate",
+        key = project_key,
+        ver = version
+    )
+}
+
 async fn list_maven_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -910,7 +1039,8 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
         }
         PackageStrategy::MavenHosted
         | PackageStrategy::MavenProxy
-        | PackageStrategy::PythonHosted => is_valid_repository_path(path),
+        | PackageStrategy::PythonHosted
+        | PackageStrategy::Cargo => is_valid_repository_path(path),
         PackageStrategy::Docker => is_valid_docker_manifest_path(path),
         PackageStrategy::Helm => {
             if !(path.starts_with("charts/") || path.starts_with("v2/")) {
@@ -1431,7 +1561,7 @@ async fn gather_package_dirs(
 mod tests {
     use super::*;
     use anyhow::Result;
-    use chrono::Utc;
+    use chrono::{FixedOffset, Utc};
     use nr_core::ConfigTimeStamp;
     use nr_storage::{
         DynStorage, FileContent, StaticStorageFactory,
@@ -1955,6 +2085,44 @@ mod tests {
         assert!(!is_valid_cache_path(
             "v2/library/../../etc/passwd",
             PackageStrategy::Docker,
+        ));
+    }
+
+    #[test]
+    fn cargo_cache_path_matches_crate_layout() {
+        let path = super::cargo_cache_path("serde", "1.0.0");
+        assert_eq!(path, "crates/serde/1.0.0/serde-1.0.0.crate");
+    }
+
+    #[test]
+    fn cargo_package_entry_uses_metadata() {
+        let mut metadata = CargoPackageMetadata::default();
+        metadata.crate_size = 1_337;
+        let updated_at = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .with_timezone(&FixedOffset::east_opt(0).unwrap());
+        let entry =
+            super::build_cargo_package_entry("Serde", "serde", "1.0.0", updated_at, &metadata);
+        assert_eq!(entry.package, "Serde");
+        assert_eq!(entry.name, "1.0.0");
+        assert_eq!(entry.size, 1_337);
+        assert_eq!(entry.cache_path, "crates/serde/1.0.0/serde-1.0.0.crate");
+        assert_eq!(entry.modified, updated_at);
+    }
+
+    #[test]
+    fn validate_cargo_cache_paths() {
+        assert!(is_valid_cache_path(
+            "crates/serde/1.0.0/serde-1.0.0.crate",
+            PackageStrategy::Cargo
+        ));
+        assert!(!is_valid_cache_path(
+            "/crates/serde/1.0.0/serde-1.0.0.crate",
+            PackageStrategy::Cargo
+        ));
+        assert!(!is_valid_cache_path(
+            "../crates/serde/1.0.0/serde-1.0.0.crate",
+            PackageStrategy::Cargo
         ));
     }
 }

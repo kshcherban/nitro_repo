@@ -1,6 +1,7 @@
 ## Repository Types
 
 - [Docker](./docker/index.md)
+- [Cargo](./cargo/index.md)
 - [Maven](./maven/index.md)
 - [NPM](./npm/index.md)
 - [Python](./python/index.md)

@@ -17,6 +17,7 @@ Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite 
 ## Repository Implementations
 - Maven: hosted + proxy support (`maven` module).
 - NPM: hosted registry (`npm` module).
+- Cargo: hosted registry with sparse index support (`cargo` module) exposing the Cargo publish API, sparse index files, and archive downloads.
 - Python / PHP (Composer): hosted-only modules introduced during current iteration, leveraging shared `RepositoryExt` helpers, metadata inserts into `VersionData.extra`.
 
 ## HTTP Flow

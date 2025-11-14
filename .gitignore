@@ -5,7 +5,6 @@ test/
 nr_tests.env
 storage_tests
 artipie/
-*.png
 .claude/
 charts/nitro-repo/charts
 *.tgz

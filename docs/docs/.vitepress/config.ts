@@ -58,6 +58,7 @@ function knowledgeBaseBar() {
     {
       text: "Other",
       items: [
+        { text: "Architecture", link: "/knowledge/Architecture" },
         { text: "Internal Workings", link: "/knowledge/InternalWorkings" },
       ],
     },
@@ -202,6 +203,16 @@ function repositoryTypesBar() {
         {
           text: "HTTP Routes",
           link: "/repositoryTypes/python/routes",
+        },
+      ],
+    },
+    {
+      text: "Cargo",
+      link: "/repositoryTypes/cargo",
+      items: [
+        {
+          text: "Overview",
+          link: "/repositoryTypes/cargo/",
         },
       ],
     },

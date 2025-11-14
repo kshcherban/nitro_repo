@@ -14,7 +14,7 @@ cleanup_interval = 3600
 database_location = "/storage/sessions.redb"
 
 [site]
-app_url = "http://localhost:8888"
+app_url = "http://nitro-repo:8888"
 
 [web_server]
 bind_address = "0.0.0.0:8888"
