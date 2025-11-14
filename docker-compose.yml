@@ -25,6 +25,8 @@ services:
     links:
       - postgres
     command: ["start", "--config", "/data/nitro_repo.toml"]
+    ports:
+      - "8080:6742"
     labels:
       - "traefik.frontend.rule=Host:nitro.sudoers.dev"
       - "traefik.enable=true"

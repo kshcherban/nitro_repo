@@ -264,21 +264,16 @@ const derivedHostedFromPackages = computed(() => {
   return !packages.value.some((pkg) => pkg.cachePath.startsWith("packages/"));
 });
 
-const isDockerRepository = computed(() => {
-  const type = props.repositoryType?.toLowerCase();
-  return type === "docker";
-});
-
-const isGoRepository = computed(() => {
-  const type = props.repositoryType?.toLowerCase();
-  return type === "go";
-});
+const repositoryType = computed(() => props.repositoryType?.toLowerCase() ?? "");
+const isDockerRepository = computed(() => repositoryType.value === "docker");
+const isGoRepository = computed(() => repositoryType.value === "go");
+const isDebRepository = computed(() => repositoryType.value === "deb");
 
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
     return props.repositoryKind.toLowerCase() === "hosted";
   }
-  if (isDockerRepository.value) {
+  if (isDockerRepository.value || isDebRepository.value) {
     return true;
   }
   if (props.repositoryType === "python") {
@@ -301,6 +296,9 @@ const nameColumnTitle = computed(() => {
     return "Tag";
   }
   if (isGoRepository.value) {
+    return "Version";
+  }
+  if (isDebRepository.value) {
     return "Version";
   }
   return "Name";

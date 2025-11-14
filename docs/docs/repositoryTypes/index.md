@@ -8,3 +8,4 @@
 - [Composer](./php/index.md)
 - [Go](./go/index.md)
 - [Helm](./helm/index.md)
+- [Debian](./deb/index.md)

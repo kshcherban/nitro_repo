@@ -216,5 +216,15 @@ function repositoryTypesBar() {
         },
       ],
     },
+    {
+      text: "Debian",
+      link: "/repositoryTypes/deb/",
+      items: [
+        {
+          text: "Overview",
+          link: "/repositoryTypes/deb/",
+        },
+      ],
+    },
   ];
 }

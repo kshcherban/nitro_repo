@@ -58,6 +58,7 @@ use crate::{
         DynRepository, RepositoryAuthConfig, RepositoryAuthConfigType, RepositoryType,
         StagingConfig,
         cargo::{CargoRepositoryConfigType, CargoRepositoryType},
+        deb::{DebRepositoryConfigType, DebRepositoryType},
         docker::{DockerPushRulesConfigType, DockerRegistryConfigType, DockerRepositoryType},
         go::{GoRepositoryConfigType, GoRepositoryType},
         helm::{HelmRepositoryConfigType, HelmRepositoryType},
@@ -1079,6 +1080,7 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &CargoRepositoryConfigType,
     &PythonRepositoryConfigType,
     &PhpRepositoryConfigType,
+    &DebRepositoryConfigType,
     &RepositoryAuthConfigType,
 ];
 pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
@@ -1090,6 +1092,7 @@ pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
     &NpmRegistryType,
     &PythonRepositoryType,
     &PhpRepositoryType,
+    &DebRepositoryType,
 ];
 
 #[cfg(test)]

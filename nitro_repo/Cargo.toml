@@ -97,6 +97,10 @@ current_semver = "0.1"
 nr-core.workspace = true
 nr-macros.workspace = true
 nr-storage.workspace = true
+ar = "0.9"
+bzip2 = "0.4"
+xz2 = "0.1"
+zstd = "0.13"
 redb = { version = "3" }
 tuxs-config-types = { git = "https://github.com/wyatt-herkamp/tuxs-config-types.git", features = [
     "chrono",

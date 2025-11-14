@@ -88,7 +88,7 @@ const supportsPackageListing = computed(() => {
   if (!type) {
     return false;
   }
-  return ["python", "npm", "maven", "docker", "go", "helm", "cargo"].includes(type);
+  return ["python", "npm", "maven", "docker", "go", "helm", "cargo", "deb"].includes(type);
 });
 
 const isRootPath = computed(() => catchAll.value === "" || catchAll.value === "/");

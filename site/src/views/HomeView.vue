@@ -148,7 +148,7 @@ import type { Component } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
 import type { RepositoryWithStorageName } from "@/types/repository";
-import { HelmIcon, DockerIcon } from "vue3-simple-icons";
+import { HelmIcon, DockerIcon, DebianIcon } from "vue3-simple-icons";
 import CargoIcon from "@/components/nr/repository/types/cargo/CargoIcon.vue";
 
 const router = useRouter();
@@ -198,6 +198,13 @@ const componentIconMap: Record<string, ComponentIcon> = {
   cargo: {
     component: CargoIcon,
   },
+  deb: {
+    component: DebianIcon,
+    props: {
+      size: "32",
+      color: "#A81D33",
+    },
+  },
 };
 
 const fallbackIconMap: Record<string, string> = {
@@ -207,6 +214,7 @@ const fallbackIconMap: Record<string, string> = {
   python: "mdi-language-python",
   php: "mdi-language-php",
   cargo: "mdi-language-rust",
+  deb: "mdi-linux",
 };
 
 function normalizeType(type: string): string {

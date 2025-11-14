@@ -30,6 +30,7 @@ pub use repo_http::*;
 mod auth_config;
 pub mod cargo;
 pub mod commands;
+pub mod deb;
 pub mod docker;
 pub mod go;
 pub mod helm;
@@ -163,6 +164,7 @@ pub trait Repository: Send + Sync + Clone + Debug {
 #[derive(Debug, Clone, DynRepositoryHandler)]
 #[repository_handler(error = DynRepositoryHandlerError)]
 pub enum DynRepository {
+    Deb(deb::DebRepository),
     Docker(docker::DockerRegistry),
     Go(go::GoRepository),
     Helm(helm::HelmRepository),
