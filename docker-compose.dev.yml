@@ -6,6 +6,8 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=nitro-repo
       - NITRO_TRACING_ENABLED=true
+    ports:
+      - "127.0.0.1:8080:6742"
     links:
       - jaeger
 
