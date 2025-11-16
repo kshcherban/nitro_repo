@@ -4,6 +4,7 @@ use sqlx::FromRow;
 
 use super::{InternalError, PackageSearchResult, RepositorySummary, query_parser::SearchQuery};
 use crate::app::NitroRepo;
+use nr_core::repository::project::DebPackageMetadata;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct DatabasePackageRow {
@@ -67,16 +68,35 @@ pub fn filter_database_rows(
             break;
         }
 
-        let name_refs = [row.package_name.as_str(), row.package_key.as_str()];
+        let repo_type = summary.repository_type.as_str();
+        let mut metadata_terms: Vec<String> = Vec::new();
+        let mut metadata_name_refs: Vec<String> = Vec::new();
+        let metadata = if repo_type.eq_ignore_ascii_case("deb") {
+            deb_metadata(&row.extra)
+        } else {
+            None
+        };
+
+        if let Some(meta) = &metadata {
+            let terms = deb_metadata_terms(meta);
+            metadata_name_refs.extend(terms.clone());
+            metadata_terms = terms;
+        }
+
+        let mut name_refs: Vec<&str> = vec![row.package_name.as_str(), row.package_key.as_str()];
+        name_refs.extend(metadata_name_refs.iter().map(String::as_str));
+
         if !query.matches_package_names(&name_refs) {
             continue;
         }
 
-        let term_fields = [
+        let mut term_fields: Vec<&str> = vec![
             row.package_name.as_str(),
             row.package_key.as_str(),
             row.version.as_str(),
         ];
+        term_fields.extend(metadata_terms.iter().map(String::as_str));
+
         if !query.matches_terms(&term_fields) {
             continue;
         }
@@ -85,20 +105,69 @@ pub fn filter_database_rows(
             continue;
         }
 
-        let file_name = format!("{}@{}", row.package_name, row.version);
+        let file_name = metadata
+            .as_ref()
+            .map(|meta| deb_file_name(meta))
+            .unwrap_or_else(|| format!("{}@{}", row.package_name, row.version));
+        let cache_path = metadata
+            .as_ref()
+            .map(|meta| meta.filename.clone())
+            .unwrap_or_else(|| row.path.clone());
+
         results.push(PackageSearchResult {
             repository_id: summary.repository_id,
             repository_name: summary.repository_name.clone(),
             storage_name: summary.storage_name.clone(),
             repository_type: summary.repository_type.clone(),
             file_name,
-            cache_path: row.path.clone(),
+            cache_path,
             size: extract_size(&row.extra),
             modified: row.updated_at,
         });
     }
 
     Ok(results)
+}
+
+fn deb_metadata(extra: &Option<Value>) -> Option<DebPackageMetadata> {
+    extra
+        .as_ref()
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+fn deb_metadata_terms(metadata: &DebPackageMetadata) -> Vec<String> {
+    let mut terms = Vec::new();
+    terms.push(metadata.architecture.clone());
+    terms.push(metadata.component.clone());
+    terms.push(metadata.distribution.clone());
+    if let Some(section) = &metadata.section {
+        terms.push(section.clone());
+    }
+    if let Some(priority) = &metadata.priority {
+        terms.push(priority.clone());
+    }
+    if let Some(ref maintainer) = metadata.maintainer {
+        terms.push(maintainer.clone());
+    }
+    if let Some(ref homepage) = metadata.homepage {
+        terms.push(homepage.clone());
+    }
+    if let Some(ref description) = metadata.description {
+        terms.push(description.clone());
+    }
+    terms.push(metadata.filename.clone());
+    terms.extend(metadata.depends.iter().cloned());
+    terms.retain(|value| !value.trim().is_empty());
+    terms
+}
+
+fn deb_file_name(metadata: &DebPackageMetadata) -> String {
+    metadata
+        .filename
+        .rsplit('/')
+        .next()
+        .unwrap_or(&metadata.filename)
+        .to_string()
 }
 
 fn extract_size(extra: &Option<Value>) -> u64 {
@@ -130,6 +199,35 @@ mod tests {
             extra: Some(json!({ "size": 1024 })),
             updated_at: Utc
                 .with_ymd_and_hms(2025, 11, 1, 12, 0, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&FixedOffset::east_opt(0).unwrap()),
+        }
+    }
+
+    fn make_deb_row(name: &str, version: &str, arch: &str) -> DatabasePackageRow {
+        let filename = format!("pool/main/{name}/{name}_{version}_{arch}.deb");
+        DatabasePackageRow {
+            package_name: name.to_string(),
+            package_key: name.to_string(),
+            version: version.to_string(),
+            path: filename.clone(),
+            extra: Some(json!({
+                "distribution": "bookworm",
+                "component": "main",
+                "architecture": arch,
+                "filename": filename,
+                "size": 4096,
+                "md5": "deadbeef",
+                "sha1": "feedface",
+                "sha256": "cafebabe",
+                "depends": ["libc6 (>= 2.28)"],
+                "section": "utils",
+                "priority": "optional",
+                "description": "Sample package"
+            })),
+            updated_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
                 .single()
                 .unwrap()
                 .with_timezone(&FixedOffset::east_opt(0).unwrap()),
@@ -194,5 +292,45 @@ mod tests {
         let results = filter_database_rows(&summary, rows, &query, 10).expect("query to pass");
         assert_eq!(results.len(), 1);
         assert!(results[0].file_name.contains("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn filter_database_rows_accepts_partial_terms_without_filters() {
+        let summary = RepositorySummary {
+            repository_id: Uuid::new_v4(),
+            repository_name: "helm-hosted".into(),
+            storage_name: "primary".into(),
+            repository_type: "helm".into(),
+        };
+
+        let rows = vec![make_row("chart-a", "1.0.0")];
+        let query = SearchQuery {
+            terms: vec!["chart".into()],
+            ..SearchQuery::default()
+        };
+
+        let results = filter_database_rows(&summary, rows, &query, 10).expect("query to pass");
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn filter_database_rows_matches_deb_metadata_terms() {
+        let summary = RepositorySummary {
+            repository_id: Uuid::new_v4(),
+            repository_name: "deb-hosted".into(),
+            storage_name: "primary".into(),
+            repository_type: "deb".into(),
+        };
+
+        let rows = vec![make_deb_row("hello", "2.10", "amd64")];
+        let query = SearchQuery {
+            terms: vec!["amd64".into()],
+            ..SearchQuery::default()
+        };
+
+        let results = filter_database_rows(&summary, rows, &query, 10).expect("query to pass");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].file_name.ends_with(".deb"));
+        assert_eq!(results[0].cache_path, "pool/main/hello/hello_2.10_amd64.deb");
     }
 }

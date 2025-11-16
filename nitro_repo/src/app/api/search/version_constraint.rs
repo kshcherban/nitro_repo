@@ -72,9 +72,96 @@ fn compare_range(op: &Operator, candidate: &str, target: &str) -> bool {
 }
 
 fn parse_semver_version(value: &str) -> Option<Version> {
+    if looks_like_debian_version(value) {
+        parse_debian_semver(value).or_else(|| parse_plain_semver(value))
+    } else {
+        parse_plain_semver(value).or_else(|| parse_debian_semver(value))
+    }
+}
+
+fn parse_plain_semver(value: &str) -> Option<Version> {
     let trimmed = value.trim();
     let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);
     Version::parse(normalized).ok()
+}
+
+fn parse_debian_semver(value: &str) -> Option<Version> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Strip epoch (e.g., 1:2.3.4-1).
+    let without_epoch = trimmed
+        .rsplit_once(':')
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    // Separate upstream version from Debian revision (after '-').
+    let (upstream, _) = without_epoch
+        .split_once('-')
+        .unwrap_or((without_epoch, ""));
+    if upstream.is_empty() {
+        return None;
+    }
+    // Handle pre-release marker (~) by turning it into '-' as SemVer expects.
+    let (base, prerelease) = upstream
+        .split_once('~')
+        .map_or((upstream, None), |(b, p)| (b, Some(p)));
+    // Keep only numeric and dot separators for the core version.
+    let mut numeric_parts: Vec<String> = base
+        .split('.')
+        .map(|segment| {
+            segment
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+        })
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if numeric_parts.is_empty() {
+        return None;
+    }
+    while numeric_parts.len() < 3 {
+        numeric_parts.push("0".into());
+    }
+    let mut normalized = numeric_parts[..3].join(".");
+    if let Some(prerelease) = prerelease {
+        let trimmed = prerelease.trim_start_matches(|ch| ch == '-' || ch == '~' || ch == '+');
+        let cleaned: String = trimmed
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' {
+                    ch
+                } else if ch == '~' || ch == '_' {
+                    '-'
+                } else {
+                    ch
+                }
+            })
+            .collect();
+        if !cleaned.is_empty() {
+            normalized.push('-');
+            normalized.push_str(&cleaned);
+        }
+    }
+    Version::parse(&normalized).ok()
+}
+
+fn looks_like_debian_version(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains(':') || trimmed.contains('~') || trimmed.contains('+') {
+        return true;
+    }
+    trimmed
+        .rsplit_once('-')
+        .map(|(_, suffix)| {
+            !suffix.is_empty()
+                && suffix.chars().next().map_or(false, |ch| ch.is_ascii_digit())
+                && !suffix.contains('.')
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -115,5 +202,28 @@ mod tests {
         assert!(constraint.matches("1.2.3"));
         assert!(constraint.matches("v1.2.3"));
         assert!(!constraint.matches("1.2.4"));
+    }
+
+    #[test]
+    fn parse_debian_semver_converts_revision() {
+        let parsed = super::parse_debian_semver("547.0.0-0").expect("parse debian version");
+        assert_eq!(parsed.to_string(), "547.0.0");
+    }
+
+    #[test]
+    fn semver_constraint_matches_debian_version() {
+        let req = VersionReq::parse("^547.0").unwrap();
+        let constraint = VersionConstraint::Semver(req);
+        assert!(constraint.matches("547.0.0-0"));
+    }
+
+    #[test]
+    fn range_constraint_handles_debian_version_without_patch() {
+        let constraint = VersionConstraint::Range {
+            op: Operator::GreaterThan,
+            version: "545.0".to_string(),
+        };
+        assert!(constraint.matches("547.0.0-1"));
+        assert!(!constraint.matches("544.9.0-1"));
     }
 }

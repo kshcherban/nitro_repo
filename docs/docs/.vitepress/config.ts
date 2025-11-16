@@ -68,8 +68,11 @@ function knowledgeBaseBar() {
 function sysAdminBar() {
   return [
     {
-      text: "Installing",
-      items: [{ text: "Prepping your System", link: "/sysAdmin/" }],
+      text: "Operating",
+      items: [
+        { text: "Prepping your System", link: "/sysAdmin/" },
+        { text: "Maintenance", link: "/sysAdmin/maintenance" },
+      ],
     },
   ];
 }

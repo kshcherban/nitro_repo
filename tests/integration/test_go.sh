@@ -20,19 +20,42 @@ print_section "Go Integration Tests"
 WORKSPACE=$(create_workspace "go")
 cd "$WORKSPACE"
 
+HOST_NO_SCHEME="${NITRO_URL#http://}"
+HOST_NO_SCHEME="${HOST_NO_SCHEME#https://}"
+
 # Setup Go environment
 export GOPATH="$WORKSPACE/gopath"
 export GOPROXY="direct"
 export GOSUMDB="off"
+export GONOSUMDB="*"
+export GOINSECURE="$HOST_NO_SCHEME"
+export GOFLAGS="-mod=mod"
 mkdir -p "$GOPATH"
+
+cat > "$HOME/.netrc" <<EOF
+machine $HOST_NO_SCHEME
+  login ${TEST_USER}
+  password ${TEST_PASSWORD}
+EOF
+chmod 600 "$HOME/.netrc"
 
 # Copy fixture
 cp -r "$FIXTURE_DIR" "$WORKSPACE/test-module"
-cd "$WORKSPACE/test-module"
 
-# Test 1: Create module archive
+create_module_zip() {
+    local version="$1"
+    local staging_root="$WORKSPACE/pkg"
+    local staging_dir="${staging_root}/${MODULE_NAME}@${version}"
+    mkdir -p "$staging_root"
+    rm -rf "$staging_dir"
+    mkdir -p "$staging_dir"
+    cp -R "$WORKSPACE/test-module/." "$staging_dir/"
+    (cd "$staging_root" && run_cmd zip -qr "$WORKSPACE/${MODULE_NAME//\//-}-${version}.zip" "${MODULE_NAME}@${version}") || return 1
+}
+
+# Test 1: Create Go module archive
 print_test "Create Go module archive (${VERSION_1})"
-if run_cmd zip -r "$WORKSPACE/${MODULE_NAME//\//-}-${VERSION_1}.zip" .; then
+if create_module_zip "${VERSION_1}"; then
     pass
 else
     fail "Failed to create module archive"
@@ -97,7 +120,7 @@ fi
 print_test "Fetch version list"
 LIST_PATH="/repositories/${GO_HOSTED_REPO}/${MODULE_NAME}/@v/list"
 
-VERSIONS=$(curl -sf "${NITRO_URL}${LIST_PATH}" || echo "")
+VERSIONS=$(curl -sf -H "$(get_auth_header)" "${NITRO_URL}${LIST_PATH}" || echo "")
 record_output "$VERSIONS"
 
 if echo "$VERSIONS" | grep -q "${VERSION_1}"; then
@@ -109,7 +132,7 @@ fi
 
 # Test 6: Download .info file
 print_test "Download .info file"
-if curl -sf "${NITRO_URL}${INFO_PATH}" -o "$WORKSPACE/downloaded.info" && \
+if curl -sf -H "$(get_auth_header)" "${NITRO_URL}${INFO_PATH}" -o "$WORKSPACE/downloaded.info" && \
    assert_file_exists "$WORKSPACE/downloaded.info"; then
     pass
 else
@@ -118,7 +141,7 @@ fi
 
 # Test 7: Download .mod file
 print_test "Download .mod file"
-if curl -sf "${NITRO_URL}${MOD_PATH}" -o "$WORKSPACE/downloaded.mod" && \
+if curl -sf -H "$(get_auth_header)" "${NITRO_URL}${MOD_PATH}" -o "$WORKSPACE/downloaded.mod" && \
    assert_file_exists "$WORKSPACE/downloaded.mod"; then
     pass
 else
@@ -127,7 +150,7 @@ fi
 
 # Test 8: Download .zip file
 print_test "Download .zip file"
-if curl -sf "${NITRO_URL}${UPLOAD_PATH}" -o "$WORKSPACE/downloaded.zip" && \
+if curl -sf -H "$(get_auth_header)" "${NITRO_URL}${UPLOAD_PATH}" -o "$WORKSPACE/downloaded.zip" && \
    assert_file_exists "$WORKSPACE/downloaded.zip"; then
     pass
 else
@@ -193,7 +216,7 @@ cd "$WORKSPACE/test-module"
 # Update version in code
 sed -i "s/${VERSION_1}/${VERSION_2}/g" greeter.go
 
-if ! run_cmd zip -r "$WORKSPACE/${MODULE_NAME//\//-}-${VERSION_2}.zip" .; then
+if ! create_module_zip "${VERSION_2}"; then
     fail "Failed to create module archive for ${VERSION_2}"
 fi
 
@@ -210,9 +233,39 @@ else
     fail "Expected 201, got $STATUS"
 fi
 
+# Upload v2 .info
+cat > "$WORKSPACE/${VERSION_2}.info" <<EOF
+{
+  "Version": "${VERSION_2}",
+  "Time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+INFO_PATH_V2="/repositories/${GO_HOSTED_REPO}/${MODULE_NAME}/@v/${VERSION_2}.info"
+STATUS=$(get_http_status "${NITRO_URL}${INFO_PATH_V2}" \
+    -X PUT \
+    -H "$(get_auth_header)" \
+    --data-binary "@${WORKSPACE}/${VERSION_2}.info")
+if assert_http_status "201" "$STATUS"; then
+    :
+else
+    fail "Expected 201 for info v2, got $STATUS"
+fi
+
+# Upload v2 .mod
+MOD_PATH_V2="/repositories/${GO_HOSTED_REPO}/${MODULE_NAME}/@v/${VERSION_2}.mod"
+STATUS=$(get_http_status "${NITRO_URL}${MOD_PATH_V2}" \
+    -X PUT \
+    -H "$(get_auth_header)" \
+    --data-binary "@${WORKSPACE}/test-module/go.mod")
+if assert_http_status "201" "$STATUS"; then
+    :
+else
+    fail "Expected 201 for mod v2, got $STATUS"
+fi
+
 # Test 12: Verify both versions in list
 print_test "Verify both versions in list"
-VERSIONS=$(curl -sf "${NITRO_URL}${LIST_PATH}" || echo "")
+VERSIONS=$(curl -sf -H "$(get_auth_header)" "${NITRO_URL}${LIST_PATH}" || echo "")
 record_output "$VERSIONS"
 
 if echo "$VERSIONS" | grep -q "${VERSION_1}" && echo "$VERSIONS" | grep -q "${VERSION_2}"; then

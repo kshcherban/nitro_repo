@@ -108,5 +108,5 @@ Quality is not negotiable. Speed is achieved through discipline, not shortcuts. 
 - to rebuild just backend `cargo build --features frontend`
 - if needed to stop the server run docker compose down
 - logs are available with `docker compose logs nitro_repo`
-- extensive debugging with traces is available in jaeger, being available at http://localhost:16686, check @docker-compose.dev.yml
+- extensive debugging with traces is available in jaeger, being available at http://localhost:16686, check @docker-compose.dev.yml, you can query trace like `curl -s http://localhost:16686/api/traces/<trace-id> | jq .`
 - in case something is needed inside running service container, use `docker compose exec`

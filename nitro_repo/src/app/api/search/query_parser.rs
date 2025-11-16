@@ -132,11 +132,9 @@ impl SearchQuery {
             return true;
         }
         let lowered: Vec<String> = fields.iter().map(|value| value.to_lowercase()).collect();
-        let comparator: Box<dyn Fn(&String, &String) -> bool> = if self.has_filters() {
-            Box::new(|value, term| value.contains(term))
-        } else {
-            Box::new(|value, term| value == term)
-        };
+        let comparator: Box<dyn Fn(&String, &String) -> bool> = Box::new(|value, term| {
+            value.contains(term)
+        });
 
         self.terms
             .iter()

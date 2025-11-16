@@ -91,7 +91,9 @@ fn determine_search_strategy(repository: &DynRepository) -> Option<SearchStrateg
             }
         },
         DynRepository::Cargo(_) => Some(SearchStrategy::Database),
-        DynRepository::Helm(_) | DynRepository::Maven(_) => Some(SearchStrategy::Database),
+        DynRepository::Helm(_) | DynRepository::Maven(_) | DynRepository::Deb(_) => {
+            Some(SearchStrategy::Database)
+        }
     }
 }
 
