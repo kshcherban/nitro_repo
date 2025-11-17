@@ -331,6 +331,9 @@ mod tests {
         let results = filter_database_rows(&summary, rows, &query, 10).expect("query to pass");
         assert_eq!(results.len(), 1);
         assert!(results[0].file_name.ends_with(".deb"));
-        assert_eq!(results[0].cache_path, "pool/main/hello/hello_2.10_amd64.deb");
+        assert_eq!(
+            results[0].cache_path,
+            "pool/main/hello/hello_2.10_amd64.deb"
+        );
     }
 }

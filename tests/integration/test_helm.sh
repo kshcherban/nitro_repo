@@ -6,13 +6,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
+export HELM_EXPERIMENTAL_OCI=1
 
 # Helm-specific configuration
 HELM_HOSTED_REPO="${TEST_STORAGE}/helm-hosted"
+HELM_OCI_REPO="${TEST_STORAGE}/helm-oci"
 FIXTURE_DIR="/fixtures/helm/test-chart"
 CHART_NAME="test-chart"
 VERSION_1="1.0.0"
 VERSION_2="1.0.1"
+
+if [[ "${NITRO_URL}" == *"://"* ]]; then
+    NITRO_REGISTRY_HOST="${NITRO_URL#*://}"
+else
+    NITRO_REGISTRY_HOST="${NITRO_URL}"
+fi
+NITRO_REGISTRY_HOST="${NITRO_REGISTRY_HOST%%/*}"
+NITRO_REGISTRY_HOST="${NITRO_REGISTRY_HOST%/}"
+HELM_OCI_REPO_URL="oci://${NITRO_REGISTRY_HOST}/${HELM_OCI_REPO}"
+HELM_OCI_CHART_REF="${HELM_OCI_REPO_URL}/${CHART_NAME}"
 
 print_section "Helm Integration Tests"
 
@@ -237,8 +249,86 @@ else
     fail "Unexpected status for delete: $STATUS"
 fi
 
+# Test 17: Validate Chart.yaml apiVersion from HTTP pull
+print_test "Validate Chart.yaml apiVersion (HTTP repository)"
+if CHART_METADATA=$(tar -Oxzf "${PULL_DIR}/${CHART_NAME}-${VERSION_1}.tgz" "${CHART_NAME}/Chart.yaml" 2>/dev/null); then
+    record_output "$CHART_METADATA"
+    if echo "$CHART_METADATA" | grep -q "apiVersion: v2"; then
+        clear_last_log
+        pass
+    else
+        fail "Chart.yaml does not declare apiVersion v2"
+    fi
+else
+    fail "Failed to read Chart.yaml from HTTP chart archive"
+fi
+
+# Test 18: Login to Helm OCI registry
+print_test "Login to Helm OCI registry"
+if run_cmd helm registry login "$NITRO_REGISTRY_HOST" \
+        --username "$TEST_USER" \
+        --password "$TEST_PASSWORD" \
+        --plain-http; then
+    pass
+else
+    fail "Failed to authenticate against Helm OCI registry"
+fi
+
+cd "$WORKSPACE"
+
+# Test 19: Push chart v1 via OCI
+print_test "Push chart v1 via OCI"
+if run_cmd helm push "${WORKSPACE}/${CHART_PACKAGE}" "$HELM_OCI_REPO_URL" --plain-http; then
+    pass
+else
+    fail "Failed to push chart v1 to OCI repository"
+fi
+
+# Test 20: Push chart v2 via OCI
+print_test "Push chart v2 via OCI"
+if run_cmd helm push "${WORKSPACE}/${CHART_PACKAGE_V2}" "$HELM_OCI_REPO_URL" --plain-http; then
+    pass
+else
+    fail "Failed to push chart v2 to OCI repository"
+fi
+
+# Test 21: Pull chart v2 from OCI
+print_test "Pull chart v2 via OCI"
+OCI_PULL_DIR="$WORKSPACE/oci-pulled"
+mkdir -p "$OCI_PULL_DIR"
+cd "$OCI_PULL_DIR"
+if run_cmd helm pull "$HELM_OCI_CHART_REF" --version "${VERSION_2}" --plain-http && \
+   assert_file_exists "${CHART_NAME}-${VERSION_2}.tgz"; then
+    pass
+else
+    fail "Failed to pull chart v2 from OCI repository"
+fi
+
+# Test 22: Validate Chart.yaml apiVersion from OCI pull
+print_test "Validate Chart.yaml apiVersion (OCI repository)"
+if OCI_CHART_METADATA=$(tar -Oxzf "${OCI_PULL_DIR}/${CHART_NAME}-${VERSION_2}.tgz" "${CHART_NAME}/Chart.yaml" 2>/dev/null); then
+    record_output "$OCI_CHART_METADATA"
+    if echo "$OCI_CHART_METADATA" | grep -q "apiVersion: v2"; then
+        clear_last_log
+        pass
+    else
+        fail "OCI Chart.yaml does not declare apiVersion v2"
+    fi
+else
+    fail "Failed to read Chart.yaml from OCI chart archive"
+fi
+
+# Test 23: Logout from Helm OCI registry
+print_test "Logout from Helm OCI registry"
+if run_cmd helm registry logout "$NITRO_REGISTRY_HOST"; then
+    pass
+else
+    fail "Failed to logout from Helm OCI registry"
+fi
+
 # Cleanup
 helm repo remove "$REPO_NAME" > /dev/null 2>&1 || true
+cd "$SCRIPT_DIR"
 cleanup_workspace "$WORKSPACE"
 
 print_summary

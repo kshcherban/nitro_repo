@@ -62,13 +62,8 @@ const input = ref({
   storageConfigValue: {},
 });
 const storageOptions = ref(storageTypes);
-const storageConfig = computed(() => {
-  if (input.value.storageType === "") {
-    return undefined;
-  }
-  const current = getStorageType(input.value.storageType);
-  return current;
-});
+const selectedStorageType = computed(() => getStorageType(input.value.storageType));
+const storageConfig = computed(() => selectedStorageType.value);
 
 const errorBanner = ref({
   visible: false,
@@ -87,24 +82,37 @@ watch(
   () => input.value.storageType,
   () => {
     resetError();
+    const current = selectedStorageType.value;
+    input.value.storageConfigValue = current?.defaultSettings
+      ? current.defaultSettings()
+      : {};
   },
+  { immediate: true },
 );
 
 async function createStorage() {
-  console.log(input.value);
+  const selected = selectedStorageType.value;
+  if (!selected) {
+    const message = "Select a storage backend before submitting.";
+    errorBanner.value = {
+      visible: true,
+      title: "Storage type required",
+      message,
+    };
+    alerts.error("Storage type required", message);
+    return;
+  }
   const data = {
     name: input.value.name,
     config: {
-      type: input.value.storageType,
+      type: selected.configType,
       settings: input.value.storageConfigValue,
     },
   };
 
   resetError();
-  const alerts = useAlertsStore();
   try {
-    const response = await http.post(`/api/storage/new/${input.value.storageType}`, data);
-    console.log(response);
+    const response = await http.post(`/api/storage/new/${selected.value}`, data);
     alerts.success("Storage created", "The storage has been created.");
     router.push({
       name: "ViewStorage",

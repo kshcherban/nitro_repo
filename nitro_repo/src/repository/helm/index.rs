@@ -108,10 +108,6 @@ struct IndexEntryDocument {
     provenance: Option<String>,
     #[serde(rename = "apiVersion", skip_serializing_if = "Option::is_none")]
     chart_api_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    digest_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,8 +220,6 @@ pub fn render_index_yaml(
             chart_type,
             provenance: provenance_label(entry.provenance),
             chart_api_version,
-            digest_type: Some("sha256".to_string()),
-            size: Some(entry.size_bytes),
         };
 
         grouped

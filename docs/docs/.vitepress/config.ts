@@ -72,6 +72,7 @@ function sysAdminBar() {
       items: [
         { text: "Prepping your System", link: "/sysAdmin/" },
         { text: "Maintenance", link: "/sysAdmin/maintenance" },
+        { text: "Configuring S3 Storage", link: "/sysAdmin/s3" },
       ],
     },
   ];

@@ -1,3 +1,4 @@
+#[cfg_attr(not(feature = "frontend"), allow(unused_imports))]
 use std::io::{Cursor, Read, Write};
 
 use ar::Archive as ArArchive;

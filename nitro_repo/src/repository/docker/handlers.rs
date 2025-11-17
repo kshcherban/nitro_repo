@@ -13,17 +13,23 @@ use nr_core::{
     storage::{FileHashes, StoragePath},
     utils::base64_utils,
 };
-use nr_storage::{Storage, StorageError, StorageFile, local::LocalStorage};
+use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile, local::LocalStorage};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, instrument, warn};
+use url::form_urlencoded;
 
 use super::{
     DockerError, DockerHosted, RepoResponse, Repository, RepositoryHandlerError, RepositoryRequest,
+    metadata::collect_manifest_entries,
     types::{Manifest, MediaType},
 };
-use crate::app::{BlobUploadStateHandle, FinalizedUpload, NitroRepo};
+use crate::{
+    app::{BlobUploadStateHandle, FinalizedUpload, NitroRepo},
+    repository::repo_http::RepositoryAuthentication,
+};
 use uuid::Uuid;
 
 /// Helper to extract bytes from StorageFile
@@ -49,17 +55,248 @@ fn custom_response(status: StatusCode, headers: Vec<(&str, &str)>, body: Vec<u8>
     RepoResponse::Other(builder.body(Body::from(body)).unwrap())
 }
 
-/// Helper to create JSON response
-fn json_response(value: serde_json::Value) -> RepoResponse {
-    let json_str = serde_json::to_string(&value).unwrap();
-    custom_response(
-        StatusCode::OK,
-        vec![("Content-Type", "application/json")],
-        json_str.into_bytes(),
+const LOCAL_UPLOAD_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+const MAX_PAGINATION_PAGE_SIZE: usize = 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pagination {
+    limit: Option<usize>,
+    last: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PaginationCursor {
+    last: String,
+    limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PaginatedList {
+    values: Vec<String>,
+    next: Option<PaginationCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PaginationError {
+    InvalidLimit,
+}
+
+impl PaginationError {
+    fn into_response(self) -> RepoResponse {
+        let message = match self {
+            PaginationError::InvalidLimit => "Query parameter 'n' must be a positive integer",
+        };
+        let body = serde_json::json!({
+            "errors": [{
+                "code": "PAGINATION_NUMBER_INVALID",
+                "message": message,
+            }]
+        });
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header("Content-Type", "application/json")
+            .header("Docker-Distribution-API-Version", "registry/2.0")
+            .body(Body::from(body.to_string()))
+            .expect("failed to build pagination error response");
+        RepoResponse::Other(response)
+    }
+}
+
+fn parse_pagination_params(query: Option<&str>) -> Result<Pagination, PaginationError> {
+    let mut limit = None;
+    let mut last = None;
+
+    if let Some(q) = query {
+        for (key, value) in form_urlencoded::parse(q.as_bytes()) {
+            match key.as_ref() {
+                "n" => {
+                    if value.is_empty() {
+                        return Err(PaginationError::InvalidLimit);
+                    }
+                    let parsed = value
+                        .parse::<usize>()
+                        .map_err(|_| PaginationError::InvalidLimit)?;
+                    if parsed == 0 {
+                        return Err(PaginationError::InvalidLimit);
+                    }
+                    limit = Some(parsed.min(MAX_PAGINATION_PAGE_SIZE));
+                }
+                "last" => {
+                    if !value.is_empty() {
+                        last = Some(value.into_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(Pagination { limit, last })
+}
+
+async fn collect_catalog_repositories(
+    storage: &DynStorage,
+    repository_id: Uuid,
+) -> Result<Vec<String>, DockerError> {
+    let entries = collect_manifest_entries(storage, repository_id).await?;
+    let mut repositories = BTreeSet::new();
+    for entry in entries {
+        if entry.repository.is_empty() {
+            continue;
+        }
+        repositories.insert(entry.repository);
+    }
+    Ok(repositories.into_iter().collect())
+}
+
+fn paginate_lexically(all: &[String], pagination: &Pagination) -> PaginatedList {
+    if all.is_empty() {
+        return PaginatedList {
+            values: Vec::new(),
+            next: None,
+        };
+    }
+
+    let mut start = 0usize;
+    if let Some(last) = &pagination.last {
+        start = match all.binary_search(last) {
+            Ok(idx) => idx.saturating_add(1),
+            Err(idx) => idx,
+        };
+    }
+    if start >= all.len() {
+        return PaginatedList {
+            values: Vec::new(),
+            next: None,
+        };
+    }
+
+    match pagination.limit {
+        Some(limit) => {
+            let end = (start + limit).min(all.len());
+            let selected = all[start..end].to_vec();
+            let next = if end < all.len() && !selected.is_empty() {
+                selected.last().cloned().map(|last_name| PaginationCursor {
+                    last: last_name,
+                    limit,
+                })
+            } else {
+                None
+            };
+            PaginatedList {
+                values: selected,
+                next,
+            }
+        }
+        None => PaginatedList {
+            values: all[start..].to_vec(),
+            next: None,
+        },
+    }
+}
+
+fn build_catalog_response(page: PaginatedList) -> RepoResponse {
+    let payload = serde_json::json!({ "repositories": page.values });
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Docker-Distribution-API-Version", "registry/2.0");
+
+    if let Some(next) = page.next {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair("last", &next.last);
+        serializer.append_pair("n", &next.limit.to_string());
+        let query = serializer.finish();
+        let link_value = format!("</v2/_catalog?{}>; rel=\"next\"", query);
+        builder = builder.header("Link", link_value);
+    }
+
+    let bytes = serde_json::to_vec(&payload).expect("catalog serialization cannot fail");
+    RepoResponse::Other(
+        builder
+            .body(Body::from(bytes))
+            .expect("failed to build catalog response"),
     )
 }
 
-const LOCAL_UPLOAD_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+async fn list_catalog(
+    repo: &DockerHosted,
+    params: Pagination,
+) -> Result<RepoResponse, DockerError> {
+    let repositories = collect_catalog_repositories(&repo.get_storage(), repo.id()).await?;
+    let page = paginate_lexically(&repositories, &params);
+    Ok(build_catalog_response(page))
+}
+
+fn build_tags_response(repository_name: &str, page: PaginatedList) -> RepoResponse {
+    let payload = serde_json::json!({
+        "name": repository_name,
+        "tags": page.values,
+    });
+
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Docker-Distribution-API-Version", "registry/2.0");
+
+    if let Some(cursor) = page.next {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair("last", &cursor.last);
+        serializer.append_pair("n", &cursor.limit.to_string());
+        let query = serializer.finish();
+        let link_value = format!(
+            "</v2/{}/tags/list?{}>; rel=\"next\"",
+            repository_name, query
+        );
+        builder = builder.header("Link", link_value);
+    }
+
+    RepoResponse::Other(
+        builder
+            .body(Body::from(payload.to_string()))
+            .expect("failed to build tags response"),
+    )
+}
+
+fn is_digest_reference(candidate: &str) -> bool {
+    if let Some((algorithm, value)) = candidate.split_once(':') {
+        if algorithm.is_empty() || value.is_empty() {
+            return false;
+        }
+        return value.chars().all(|ch| ch.is_ascii_hexdigit());
+    }
+    false
+}
+
+async fn collect_repository_tags(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    repository_name: &str,
+) -> Result<Vec<String>, DockerError> {
+    let manifests_dir = StoragePath::from(format!("v2/{}/manifests", repository_name));
+    let dir = storage
+        .open_file(repository_id, &manifests_dir)
+        .await?
+        .ok_or_else(|| DockerError::InvalidRepositoryName(repository_name.to_string()))?;
+
+    let StorageFile::Directory { files, .. } = dir else {
+        return Err(DockerError::InvalidRepositoryName(
+            repository_name.to_string(),
+        ));
+    };
+
+    let mut tags = Vec::new();
+    for entry in files {
+        if let FileType::File(_) = entry.file_type {
+            if !is_digest_reference(&entry.name) {
+                tags.push(entry.name);
+            }
+        }
+    }
+    tags.sort();
+    tags.dedup();
+    Ok(tags)
+}
 
 #[tracing::instrument(
     name = "docker_stream_to_writer",
@@ -169,11 +406,23 @@ pub async fn handle_get(
     match parts.as_slice() {
         // GET /v2/ - Base API check
         ["v2"] => handle_api_version_check(),
+        // GET /v2/_catalog - List available repositories
+        ["v2", "_catalog"] => {
+            let params = match parse_pagination_params(request.parts.uri.query()) {
+                Ok(params) => params,
+                Err(err) => return Ok(err.into_response()),
+            };
+            list_catalog(&repo, params).await
+        }
 
         // GET /v2/<name>/tags/list - List all tags for a repository
         ["v2", name @ .., "tags", "list"] if !name.is_empty() => {
             let repository_name = name.join("/");
-            list_tags(&repo, &repository_name).await
+            let params = match parse_pagination_params(request.parts.uri.query()) {
+                Ok(params) => params,
+                Err(err) => return Ok(err.into_response()),
+            };
+            list_tags(&repo, &repository_name, params).await
         }
 
         // GET /v2/<name>/manifests/<reference> - Get manifest by tag or digest
@@ -186,6 +435,13 @@ pub async fn handle_get(
                 .and_then(|h| h.to_str().ok())
                 .map(|s| s.to_string());
             get_manifest(&repo, &repository_name, reference, accept_header).await
+        }
+
+        // GET /v2/<name>/blobs/uploads/<uuid> - Get upload status
+        ["v2", name @ .., "blobs", "uploads", upload_id] if !name.is_empty() => {
+            let repository_name = name.join("/");
+            get_blob_upload_status(&repo, &repository_name, upload_id, &request.authentication)
+                .await
         }
 
         // GET /v2/<name>/blobs/<digest> - Download blob
@@ -333,6 +589,12 @@ pub async fn handle_delete(
             delete_manifest(&repo, &repository_name, reference).await
         }
 
+        // DELETE /v2/<name>/blobs/uploads/<uuid> - Cancel upload
+        ["v2", name @ .., "blobs", "uploads", upload_id] if !name.is_empty() => {
+            let repository_name = name.join("/");
+            cancel_blob_upload(&repo, &repository_name, upload_id, &request.authentication).await
+        }
+
         // DELETE /v2/<name>/blobs/<digest> - Delete blob
         ["v2", name @ .., "blobs", digest] if !name.is_empty() => {
             let repository_name = name.join("/");
@@ -359,19 +621,14 @@ fn handle_api_version_check() -> Result<RepoResponse, DockerError> {
 async fn list_tags(
     repo: &DockerHosted,
     repository_name: &str,
+    params: Pagination,
 ) -> Result<RepoResponse, DockerError> {
     debug!("Listing tags for repository: {}", repository_name);
 
-    // TODO: Implement proper tag listing by querying storage directory contents
-    // For now, return empty tags list
-    let tags: Vec<String> = Vec::new();
+    let tags = collect_repository_tags(&repo.get_storage(), repo.id(), repository_name).await?;
+    let page = paginate_lexically(&tags, &params);
 
-    let response = serde_json::json!({
-        "name": repository_name,
-        "tags": tags
-    });
-
-    Ok(json_response(response))
+    Ok(build_tags_response(repository_name, page))
 }
 
 /// GET /v2/<name>/manifests/<reference> - Get manifest
@@ -695,13 +952,91 @@ async fn initiate_blob_upload(
     site.begin_docker_blob_upload_state(repo.id(), &upload_id);
 
     let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
+    let range = upload_range_header(0);
 
     Ok(custom_response(
         StatusCode::ACCEPTED,
         vec![
             ("Location", &location),
-            ("Range", "0-0"),
+            ("Range", &range),
             ("Docker-Upload-UUID", &upload_id),
+            ("Content-Length", "0"),
+        ],
+        vec![],
+    ))
+}
+
+fn upload_range_header(total_size: u64) -> String {
+    if total_size == 0 {
+        "0-0".to_string()
+    } else {
+        format!("0-{}", total_size.saturating_sub(1))
+    }
+}
+
+async fn get_blob_upload_status(
+    repo: &DockerHosted,
+    repository_name: &str,
+    upload_id: &str,
+    authentication: &RepositoryAuthentication,
+) -> Result<RepoResponse, DockerError> {
+    if authentication.get_user().is_none() {
+        return Ok(RepoResponse::unauthorized());
+    }
+
+    let site = repo.site();
+    let handle = site
+        .get_upload_state_handle(repo.id(), upload_id)
+        .ok_or_else(|| DockerError::BlobUploadNotFound(upload_id.to_string()))?;
+    let total_size = site.blob_upload_state_length(&handle);
+    drop(handle);
+
+    let range = upload_range_header(total_size);
+    let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
+
+    Ok(custom_response(
+        StatusCode::NO_CONTENT,
+        vec![
+            ("Location", &location),
+            ("Range", &range),
+            ("Docker-Upload-UUID", upload_id),
+            ("Content-Length", "0"),
+        ],
+        vec![],
+    ))
+}
+
+async fn cancel_blob_upload(
+    repo: &DockerHosted,
+    repository_name: &str,
+    upload_id: &str,
+    authentication: &RepositoryAuthentication,
+) -> Result<RepoResponse, DockerError> {
+    if authentication.get_user().is_none() {
+        return Ok(RepoResponse::unauthorized());
+    }
+
+    let site = repo.site();
+    if site.get_upload_state_handle(repo.id(), upload_id).is_none() {
+        return Err(DockerError::BlobUploadNotFound(upload_id.to_string()));
+    }
+
+    let upload_path = StoragePath::from(format!("v2/{}/uploads/{}", repository_name, upload_id));
+    let _ = repo
+        .get_storage()
+        .delete_file(repo.id(), &upload_path)
+        .await?;
+
+    site.abandon_blob_upload_state(repo.id(), upload_id);
+
+    let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
+
+    Ok(custom_response(
+        StatusCode::NO_CONTENT,
+        vec![
+            ("Location", &location),
+            ("Docker-Upload-UUID", upload_id),
+            ("Content-Length", "0"),
         ],
         vec![],
     ))
@@ -775,12 +1110,7 @@ async fn upload_blob_chunk(
     }
     drop(state_handle);
 
-    let range_end = if total_size == 0 {
-        0
-    } else {
-        total_size.saturating_sub(1)
-    };
-    let range = format!("0-{}", range_end);
+    let range = upload_range_header(total_size);
     let location = format!("/v2/{}/blobs/uploads/{}", repository_name, upload_id);
 
     Ok(custom_response(
@@ -789,6 +1119,7 @@ async fn upload_blob_chunk(
             ("Location", &location),
             ("Range", &range),
             ("Docker-Upload-UUID", upload_id),
+            ("Content-Length", "0"),
         ],
         vec![],
     ))
@@ -938,6 +1269,7 @@ async fn complete_blob_upload(
         vec![
             ("Location", &location),
             ("Docker-Content-Digest", finalized.digest.as_str()),
+            ("Docker-Upload-UUID", upload_id),
             ("Content-Length", "0"),
         ],
         vec![],
@@ -1057,12 +1389,16 @@ async fn delete_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repository::test_helpers::test_storage;
     use futures::stream;
+    use nr_core::storage::StoragePath;
+    use nr_storage::{FileContent, Storage};
     use tempfile::tempdir;
     use tokio::{
         fs::{self, OpenOptions},
         io::{AsyncReadExt, BufWriter},
     };
+    use uuid::Uuid;
 
     fn test_stream_from_bytes(
         data: &[u8],
@@ -1115,5 +1451,111 @@ mod tests {
         assert_eq!(saved, payload);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_collection_lists_unique_sorted_repositories() -> anyhow::Result<()> {
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let manifest = br#"{
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "size": 1, "digest": "sha256:bead"},
+            "layers": []
+        }"#;
+
+        for path in [
+            "v2/acme/tools/api/manifests/latest",
+            "v2/acme/tools/api/manifests/v1",
+            "v2/acme/agent/manifests/dev",
+            "v2/zz/omega/manifests/main",
+        ] {
+            let storage_path = StoragePath::from(path);
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(manifest.as_ref()),
+                    &storage_path,
+                )
+                .await?;
+        }
+
+        let repositories = collect_catalog_repositories(&storage, repository_id).await?;
+        assert_eq!(
+            repositories,
+            vec![
+                "acme/agent".to_string(),
+                "acme/tools/api".to_string(),
+                "zz/omega".to_string()
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_pagination_respects_limit_and_last() {
+        let repositories = vec![
+            "alpha".to_string(),
+            "bravo".to_string(),
+            "charlie".to_string(),
+            "delta".to_string(),
+        ];
+        let params = Pagination {
+            limit: Some(2),
+            last: Some("alpha".to_string()),
+        };
+        let page = paginate_lexically(&repositories, &params);
+
+        assert_eq!(page.values, vec!["bravo", "charlie"]);
+        assert_eq!(
+            page.next,
+            Some(PaginationCursor {
+                last: "charlie".to_string(),
+                limit: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_catalog_query_rejects_zero_limit() {
+        let err = parse_pagination_params(Some("n=0")).expect_err("zero limit should be rejected");
+        assert!(matches!(err, PaginationError::InvalidLimit));
+    }
+
+    #[test]
+    fn parse_catalog_query_extracts_values() {
+        let params =
+            parse_pagination_params(Some("n=5&last=acme%2Fapi")).expect("query should be parsed");
+        assert_eq!(params.limit, Some(5));
+        assert_eq!(params.last.as_deref(), Some("acme/api"));
+    }
+
+    #[tokio::test]
+    async fn collect_repository_tags_ignores_digest_entries() -> anyhow::Result<()> {
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let manifest_bytes = br#"{"schemaVersion":2}"#;
+        for tag in ["latest", "dev", "sha256:abcdef"] {
+            let path = StoragePath::from(format!("v2/example/app/manifests/{tag}"));
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(manifest_bytes.as_ref()),
+                    &path,
+                )
+                .await?;
+        }
+
+        let tags = collect_repository_tags(&storage, repository_id, "example/app").await?;
+        assert_eq!(tags, vec!["dev".to_string(), "latest".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn upload_range_header_formats_values() {
+        assert_eq!(upload_range_header(0), "0-0");
+        assert_eq!(upload_range_header(1), "0-0");
+        assert_eq!(upload_range_header(10), "0-9");
     }
 }

@@ -41,6 +41,10 @@ ssl_cert_key='/etc/letsencrypt/live/{domain}/cert.pem'
 
 Finally Restart Nitro Repo
 
+## Storage Backends
+
+- [Configuring S3 Storage](./s3.md) — steps for attaching Nitro Repo to an S3 or S3-compatible bucket.
+
 ## Enabling SSO Login
 Nitro Repo can delegate authentication to an upstream SSO provider (Keycloak, Authelia, Dex, etc.) that injects identity headers after a successful login. Configure the security section in `cfg/nitro_repo.toml` to enable the feature:
 

@@ -96,9 +96,7 @@ fn parse_debian_semver(value: &str) -> Option<Version> {
         .map(|(_, rest)| rest)
         .unwrap_or(trimmed);
     // Separate upstream version from Debian revision (after '-').
-    let (upstream, _) = without_epoch
-        .split_once('-')
-        .unwrap_or((without_epoch, ""));
+    let (upstream, _) = without_epoch.split_once('-').unwrap_or((without_epoch, ""));
     if upstream.is_empty() {
         return None;
     }
@@ -158,7 +156,10 @@ fn looks_like_debian_version(value: &str) -> bool {
         .rsplit_once('-')
         .map(|(_, suffix)| {
             !suffix.is_empty()
-                && suffix.chars().next().map_or(false, |ch| ch.is_ascii_digit())
+                && suffix
+                    .chars()
+                    .next()
+                    .map_or(false, |ch| ch.is_ascii_digit())
                 && !suffix.contains('.')
         })
         .unwrap_or(false)

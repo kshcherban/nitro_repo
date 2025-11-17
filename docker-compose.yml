@@ -26,9 +26,11 @@ services:
       - postgres
     command: ["start", "--config", "/data/nitro_repo.toml"]
     labels:
-      - "traefik.frontend.rule=Host:nitro.sudoers.dev"
       - "traefik.enable=true"
-      - "traefik.port=6742"
+      - "traefik.http.services.nitro.loadbalancer.server.port=6742"
+      - "traefik.http.routers.nitro.rule=Host(`nitro.sudoers.dev`)"
+      - "traefik.http.routers.nitro.entrypoints=https"
+      - "traefik.http.routers.nitro.tls.certresolver=letsencrypt"
     volumes:
       - nitro_repo_data:/data
       - ./docker/config.toml:/data/nitro_repo.toml:ro
