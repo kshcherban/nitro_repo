@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install base tools
 RUN apt-get update && apt-get install -y \
+    build-essential \
     curl \
     wget \
     git \
@@ -16,6 +17,10 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     lsb-release \
     software-properties-common \
+    pkg-config \
+    libssl-dev \
+    dpkg-dev \
+    xz-utils \
     openjdk-11-jdk \
     && rm -rf /var/lib/apt/lists/*
 
@@ -74,6 +79,13 @@ ENV PATH="${GOPATH}/bin:${PATH}"
 
 # Install Helm
 RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Install Rust toolchain for Cargo integration tests
+RUN curl https://sh.rustup.rs -sSf | bash -s -- -y --default-toolchain stable --profile minimal \
+    && /root/.cargo/bin/rustup component add rustfmt
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_HOME="/root/.cargo"
 
 # Create working directories
 RUN mkdir -p /tests /fixtures /results /workspace

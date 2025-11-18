@@ -1,11 +1,9 @@
 use std::{io::Write, path::PathBuf};
 
+use super::{generate_from_bytes, generate_hashes_from_path};
 use bytes::Bytes;
 use derive_more::derive::From;
 use nr_core::storage::FileHashes;
-use tux_io_s3::command::S3CommandBody;
-
-use super::{generate_from_bytes, generate_hashes_from_path};
 
 /// FileContent is a enum that can be used to represent the content of a file.
 ///
@@ -35,14 +33,6 @@ pub enum FileContentBytes {
     Content(Vec<u8>),
     Bytes(Bytes),
 }
-impl From<FileContentBytes> for S3CommandBody {
-    fn from(value: FileContentBytes) -> Self {
-        match value {
-            FileContentBytes::Content(content) => S3CommandBody::from(content),
-            FileContentBytes::Bytes(bytes) => S3CommandBody::from(bytes),
-        }
-    }
-}
 impl From<FileContentBytes> for Vec<u8> {
     fn from(bytes: FileContentBytes) -> Self {
         match bytes {
@@ -60,6 +50,13 @@ impl FileContentBytes {
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn clone_into_bytes(&self) -> Bytes {
+        match self {
+            FileContentBytes::Content(content) => Bytes::from(content.clone()),
+            FileContentBytes::Bytes(bytes) => bytes.clone(),
+        }
     }
 }
 impl AsRef<[u8]> for FileContentBytes {

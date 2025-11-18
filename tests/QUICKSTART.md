@@ -98,6 +98,8 @@ docker compose -f docker/docker-compose.test.yml down -v
 | python  | 11    | PyPI upload, pip install, Simple API, proxy |
 | php     | 10    | Composer packages, packages.json, version management |
 | go      | 16    | Module upload, GOPROXY, .info/.mod/.zip files, proxy |
+| debian  | 6     | dpkg-deb packaging, Packages/Release indexes, pool downloads |
+| cargo   | 8     | cargo publish/install, sparse index, crate downloads |
 | helm    | 16    | Chart packaging, index.yaml, ChartMuseum API, pull/push |
 
 ## Troubleshooting

@@ -201,10 +201,18 @@ fn parse_chart_artifact(path: &StoragePath) -> Option<ChartArtifactPath> {
     }
 
     let file = segments.pop().unwrap();
+    let mut expected_chart_dir: Option<&str> = None;
     let alias = if segments.is_empty() {
         false
-    } else if segments.len() == 1 && segments[0] == "charts" {
-        true
+    } else if segments[0] == "charts" {
+        match segments.len() {
+            1 => true,
+            2 => {
+                expected_chart_dir = Some(segments[1]);
+                true
+            }
+            _ => return None,
+        }
     } else {
         return None;
     };
@@ -220,6 +228,12 @@ fn parse_chart_artifact(path: &StoragePath) -> Option<ChartArtifactPath> {
     let (name, version) = trimmed.rsplit_once('-')?;
     if name.is_empty() || version.is_empty() {
         return None;
+    }
+
+    if let Some(expected) = expected_chart_dir {
+        if expected != name {
+            return None;
+        }
     }
 
     Some(ChartArtifactPath {
@@ -1491,6 +1505,44 @@ impl HelmHosted {
         self.with_docker_repo(request, docker_handlers::handle_delete)
             .await
     }
+
+    async fn handle_chartmuseum_delete(
+        &self,
+        request: RepositoryRequest,
+    ) -> Result<RepoResponse, HelmRepositoryError> {
+        if !self.http_enabled() {
+            return Ok(ResponseBuilder::default()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body("HTTP chart access disabled for this repository")
+                .into());
+        }
+
+        let Some(_user_id) = self.get_write_user_id(&request.authentication).await? else {
+            return Ok(RepoResponse::unauthorized());
+        };
+
+        let path = request.path.to_string();
+        let Some((chart_name, version)) = parse_chartmuseum_delete_path(&path) else {
+            return Ok(ResponseBuilder::bad_request()
+                .body("Invalid ChartMuseum delete path")
+                .into());
+        };
+
+        let removed = self
+            .delete_chart_versions(&[DeletePackageEntry {
+                name: chart_name,
+                version,
+            }])
+            .await?;
+
+        if removed > 0 {
+            Ok(ResponseBuilder::ok().body("Chart deleted").into())
+        } else {
+            Ok(ResponseBuilder::not_found()
+                .body("Chart version not found")
+                .into())
+        }
+    }
 }
 
 fn parse_manifest_request_path(path: &str) -> Option<(String, String)> {
@@ -1514,6 +1566,23 @@ fn parse_manifest_request_path(path: &str) -> Option<(String, String)> {
         return None;
     }
     Some((repository, reference))
+}
+
+fn parse_chartmuseum_delete_path(path: &str) -> Option<(String, String)> {
+    let trimmed = path.trim_start_matches('/');
+    let segments: Vec<&str> = trimmed.split('/').collect();
+    if segments.len() != 4 {
+        return None;
+    }
+    if segments[0] != "api" || segments[1] != "charts" {
+        return None;
+    }
+    let chart = segments[2];
+    let version = segments[3];
+    if chart.is_empty() || version.is_empty() {
+        return None;
+    }
+    Some((chart.to_string(), version.to_string()))
 }
 
 impl Repository for HelmHosted {
@@ -1624,6 +1693,10 @@ impl Repository for HelmHosted {
 
         if path.starts_with("v2/") {
             return self.handle_delete_oci(request).await;
+        }
+
+        if path.starts_with("api/charts") {
+            return self.handle_chartmuseum_delete(request).await;
         }
 
         Ok(ResponseBuilder::bad_request()
@@ -1807,6 +1880,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_chartmuseum_delete_path_accepts_valid_input() {
+        let parsed = super::parse_chartmuseum_delete_path("api/charts/webapp/1.0.0")
+            .expect("should parse delete path");
+        assert_eq!(parsed.0, "webapp");
+        assert_eq!(parsed.1, "1.0.0");
+    }
+
+    #[test]
+    fn parse_chartmuseum_delete_path_rejects_invalid_input() {
+        assert!(super::parse_chartmuseum_delete_path("api/charts/webapp").is_none());
+        assert!(super::parse_chartmuseum_delete_path("invalid/path").is_none());
+    }
+
+    #[test]
     fn parses_root_chart_artifact() {
         let path = StoragePath::from("webapp-1.0.0.tgz");
         let artifact = parse_chart_artifact(&path).expect("should parse chart");
@@ -1824,6 +1911,22 @@ mod tests {
         assert_eq!(artifact.version, "1.0.0");
         assert!(artifact.is_provenance);
         assert!(artifact.alias);
+    }
+
+    #[test]
+    fn parses_nested_chart_artifact() {
+        let path = StoragePath::from("charts/webapp/webapp-1.0.0.tgz");
+        let artifact = parse_chart_artifact(&path).expect("should parse nested chart");
+        assert_eq!(artifact.name, "webapp");
+        assert_eq!(artifact.version, "1.0.0");
+        assert!(!artifact.is_provenance);
+        assert!(artifact.alias);
+    }
+
+    #[test]
+    fn rejects_mismatched_nested_directory() {
+        let path = StoragePath::from("charts/other/webapp-1.0.0.tgz");
+        assert!(parse_chart_artifact(&path).is_none());
     }
 
     #[test]

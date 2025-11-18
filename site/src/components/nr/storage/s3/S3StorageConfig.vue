@@ -59,7 +59,6 @@
       <TextInput
         id="s3-access-key"
         v-model="model.credentials.access_key"
-        required
         autocomplete="off"
         spellcheck="false">
         Access Key
@@ -67,12 +66,49 @@
       <TextInput
         id="s3-secret-key"
         v-model="model.credentials.secret_key"
-        required
         type="password"
         autocomplete="new-password">
         Secret Key
       </TextInput>
     </TwoByFormBox>
+    <p
+      v-if="credentialHint"
+      class="helper error">
+      {{ credentialHint }}
+    </p>
+    <TextInput
+      id="s3-session-token"
+      v-model="model.credentials.session_token"
+      autocomplete="off"
+      spellcheck="false">
+      Session Token (optional)
+    </TextInput>
+
+    <TwoByFormBox>
+      <TextInput
+        id="s3-role-arn"
+        v-model="model.credentials.role_arn"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="arn:aws:iam::123456789012:role/nitro-repo">
+        Role ARN (optional)
+      </TextInput>
+      <TextInput
+        id="s3-role-session-name"
+        v-model="model.credentials.role_session_name"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="nitro-repo-ci">
+        Role Session Name (optional)
+      </TextInput>
+    </TwoByFormBox>
+    <TextInput
+      id="s3-external-id"
+      v-model="model.credentials.external_id"
+      autocomplete="off"
+      spellcheck="false">
+      External ID (optional)
+    </TextInput>
 
     <SwitchInput
       id="s3-path-style"
@@ -83,6 +119,44 @@
         style (bucket.s3.amazonaws.com).
       </template>
     </SwitchInput>
+
+    <SwitchInput
+      id="s3-cache-enabled"
+      v-model="model.cache.enabled">
+      Enable local disk cache
+      <template #comment>
+        Stores frequently-read artifacts on this node to avoid repeated downloads from S3. Configure
+        the path and byte limit to match local disk capacity.
+      </template>
+    </SwitchInput>
+
+    <TwoByFormBox v-if="model.cache.enabled">
+      <TextInput
+        id="s3-cache-path"
+        v-model="model.cache.path"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="/var/lib/nitro-cache/s3">
+        Cache directory
+      </TextInput>
+      <TextInput
+        id="s3-cache-max-bytes"
+        v-model.number="model.cache.max_bytes"
+        type="number"
+        min="1048576"
+        step="1048576">
+        Max size (bytes)
+      </TextInput>
+    </TwoByFormBox>
+    <TextInput
+      v-if="model.cache.enabled"
+      id="s3-cache-max-entries"
+      v-model.number="model.cache.max_entries"
+      type="number"
+      min="1"
+      step="1">
+      Max cached entries
+    </TextInput>
   </section>
 </template>
 
@@ -106,6 +180,12 @@ const model = defineModel<S3StorageSettings>({
       secret_key: "",
     },
     path_style: true,
+    cache: {
+      enabled: false,
+      path: "",
+      max_bytes: 536870912,
+      max_entries: 2048,
+    },
   }),
 }) as Ref<S3StorageSettings>;
 
@@ -121,6 +201,12 @@ const ensureModel = (): S3StorageSettings => {
         secret_key: "",
       },
       path_style: true,
+      cache: {
+        enabled: false,
+        path: "",
+        max_bytes: 536870912,
+        max_entries: 2048,
+      },
     };
   }
   return model.value;
@@ -140,9 +226,41 @@ const regionSelection = computed({
 
 watchEffect(() => {
   const state = ensureModel();
-  state.credentials ??= { access_key: "", secret_key: "" };
+  state.credentials ??= {};
+  state.credentials.access_key ??= "";
+  state.credentials.secret_key ??= "";
+  state.credentials.session_token ??= "";
+  state.credentials.role_arn ??= "";
+  state.credentials.role_session_name ??= "";
+  state.credentials.external_id ??= "";
+  state.cache ??= {
+    enabled: false,
+    path: "",
+    max_bytes: 536870912,
+    max_entries: 2048,
+  };
+  state.cache.path ??= "";
+  if (typeof state.cache.max_bytes !== "number" || state.cache.max_bytes <= 0) {
+    state.cache.max_bytes = 536870912;
+  }
+  if (typeof state.cache.max_entries !== "number" || state.cache.max_entries <= 0) {
+    state.cache.max_entries = 2048;
+  }
   if (typeof state.path_style !== "boolean") {
     state.path_style = true;
+  }
+  state.cache ??= {
+    enabled: false,
+    path: "",
+    max_bytes: 536870912,
+    max_entries: 2048,
+  };
+  state.cache.path ??= "";
+  if (typeof state.cache.max_bytes !== "number" || state.cache.max_bytes <= 0) {
+    state.cache.max_bytes = 536870912;
+  }
+  if (typeof state.cache.max_entries !== "number" || state.cache.max_entries <= 0) {
+    state.cache.max_entries = 2048;
   }
 });
 
@@ -204,6 +322,20 @@ function humanizeRegion(value: string): string {
 
 onMounted(() => {
   loadRegions();
+});
+
+const credentialHint = computed(() => {
+  const state = ensureModel();
+  const access = state.credentials.access_key?.trim();
+  const secret = state.credentials.secret_key?.trim();
+  const role = state.credentials.role_arn?.trim();
+  if ((access && !secret) || (!access && secret)) {
+    return "Provide both access and secret keys, or leave both blank.";
+  }
+  if (access && secret && role) {
+    return "Access keys and IAM role are mutually exclusive. Choose one method.";
+  }
+  return null;
 });
 </script>
 

@@ -83,7 +83,7 @@ python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 
 if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/simple" \
-   --trusted-host=nitro_repo \
+   --trusted-host=nitro-repo \
    "${PACKAGE_NAME}==${VERSION_1}"; then
     pass
 else
@@ -132,7 +132,7 @@ python3 -m venv "$VENV_DIR_V2"
 source "$VENV_DIR_V2/bin/activate"
 
 if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_HOSTED_REPO}/simple" \
-   --trusted-host=nitro_repo \
+   --trusted-host=nitro-repo \
    "${PACKAGE_NAME}==${VERSION_2}"; then
     INSTALLED_VERSION=$(python3 -c "import nitro_test_pkg; print(nitro_test_pkg.get_version())")
     record_output "$INSTALLED_VERSION"
@@ -155,7 +155,7 @@ python3 -m venv "$VENV_DIR_PROXY"
 source "$VENV_DIR_PROXY/bin/activate"
 
 if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_PROXY_REPO}/simple" \
-   --trusted-host=nitro_repo \
+   --trusted-host=nitro-repo \
    "requests==2.31.0"; then
     pass
 else
@@ -171,7 +171,7 @@ python3 -m venv "$VENV_DIR_PROXY2"
 source "$VENV_DIR_PROXY2/bin/activate"
 
 if run_cmd pip install --index-url="${NITRO_URL}/repositories/${PYTHON_PROXY_REPO}/simple" \
-   --trusted-host=nitro_repo \
+   --trusted-host=nitro-repo \
    "requests==2.31.0"; then
     pass
 else

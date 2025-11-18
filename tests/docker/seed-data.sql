@@ -199,6 +199,40 @@ INSERT INTO repository_configs (repository_id, key, value) VALUES
     ('66666666-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 
+-- Debian Hosted Repository
+INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
+VALUES (
+    '88888888-0000-0000-0000-000000000001'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'deb-hosted',
+    'deb',
+    'Public',
+    true
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO repository_configs (repository_id, key, value) VALUES
+    ('88888888-0000-0000-0000-000000000001'::uuid, 'deb', '{"distributions": ["stable"], "components": ["main"], "architectures": ["amd64", "all"]}'::jsonb),
+    ('88888888-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
+ON CONFLICT (repository_id, key) DO NOTHING;
+
+-- Cargo Hosted Repository
+INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
+VALUES (
+    '99999999-0000-0000-0000-000000000001'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'cargo-hosted',
+    'cargo',
+    'Public',
+    true
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO repository_configs (repository_id, key, value) VALUES
+    ('99999999-0000-0000-0000-000000000001'::uuid, 'cargo', '{"type": "Hosted"}'::jsonb),
+    ('99999999-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
+ON CONFLICT (repository_id, key) DO NOTHING;
+
 -- Helm Hosted Repository
 INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
 VALUES (
@@ -212,7 +246,7 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO repository_configs (repository_id, key, value) VALUES
-    ('77777777-0000-0000-0000-000000000001'::uuid, 'helm', '{"mode": "http", "overwrite": false, "max_chart_size": 10485760, "max_file_count": 1028, "index_cache_ttl": 300, "public_base_url": null}'::jsonb),
+    ('77777777-0000-0000-0000-000000000001'::uuid, 'helm', '{"mode": "http", "overwrite": true, "max_chart_size": 10485760, "max_file_count": 1028, "index_cache_ttl": 300, "public_base_url": null}'::jsonb),
     ('77777777-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 
@@ -229,7 +263,7 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO repository_configs (repository_id, key, value) VALUES
-    ('77777777-0000-0000-0000-000000000002'::uuid, 'helm', '{"mode": "oci", "overwrite": false, "max_chart_size": 10485760, "max_file_count": 1028, "index_cache_ttl": 300, "public_base_url": null}'::jsonb),
+    ('77777777-0000-0000-0000-000000000002'::uuid, 'helm', '{"mode": "oci", "overwrite": true, "max_chart_size": 10485760, "max_file_count": 1028, "index_cache_ttl": 300, "public_base_url": null}'::jsonb),
     ('77777777-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 

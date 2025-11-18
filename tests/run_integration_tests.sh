@@ -50,6 +50,8 @@ TEST_SUITES:
     python      Run Python/PyPI integration tests
     php         Run PHP/Composer integration tests
     go          Run Go integration tests
+    debian      Run Debian repository integration tests
+    cargo       Run Cargo registry integration tests
     helm        Run Helm integration tests
     all         Run all test suites (default)
 
@@ -108,12 +110,12 @@ while [[ $# -gt 0 ]]; do
             STOP=0
             shift
             ;;
-        maven|npm|docker|python|php|go|helm)
+        maven|npm|docker|python|php|go|debian|cargo|helm)
             TEST_SUITES+=("$1")
             shift
             ;;
         all)
-            TEST_SUITES=(maven npm docker python php go helm)
+            TEST_SUITES=(maven npm docker python php go debian cargo helm)
             shift
             ;;
         *)
@@ -126,7 +128,7 @@ done
 
 # Default to all tests if none specified
 if [ ${#TEST_SUITES[@]} -eq 0 ]; then
-    TEST_SUITES=(maven npm docker python php go helm)
+    TEST_SUITES=(maven npm docker python php go debian cargo helm)
 fi
 
 # Enable verbose mode
@@ -152,46 +154,66 @@ if [ $BUILD -eq 1 ]; then
     echo ""
 fi
 
-# Start test environment
-print_color "$YELLOW" "Starting test environment..."
-docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" up -d
-
-# Wait for services to be healthy
-print_color "$YELLOW" "Waiting for services to be ready..."
-MAX_WAIT=120
-ELAPSED=0
-
-while [ $ELAPSED -lt $MAX_WAIT ]; do
-    if docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" ps | grep -q "healthy"; then
-        POSTGRES_HEALTHY=$(docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" ps postgres | grep -q "healthy" && echo 1 || echo 0)
-        if [ "$POSTGRES_HEALTHY" -eq 1 ]; then
-            print_color "$GREEN" "✓ All services are healthy"
-            break
-        fi
-    fi
-
-    sleep 2
-    ((ELAPSED+=2))
-
-    if [ $((ELAPSED % 10)) -eq 0 ]; then
-        echo "  Still waiting... (${ELAPSED}s / ${MAX_WAIT}s)"
+REQUIRED_SERVICES=(postgres nitro-repo test-runner docker)
+RUNNING_SERVICES=$(docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" ps --status running --services 2>/dev/null || true)
+ALL_REQUIRED_RUNNING=1
+for svc in "${REQUIRED_SERVICES[@]}"; do
+    if ! grep -qx "$svc" <<<"$RUNNING_SERVICES"; then
+        ALL_REQUIRED_RUNNING=0
+        break
     fi
 done
 
-if [ $ELAPSED -ge $MAX_WAIT ]; then
-    print_color "$RED" "✗ Services did not become healthy within ${MAX_WAIT} seconds"
-    docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" logs
-    docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" down
-    exit 1
+REUSE_ENV=0
+if [ $ALL_REQUIRED_RUNNING -eq 1 ] && [ $CLEAN -eq 0 ] && [ $BUILD -eq 0 ]; then
+    REUSE_ENV=1
 fi
 
-# Restart nitro-repo to load seeded repositories
-print_color "$YELLOW" "Restarting Nitro Repo to load seeded repositories..."
-docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" restart nitro-repo
-sleep 2  # Give it time to restart
-print_color "$GREEN" "✓ Nitro Repo restarted"
+if [ $REUSE_ENV -eq 1 ]; then
+    print_color "$YELLOW" "Test environment already running; reusing existing containers"
+    echo ""
+else
+    # Start test environment
+    print_color "$YELLOW" "Starting test environment..."
+    docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" up -d
 
-echo ""
+    # Wait for services to be healthy
+    print_color "$YELLOW" "Waiting for services to be ready..."
+    MAX_WAIT=120
+    ELAPSED=0
+
+    while [ $ELAPSED -lt $MAX_WAIT ]; do
+        if docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" ps | grep -q "healthy"; then
+            POSTGRES_HEALTHY=$(docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" ps postgres | grep -q "healthy" && echo 1 || echo 0)
+            if [ "$POSTGRES_HEALTHY" -eq 1 ]; then
+                print_color "$GREEN" "✓ All services are healthy"
+                break
+            fi
+        fi
+
+        sleep 2
+        ((ELAPSED+=2))
+
+        if [ $((ELAPSED % 10)) -eq 0 ]; then
+            echo "  Still waiting... (${ELAPSED}s / ${MAX_WAIT}s)"
+        fi
+    done
+
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        print_color "$RED" "✗ Services did not become healthy within ${MAX_WAIT} seconds"
+        docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" logs
+        docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" down
+        exit 1
+    fi
+
+    # Restart nitro-repo to load seeded repositories
+    print_color "$YELLOW" "Restarting Nitro Repo to load seeded repositories..."
+    docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" restart nitro-repo
+    sleep 2  # Give it time to restart
+    print_color "$GREEN" "✓ Nitro Repo restarted"
+
+    echo ""
+fi
 
 # Run test suites
 TOTAL_SUITES=${#TEST_SUITES[@]}

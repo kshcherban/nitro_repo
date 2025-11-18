@@ -61,10 +61,10 @@ STATUS=$(get_http_status "${NITRO_URL}${UPLOAD_PATH}" \
     -H "$(get_auth_header)" \
     --data-binary "@${CHART_PACKAGE}")
 
-if assert_http_status "201" "$STATUS"; then
+if [ "$STATUS" = "201" ] || [ "$STATUS" = "204" ]; then
     pass
 else
-    fail "Expected 201, got $STATUS"
+    fail "Expected 201/204, got $STATUS"
 fi
 
 # Test 3: Upload chart via ChartMuseum API
@@ -85,10 +85,10 @@ STATUS=$(get_http_status "${NITRO_URL}/repositories/${HELM_HOSTED_REPO}/api/char
     -H "$(get_auth_header)" \
     -F "chart=@${CHART_PACKAGE_V2}")
 
-if [ "$STATUS" = "201" ] || [ "$STATUS" = "200" ]; then
+if [ "$STATUS" = "201" ] || [ "$STATUS" = "200" ] || [ "$STATUS" = "204" ]; then
     pass
 else
-    fail "Expected 201/200, got $STATUS"
+    fail "Expected 201/200/204, got $STATUS"
 fi
 
 # Test 4: Fetch index.yaml

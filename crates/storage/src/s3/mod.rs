@@ -1,30 +1,33 @@
 #![allow(dead_code)]
-use std::{borrow::Cow, ops::Deref, str::FromStr, sync::Arc};
+use std::{
+    borrow::Cow, env, num::NonZeroUsize, ops::Deref, path::PathBuf, str::FromStr, sync::Arc,
+};
 
+use aws_config::BehaviorVersion;
+use aws_config::sts::AssumeRoleProvider;
+use aws_credential_types::{Credentials as AwsCredentials, provider::SharedCredentialsProvider};
+use aws_sdk_s3::{
+    Client as AwsS3Client,
+    types::{CommonPrefix, Tag},
+};
+use aws_smithy_runtime_api::client::result::SdkError;
+use aws_smithy_types::byte_stream::ByteStream;
+use aws_types::{SdkConfig, region::Region};
 use bytes::Bytes;
 use chrono::Local;
 use futures::future::BoxFuture;
-use http::header::ToStrError;
+use hex::encode;
+use lru::LruCache;
 use mime::Mime;
 use nr_core::storage::{FileHashes, SerdeMime, StoragePath};
 use regions::{CustomRegion, S3StorageRegion};
+use sha2::{Digest, Sha256};
+use tokio::{fs, sync::Mutex, task};
+use url::Url;
 
 pub mod regions;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
-use tux_io_s3::{
-    InvalidResponseHeader, S3Error,
-    client::{BucketClient, S3ClientBuilder},
-    command::{
-        delete::DeleteObject,
-        get::GetObject,
-        list::ListObjectsV2,
-        put::{PutHeaders, PutObject},
-    },
-    types::{
-        credentials::Credentials, list::v2::ListBucketResult, region::S3Region, tag::OwnedTag,
-    },
-};
 use utoipa::ToSchema;
 pub mod tags;
 use uuid::Uuid;
@@ -32,23 +35,16 @@ use uuid::Uuid;
 pub enum S3StorageError {
     #[error("No Region Provided")]
     NoRegionSpecified,
-    #[error("S3 Error: {0}")]
-    S3Error(#[from] tux_io_s3::S3Error),
-    #[error("S3 Client Builder Error: {0}")]
-    S3ClientBuilderError(#[from] tux_io_s3::client::BuilderError),
-    #[error(transparent)]
-    InvalidResponseHeader(#[from] InvalidResponseHeader),
-
-    #[error("ToStrError: {0}")]
-    ToStrError(#[from] ToStrError),
+    #[error("AWS SDK error: {0}")]
+    AwsSdkError(String),
     #[error("Bucket Does Not Exist {0}")]
     BucketDoesNotExist(String),
     #[error("IO Error: {0}")]
     IOError(#[from] std::io::Error),
+    #[error("Blocking task join error: {0}")]
+    BlockingJoin(#[from] tokio::task::JoinError),
     #[error(transparent)]
     InvalidConfigType(#[from] InvalidConfigType),
-    #[error("Unexpected Status Code: Expected {expected}, Got {got}")]
-    UnexpectedStatusCode { expected: u16, got: u16 },
 
     #[error("Missing Tag: {0}")]
     MissingTag(Cow<'static, str>),
@@ -60,6 +56,9 @@ impl S3StorageError {
     pub fn static_missing_tag(tag: &'static str) -> Self {
         S3StorageError::MissingTag(tag.into())
     }
+    pub fn from_sdk_error(err: impl std::fmt::Display) -> Self {
+        S3StorageError::AwsSdkError(err.to_string())
+    }
 }
 use crate::{
     BorrowedStorageConfig, BorrowedStorageTypeConfig, DirectoryFileType, DynStorage, FileContent,
@@ -68,11 +67,33 @@ use crate::{
     StorageFile, StorageFileMeta, StorageTypeConfig, StorageTypeConfigTrait, meta::RepositoryMeta,
     streaming::VecDirectoryListStream, utils::new_type_arc_type,
 };
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema, Default)]
 pub struct S3Credentials {
     pub access_key: Option<String>,
     /// AWS secret key.
     pub secret_key: Option<String>,
+    /// Session token for temporary credentials.
+    pub session_token: Option<String>,
+    /// Optional IAM role ARN to assume after establishing base credentials.
+    pub role_arn: Option<String>,
+    /// Explicit role session name override.
+    pub role_session_name: Option<String>,
+    /// External ID passed to STS when assuming a role.
+    pub external_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticKeyCredentials {
+    pub access_key: String,
+    pub secret_key: String,
+    pub session_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleAssumption {
+    pub role_arn: String,
+    pub session_name: Option<String>,
+    pub external_id: Option<String>,
 }
 
 impl std::fmt::Debug for S3Credentials {
@@ -88,16 +109,70 @@ impl S3Credentials {
         S3Credentials {
             access_key: Some(access_key.into()),
             secret_key: Some(secret_key.into()),
+            session_token: None,
+            role_arn: None,
+            role_session_name: None,
+            external_id: None,
         }
     }
-    pub fn credentials(&self) -> Result<Credentials, S3StorageError> {
-        Ok(Credentials {
-            access_key: self.access_key.clone(),
-            secret_key: self.secret_key.clone(),
-            security_token: None,
-            session_token: None,
+    pub fn static_keys(&self) -> Option<StaticKeyCredentials> {
+        let access_key = Self::clean_string(&self.access_key)?;
+        let secret_key = Self::clean_string(&self.secret_key)?;
+        Some(StaticKeyCredentials {
+            access_key,
+            secret_key,
+            session_token: Self::clean_string(&self.session_token),
         })
     }
+
+    pub fn role_to_assume(&self) -> Option<RoleAssumption> {
+        let role_arn = Self::clean_string(&self.role_arn)?;
+        Some(RoleAssumption {
+            role_arn,
+            session_name: Self::clean_string(&self.role_session_name),
+            external_id: Self::clean_string(&self.external_id),
+        })
+    }
+
+    fn clean_string(value: &Option<String>) -> Option<String> {
+        value
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_owned())
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+pub struct S3CacheConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    #[schema(value_type = String, format = "path")]
+    pub path: Option<PathBuf>,
+    #[serde(default = "default_cache_max_bytes")]
+    pub max_bytes: u64,
+    #[serde(default = "default_cache_entry_limit")]
+    pub max_entries: usize,
+}
+
+impl Default for S3CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: None,
+            max_bytes: default_cache_max_bytes(),
+            max_entries: default_cache_entry_limit(),
+        }
+    }
+}
+
+fn default_cache_max_bytes() -> u64 {
+    512 * 1024 * 1024 // 512 MiB
+}
+
+fn default_cache_entry_limit() -> usize {
+    2048
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -111,6 +186,8 @@ pub struct S3Config {
     #[serde(default = "default_true")]
     #[schema(default = true)]
     pub path_style: bool,
+    #[serde(default)]
+    pub cache: S3CacheConfig,
 }
 
 impl std::fmt::Debug for S3Config {
@@ -121,6 +198,9 @@ impl std::fmt::Debug for S3Config {
             .field("custom_region", &self.custom_region)
             .field("credentials", &"********") // Mask credentials entirely
             .field("path_style", &self.path_style)
+            .field("cache_enabled", &self.cache.enabled)
+            .field("cache_path", &self.cache.path)
+            .field("cache_max_bytes", &self.cache.max_bytes)
             .finish()
     }
 }
@@ -129,17 +209,29 @@ fn default_true() -> bool {
     true
 }
 impl S3Config {
-    pub fn region(&self) -> Result<S3Region, S3StorageError> {
+    pub fn resolved_region(&self) -> Result<Region, S3StorageError> {
         if let Some(custom) = &self.custom_region {
             if self.region.is_some() {
                 warn!("Region set with custom region, custom region will take precedence");
             }
-            return Ok(S3Region::Custom(custom.clone().into()));
+            let name = custom
+                .custom_region
+                .clone()
+                .unwrap_or_else(|| "custom-endpoint".into());
+            return Ok(Region::new(name));
         }
         if let Some(region) = &self.region {
-            return Ok(S3Region::Official((*region).into()));
+            return Ok((*region).into());
         }
         Err(S3StorageError::NoRegionSpecified)
+    }
+
+    pub fn custom_endpoint(&self) -> Option<&Url> {
+        self.custom_region.as_ref().map(|c| &c.endpoint)
+    }
+
+    pub fn cache_enabled(&self) -> bool {
+        self.cache.enabled && self.cache.max_bytes > 0
     }
 }
 #[derive(Debug, Clone)]
@@ -148,32 +240,265 @@ pub struct S3MetaTags {
     pub mime_type: Option<Mime>,
     pub is_directory: bool,
 }
+
+#[derive(Debug)]
+pub(super) struct S3DiskCache {
+    dir: PathBuf,
+    max_bytes: u64,
+    state: Mutex<CacheState>,
+}
+
+#[derive(Debug)]
+struct CacheState {
+    entries: LruCache<String, CacheEntry>,
+    current_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    relative_path: PathBuf,
+    size: u64,
+    content_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedObject {
+    bytes: Bytes,
+    content_type: Option<String>,
+}
+
+impl S3DiskCache {
+    async fn new(config: &S3CacheConfig, storage_name: &str) -> Result<Self, S3StorageError> {
+        if config.max_bytes == 0 {
+            return Err(S3StorageError::AwsSdkError(
+                "cache max_bytes must be greater than zero".into(),
+            ));
+        }
+        let dir = config
+            .path
+            .clone()
+            .unwrap_or_else(|| default_cache_dir(storage_name));
+        fs::create_dir_all(&dir).await?;
+        let capacity = NonZeroUsize::new(config.max_entries.max(1))
+            .unwrap_or_else(|| NonZeroUsize::new(1).expect("non zero"));
+        let state = CacheState {
+            entries: LruCache::new(capacity),
+            current_bytes: 0,
+        };
+        Ok(Self {
+            dir,
+            max_bytes: config.max_bytes,
+            state: Mutex::new(state),
+        })
+    }
+
+    fn hashed_filename(key: &str) -> PathBuf {
+        let digest = Sha256::digest(key.as_bytes());
+        let hex = encode(digest);
+        let (prefix, rest) = hex.split_at(2);
+        PathBuf::from(prefix).join(rest)
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<CachedObject>, S3StorageError> {
+        let (relative_path, content_type) = {
+            let mut state = self.state.lock().await;
+            match state.entries.get(key) {
+                Some(entry) => (entry.relative_path.clone(), entry.content_type.clone()),
+                None => return Ok(None),
+            }
+        };
+        let path = self.dir.join(relative_path);
+        match fs::read(&path).await {
+            Ok(data) => Ok(Some(CachedObject {
+                bytes: Bytes::from(data),
+                content_type,
+            })),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    async fn put(
+        &self,
+        key: &str,
+        data: Bytes,
+        content_type: Option<&str>,
+    ) -> Result<(), S3StorageError> {
+        let relative = Self::hashed_filename(key);
+        let path = self.dir.join(&relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&path, data.as_ref()).await?;
+        let mut removed = Vec::new();
+        {
+            let mut state = self.state.lock().await;
+            if let Some(old) = state.entries.pop(key) {
+                state.current_bytes = state.current_bytes.saturating_sub(old.size);
+                removed.push(old.relative_path);
+            }
+            state.entries.put(
+                key.to_string(),
+                CacheEntry {
+                    relative_path: relative,
+                    size: data.len() as u64,
+                    content_type: content_type.map(|c| c.to_string()),
+                },
+            );
+            state.current_bytes = state.current_bytes.saturating_add(data.len() as u64);
+            while state.current_bytes > self.max_bytes {
+                if let Some((_, evicted)) = state.entries.pop_lru() {
+                    state.current_bytes = state.current_bytes.saturating_sub(evicted.size);
+                    removed.push(evicted.relative_path);
+                } else {
+                    break;
+                }
+            }
+        }
+        for rel in removed {
+            let _ = fs::remove_file(self.dir.join(rel)).await;
+        }
+        Ok(())
+    }
+
+    async fn remove(&self, key: &str) -> Result<(), S3StorageError> {
+        let removed = {
+            let mut state = self.state.lock().await;
+            state.entries.pop(key).map(|entry| {
+                state.current_bytes = state.current_bytes.saturating_sub(entry.size);
+                entry.relative_path
+            })
+        };
+        if let Some(rel) = removed {
+            let _ = fs::remove_file(self.dir.join(rel)).await;
+        }
+        Ok(())
+    }
+}
+
+fn default_cache_dir(storage_name: &str) -> PathBuf {
+    let sanitized = storage_name.replace('/', "_");
+    env::temp_dir()
+        .join("nitro_repo")
+        .join("s3-cache")
+        .join(sanitized)
+}
 #[derive(Debug)]
 pub struct S3StorageInner {
     pub config: S3Config,
     pub storage_config: StorageConfigInner,
-    pub bucket: BucketClient,
+    pub client: AwsS3Client,
+    cache: Option<Arc<S3DiskCache>>,
 }
 impl S3StorageInner {
-    pub async fn load_bucket(config: &S3Config) -> Result<BucketClient, S3StorageError> {
-        let credentials = config.credentials.credentials()?;
-        let region = config.region()?;
-        debug!(?region, "Connecting to S3 Bucket");
-        let access_type = if config.path_style {
-            tux_io_s3::client::AccessType::PathStyle
-        } else {
-            tux_io_s3::client::AccessType::VirtualHostedStyle
-        };
-        let builder = S3ClientBuilder::default()
-            .with_region(region)
-            .with_credentials(credentials)
-            .with_access_type(access_type)
-            .bucket_client(config.bucket_name.clone())?;
+    fn bucket(&self) -> &str {
+        &self.config.bucket_name
+    }
+    fn aws_client(&self) -> &AwsS3Client {
+        &self.client
+    }
+    pub async fn load_client(config: &S3Config) -> Result<AwsS3Client, S3StorageError> {
+        let region = config.resolved_region()?;
+        debug!(%region, bucket = %config.bucket_name, "Connecting to S3 bucket");
 
-        Ok(builder)
+        let (base_config, static_provider) = build_base_config(config, &region).await?;
+
+        let mut builder =
+            aws_sdk_s3::config::Builder::from(&base_config).force_path_style(config.path_style);
+
+        if let Some(endpoint) = config.custom_endpoint() {
+            builder = builder.endpoint_url(endpoint.to_string());
+        }
+
+        if let Some(role) = config.credentials.role_to_assume() {
+            let assume_provider = build_assume_role_provider(role, &base_config).await?;
+            builder = builder.credentials_provider(SharedCredentialsProvider::new(assume_provider));
+        } else if let Some(provider) = static_provider {
+            builder = builder.credentials_provider(provider);
+        }
+
+        let client = AwsS3Client::from_conf(builder.build());
+        match client
+            .head_bucket()
+            .bucket(&config.bucket_name)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(client),
+            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Err(
+                S3StorageError::BucketDoesNotExist(config.bucket_name.clone()),
+            ),
+            Err(err) => Err(S3StorageError::from_sdk_error(err)),
+        }
+    }
+
+    pub(super) async fn build_cache(
+        config: &S3Config,
+        storage: &StorageConfigInner,
+    ) -> Result<Option<Arc<S3DiskCache>>, S3StorageError> {
+        if !config.cache_enabled() {
+            return Ok(None);
+        }
+        let cache = S3DiskCache::new(&config.cache, &storage.storage_name).await?;
+        Ok(Some(Arc::new(cache)))
     }
     pub fn s3_path(&self, repository: &Uuid, path: &StoragePath) -> String {
         format!("{}/{}", repository, path)
+    }
+
+    fn cache_key(&self, repository: &Uuid, path: &StoragePath) -> String {
+        self.s3_path(repository, path)
+    }
+
+    fn should_cache(&self, path: &StoragePath) -> bool {
+        self.cache.is_some() && !path.is_directory()
+    }
+
+    async fn cache_get(
+        &self,
+        repository: &Uuid,
+        location: &StoragePath,
+    ) -> Result<Option<CachedObject>, S3StorageError> {
+        if !self.should_cache(location) {
+            return Ok(None);
+        }
+        let Some(cache) = &self.cache else {
+            return Ok(None);
+        };
+        let key = self.cache_key(repository, location);
+        cache.get(&key).await
+    }
+
+    async fn cache_put(
+        &self,
+        repository: &Uuid,
+        location: &StoragePath,
+        data: Bytes,
+        content_type: Option<String>,
+    ) -> Result<(), S3StorageError> {
+        if !self.should_cache(location) {
+            return Ok(());
+        }
+        if let Some(cache) = &self.cache {
+            let key = self.cache_key(repository, location);
+            cache.put(&key, data, content_type.as_deref()).await?;
+        }
+        Ok(())
+    }
+
+    async fn cache_remove(
+        &self,
+        repository: &Uuid,
+        location: &StoragePath,
+    ) -> Result<(), S3StorageError> {
+        if !self.should_cache(location) {
+            return Ok(());
+        }
+        if let Some(cache) = &self.cache {
+            let key = self.cache_key(repository, location);
+            cache.remove(&key).await?;
+        }
+        Ok(())
     }
     pub async fn get_path_for_creation(
         &self,
@@ -198,44 +523,61 @@ impl S3StorageInner {
     }
     #[instrument]
     async fn does_path_exist(&self, path: &str) -> Result<bool, S3StorageError> {
-        Ok(self.bucket.head_object(path).await?.is_some())
+        let result = self
+            .aws_client()
+            .head_object()
+            .bucket(self.bucket())
+            .key(path)
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Ok(false),
+            Err(err) => Err(S3StorageError::from_sdk_error(err)),
+        }
     }
     #[instrument]
-    fn is_directory_from_result<'result>(
+    fn is_directory_from_result(
         &self,
-        result: &'result ListBucketResult,
+        result: &aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output,
         path: &str,
-    ) -> (bool, Option<&'result str>) {
-        let is_contents_empty = result.contents.as_ref().is_none_or(|c| c.is_empty());
-        if is_contents_empty && result.common_prefixes.is_none() {
-            return (true, None);
-        }
-        if path.ends_with("/") && !is_contents_empty {
-            return (true, None);
-        }
-        let path_with_slash = format!("{}/", path);
+    ) -> (bool, Option<String>) {
+        let contents = result.contents();
+        let prefixes = result.common_prefixes();
+        let is_contents_empty = contents.is_empty();
+        let has_prefixes = !prefixes.is_empty();
 
-        if let Some(common) = &result.common_prefixes
-            && let Some(directory) = common
-                .prefix
-                .iter()
-                .find(|prefix| *prefix == &path_with_slash)
-        {
-            return (true, Some(directory.as_str()));
+        if is_contents_empty && !has_prefixes {
+            return (true, None);
         }
+        if path.ends_with('/') && !is_contents_empty {
+            return (true, None);
+        }
+
+        let path_with_slash = format!("{}/", path);
+        if let Some(match_prefix) = prefixes
+            .iter()
+            .filter_map(CommonPrefix::prefix)
+            .find(|prefix| *prefix == path_with_slash)
+        {
+            return (true, Some(match_prefix.to_string()));
+        }
+
         (false, None)
     }
 
     #[instrument]
     async fn is_directory(&self, path: &str) -> Result<bool, S3StorageError> {
         let list = self
-            .bucket
-            .list_objects_v2(ListObjectsV2::<()> {
-                prefix: path.into(),
-                delimiter: Some("/".into()),
-                ..Default::default()
-            })
-            .await?;
+            .aws_client()
+            .list_objects_v2()
+            .bucket(self.bucket())
+            .prefix(path.to_owned())
+            .delimiter("/")
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
 
         Ok(self.is_directory_from_result(&list, path).0)
     }
@@ -250,27 +592,30 @@ impl S3StorageInner {
         };
 
         let first = self
-            .bucket
-            .list_objects_v2(ListObjectsV2::<()> {
-                prefix: Cow::Borrowed(&path),
-                delimiter: Some("/".into()),
-                ..Default::default()
-            })
-            .await?;
+            .aws_client()
+            .list_objects_v2()
+            .bucket(self.bucket())
+            .prefix(path.clone())
+            .delimiter("/")
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
 
         let mut files = Vec::new();
-        for file in first.contents.unwrap_or_default() {
-            let meta = self.get_meta(&file.key).await?;
-            if let Some(meta) = meta {
-                files.push(meta);
-            }
-        }
-        if let Some(common_prefixes) = first.common_prefixes {
-            for sub_directory in common_prefixes.prefix {
-                let meta = self.get_directory_meta(&sub_directory).await?;
-                if let Some(meta) = meta {
+        for file in first.contents() {
+            if let Some(key) = file.key() {
+                if let Some(meta) = self.get_meta(key).await? {
                     files.push(meta);
                 }
+            }
+        }
+        for sub_directory in first
+            .common_prefixes()
+            .iter()
+            .filter_map(CommonPrefix::prefix)
+        {
+            if let Some(meta) = self.get_directory_meta(sub_directory).await? {
+                files.push(meta);
             }
         }
 
@@ -321,15 +666,28 @@ impl S3StorageInner {
         Ok(Some(meta))
     }
     #[instrument]
-    async fn get_object_tagging(
-        &self,
-        path: &str,
-    ) -> Result<Option<Vec<OwnedTag>>, S3StorageError> {
-        let Some(tagging) = self.bucket.get_object_tagging(path).await? else {
-            return Ok(None);
-        };
+    async fn get_object_tagging(&self, path: &str) -> Result<Option<Vec<Tag>>, S3StorageError> {
+        let response = self
+            .aws_client()
+            .get_object_tagging()
+            .bucket(self.bucket())
+            .key(path)
+            .send()
+            .await;
 
-        Ok(Some(tagging.into()))
+        match response {
+            Ok(output) => Ok(Some(output.tag_set().to_vec())),
+            Err(SdkError::ServiceError(err))
+                if err
+                    .err()
+                    .meta()
+                    .code()
+                    .is_some_and(|code| code == "NoSuchKey") =>
+            {
+                Ok(None)
+            }
+            Err(err) => Err(S3StorageError::from_sdk_error(err)),
+        }
     }
 
     async fn get_meta_tags(&self, path: &str) -> Result<Option<S3MetaTags>, S3StorageError> {
@@ -339,14 +697,14 @@ impl S3StorageInner {
 
         let name = tags
             .iter()
-            .find(|tag| tag.key == tags::NAME)
-            .map(|tag| tag.value.clone())
+            .find(|tag| tag.key() == tags::NAME)
+            .map(|tag| tag.value().to_string())
             .ok_or_else(|| S3StorageError::static_missing_tag(tags::NAME))?;
 
         let mime_type = tags
             .iter()
-            .find(|tag| tag.key == tags::MIME_TYPE)
-            .map(|tag| Mime::from_str(&tag.value))
+            .find(|tag| tag.key() == tags::MIME_TYPE)
+            .map(|tag| Mime::from_str(tag.value()))
             .transpose();
         let mime_type = match mime_type {
             Ok(ok) => ok,
@@ -362,6 +720,72 @@ impl S3StorageInner {
             is_directory: false,
         }))
     }
+}
+
+async fn build_base_config(
+    config: &S3Config,
+    region: &Region,
+) -> Result<(SdkConfig, Option<SharedCredentialsProvider>), S3StorageError> {
+    let mut loader = aws_config::defaults(BehaviorVersion::latest()).region(region.clone());
+    let mut static_provider = None;
+    if let Some(keys) = config.credentials.static_keys() {
+        let credentials = AwsCredentials::new(
+            keys.access_key,
+            keys.secret_key,
+            keys.session_token,
+            None,
+            "nitro-repo-static",
+        );
+        let provider = SharedCredentialsProvider::new(credentials);
+        loader = loader.credentials_provider(provider.clone());
+        static_provider = Some(provider);
+    }
+
+    let shared_config = loader.load().await;
+    Ok((shared_config, static_provider))
+}
+
+async fn build_assume_role_provider(
+    role: RoleAssumption,
+    base_config: &SdkConfig,
+) -> Result<AssumeRoleProvider, S3StorageError> {
+    let session_name = role.session_name.unwrap_or_else(default_session_name);
+    let mut builder = AssumeRoleProvider::builder(role.role_arn).session_name(session_name);
+    if let Some(external_id) = role.external_id {
+        builder = builder.external_id(external_id);
+    }
+    let provider = builder.configure(base_config).build().await;
+    Ok(provider)
+}
+
+fn default_session_name() -> String {
+    format!("nitro-repo-{}", Uuid::new_v4().simple())
+}
+
+fn bytes_to_stream(bytes: FileContentBytes) -> (ByteStream, usize) {
+    match bytes {
+        FileContentBytes::Content(content) => {
+            let len = content.len();
+            (ByteStream::from(content), len)
+        }
+        FileContentBytes::Bytes(bytes) => {
+            let len = bytes.len();
+            (ByteStream::from(bytes.to_vec()), len)
+        }
+    }
+}
+
+async fn file_into_bytes(file: FileContent) -> Result<FileContentBytes, S3StorageError> {
+    let bytes = task::spawn_blocking(move || FileContentBytes::try_from(file)).await??;
+    Ok(bytes)
+}
+
+async fn collect_body(stream: ByteStream) -> Result<Bytes, S3StorageError> {
+    let aggregated = stream
+        .collect()
+        .await
+        .map_err(|err| S3StorageError::AwsSdkError(err.to_string()))?;
+    Ok(aggregated.into_bytes())
 }
 #[derive(Debug, Clone)]
 pub struct S3Storage(Arc<S3StorageInner>);
@@ -401,20 +825,26 @@ impl Storage for S3Storage {
         } else {
             "application/octet-stream"
         };
-        let file_as_bytes: FileContentBytes = file.try_into()?;
-        let size = file_as_bytes.len();
-        let put_objec = PutObject {
-            key: &path,
-            content: file_as_bytes.into(),
-            headers: PutHeaders {
-                content_type: content_type.into(),
-                metadata: Default::default(),
-            },
-            tags: None,
-        };
-        let response_data = self.bucket.execute_command(put_objec).await?;
-        debug!(?response_data, "File Saved");
-        // TODO: Check if the file was created
+        let file_as_bytes = file_into_bytes(file).await?;
+        let cache_buffer = file_as_bytes.clone_into_bytes();
+        let (body, size) = bytes_to_stream(file_as_bytes);
+        self.aws_client()
+            .put_object()
+            .bucket(self.bucket())
+            .key(&path)
+            .body(body)
+            .content_type(content_type)
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
+        debug!(path = %path, "File saved to S3");
+        self.cache_put(
+            &repository,
+            location,
+            cache_buffer,
+            Some(content_type.to_string()),
+        )
+        .await?;
         Ok((size, !already_exists))
     }
     #[instrument(name = "Storage::append_file", fields(storage_type = "s3"))]
@@ -429,39 +859,47 @@ impl Storage for S3Storage {
         // This is still O(n) for S3 since network I/O dominates
         let path = self.get_path_for_creation(repository, location).await?;
 
-        let mut existing_data = if self.does_path_exist(&path).await? {
-            let get_object = GetObject {
-                key: &path,
-                ..Default::default()
-            };
-            let response = self.bucket.execute_command(get_object).await?;
-            let bytes = response.bytes().await.map_err(std::io::Error::other)?;
-            bytes.to_vec()
+        let mut combined_buffer = if self.does_path_exist(&path).await? {
+            let response = self
+                .aws_client()
+                .get_object()
+                .bucket(self.bucket())
+                .key(&path)
+                .send()
+                .await
+                .map_err(S3StorageError::from_sdk_error)?;
+            collect_body(response.body).await?.to_vec()
         } else {
             Vec::new()
         };
 
-        // Append new data
-        let new_data: FileContentBytes = file.try_into()?;
-        existing_data.extend_from_slice(new_data.as_ref());
+        let appended = file_into_bytes(file).await?;
+        combined_buffer.extend_from_slice(appended.as_ref());
 
-        // Write back
+        let combined_bytes = Bytes::from(combined_buffer);
+
         let content_type = if location.is_directory() {
             "application/x-directory"
         } else {
             "application/octet-stream"
         };
-        let size = existing_data.len();
-        let put_object = PutObject {
-            key: &path,
-            content: existing_data.into(),
-            headers: PutHeaders {
-                content_type: content_type.into(),
-                metadata: Default::default(),
-            },
-            tags: None,
-        };
-        self.bucket.execute_command(put_object).await?;
+        let size = combined_bytes.len();
+        self.aws_client()
+            .put_object()
+            .bucket(self.bucket())
+            .key(&path)
+            .content_type(content_type)
+            .body(ByteStream::from(combined_bytes.clone()))
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
+        self.cache_put(
+            &repository,
+            location,
+            combined_bytes,
+            Some(content_type.to_string()),
+        )
+        .await?;
         Ok(size)
     }
     #[instrument(name = "Storage::put_repository_meta", fields(storage_type = "s3"))]
@@ -492,17 +930,14 @@ impl Storage for S3Storage {
         if !exists {
             return Ok(false);
         }
-        let delete_object = DeleteObject {
-            key: &path,
-            version_id: None,
-        };
-        let response_data = self.bucket.execute_command(delete_object).await?;
-        if response_data.status() != 204 {
-            return Err(S3StorageError::UnexpectedStatusCode {
-                expected: 204,
-                got: response_data.status().as_u16(),
-            });
-        }
+        self.aws_client()
+            .delete_object()
+            .bucket(self.bucket())
+            .key(&path)
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
+        self.cache_remove(&repository, location).await?;
         Ok(true)
     }
     #[instrument(name = "Storage::move_file", fields(storage_type = "s3"))]
@@ -522,12 +957,15 @@ impl Storage for S3Storage {
 
         // For S3, we need to copy and then delete since there's no native rename
         // Read the object
-        let get_object = GetObject {
-            key: &from_path,
-            ..Default::default()
-        };
-        let response = self.bucket.execute_command(get_object).await?;
-        let bytes = response.bytes().await.map_err(std::io::Error::other)?;
+        let response = self
+            .aws_client()
+            .get_object()
+            .bucket(self.bucket())
+            .key(&from_path)
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
+        let bytes = collect_body(response.body).await?;
 
         // Get content type from original object metadata (if available)
         let content_type = if to.is_directory() {
@@ -537,23 +975,28 @@ impl Storage for S3Storage {
         };
 
         // Write to new location
-        let put_object = PutObject {
-            key: &to_path,
-            content: bytes.to_vec().into(),
-            headers: PutHeaders {
-                content_type: content_type.into(),
-                metadata: Default::default(),
-            },
-            tags: None,
-        };
-        self.bucket.execute_command(put_object).await?;
+        self.aws_client()
+            .put_object()
+            .bucket(self.bucket())
+            .key(&to_path)
+            .content_type(content_type)
+            .body(ByteStream::from(bytes.clone()))
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
 
         // Delete original
-        let delete_object = DeleteObject {
-            key: &from_path,
-            version_id: None,
-        };
-        self.bucket.execute_command(delete_object).await?;
+        self.aws_client()
+            .delete_object()
+            .bucket(self.bucket())
+            .key(&from_path)
+            .send()
+            .await
+            .map_err(S3StorageError::from_sdk_error)?;
+
+        self.cache_remove(&repository, from).await?;
+        self.cache_put(&repository, to, bytes, Some(content_type.to_string()))
+            .await?;
 
         Ok(true)
     }
@@ -571,23 +1014,64 @@ impl Storage for S3Storage {
         repository: uuid::Uuid,
         location: &StoragePath,
     ) -> Result<Option<crate::StorageFile>, S3StorageError> {
+        if let Some(cached) = self.cache_get(&repository, location).await? {
+            let mime_type = cached
+                .content_type
+                .as_deref()
+                .and_then(|ct| Mime::from_str(ct).ok())
+                .map(SerdeMime);
+            let size = cached.bytes.len() as u64;
+            let meta = StorageFileMeta::<FileFileType> {
+                name: location.to_string(),
+                file_type: FileFileType {
+                    file_size: size,
+                    mime_type,
+                    file_hash: FileHashes::default(),
+                },
+                modified: Local::now().fixed_offset(),
+                created: Local::now().fixed_offset(),
+            };
+            let result = StorageFile::File {
+                meta,
+                content: crate::StorageFileReader::Bytes(FileContentBytes::Bytes(cached.bytes)),
+            };
+            return Ok(Some(result));
+        }
         let path = self.s3_path(&repository, location);
-        let Some(get) = self.bucket.get_object(&path).await? else {
-            return Ok(None);
+        let response = match self
+            .aws_client()
+            .get_object()
+            .bucket(self.bucket())
+            .key(&path)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => return Ok(None),
+            Err(err) => return Err(S3StorageError::from_sdk_error(err)),
         };
-        let headers = get.headers();
-        if let Some(content_type) = headers.get("content-type")
-            && content_type == "application/x-directory"
+
+        let response_content_type = response.content_type().map(|ct| ct.to_string());
+        if response_content_type
+            .as_deref()
+            .map(|ct| ct == "application/x-directory")
+            .unwrap_or(false)
         {
             return self.index_directory(&path).await;
         }
+        let response_length = response
+            .content_length()
+            .unwrap_or_default()
+            .try_into()
+            .unwrap_or_default();
+
         let meta = StorageFileMeta::<FileFileType> {
             name: location.to_string(),
             file_type: FileFileType {
-                file_size: get.content_length()?.unwrap_or_default(),
-                mime_type: get
-                    .content_type()?
-                    .map(|ct| Mime::from_str(ct.as_str()))
+                file_size: response_length,
+                mime_type: response_content_type
+                    .as_deref()
+                    .map(Mime::from_str)
                     .transpose()
                     .unwrap()
                     .map(SerdeMime),
@@ -596,7 +1080,14 @@ impl Storage for S3Storage {
             modified: Local::now().fixed_offset(),
             created: Local::now().fixed_offset(),
         };
-        let body: Bytes = get.0.bytes().await.map_err(S3Error::from)?;
+        let body = collect_body(response.body).await?;
+        self.cache_put(
+            &repository,
+            location,
+            body.clone(),
+            response_content_type.clone(),
+        )
+        .await?;
         let result = StorageFile::File {
             meta,
             content: crate::StorageFileReader::Bytes(FileContentBytes::Bytes(body)),
@@ -610,8 +1101,9 @@ impl Storage for S3Storage {
         config: StorageTypeConfig,
     ) -> Result<(), S3StorageError> {
         let s3_config = S3Config::from_type_config(config)?;
-        let bucket = S3StorageInner::load_bucket(&s3_config).await?;
-        info!(?bucket, "Successfully connected to S3 Bucket");
+        S3StorageInner::load_client(&s3_config).await?;
+        S3StorageInner::build_cache(&s3_config, &self.storage_config).await?;
+        info!(bucket = %s3_config.bucket_name, "Successfully connected to S3 bucket");
         Ok(())
     }
     #[instrument(name = "Storage::file_exists", fields(storage_type = "s3"))]
@@ -645,8 +1137,8 @@ impl StaticStorageFactory for S3StorageFactory {
 
     async fn test_storage_config(config: StorageTypeConfig) -> Result<(), S3StorageError> {
         let s3_config = S3Config::from_type_config(config)?;
-        let bucket = S3StorageInner::load_bucket(&s3_config).await?;
-        info!(?bucket, "Successfully connected to S3 Bucket");
+        S3StorageInner::load_client(&s3_config).await?;
+        info!(bucket = %s3_config.bucket_name, "Successfully connected to S3 bucket");
         Ok(())
     }
 
@@ -654,11 +1146,13 @@ impl StaticStorageFactory for S3StorageFactory {
         inner: StorageConfigInner,
         type_config: Self::ConfigType,
     ) -> Result<Self::StorageType, S3StorageError> {
-        let bucket = S3StorageInner::load_bucket(&type_config).await?;
+        let client = S3StorageInner::load_client(&type_config).await?;
+        let cache = S3StorageInner::build_cache(&type_config, &inner).await?;
         let inner = S3StorageInner {
             config: type_config,
             storage_config: inner,
-            bucket,
+            client,
+            cache,
         };
         let storage = S3Storage::from(inner);
         Ok(storage)
@@ -676,8 +1170,8 @@ impl StorageFactory for S3StorageFactory {
         Box::pin(async move {
             let s3_config = S3Config::from_type_config(config)?;
 
-            let bucket = S3StorageInner::load_bucket(&s3_config).await?;
-            info!(?bucket, "Successfully connected to S3 Bucket");
+            S3StorageInner::load_client(&s3_config).await?;
+            info!(bucket = %s3_config.bucket_name, "Successfully connected to S3 bucket");
 
             Ok(())
         })
@@ -690,11 +1184,13 @@ impl StorageFactory for S3StorageFactory {
         Box::pin(async move {
             let s3_config = S3Config::from_type_config(config.type_config)?;
             let storage_config = config.storage_config;
-            let bucket = S3StorageInner::load_bucket(&s3_config).await?;
+            let client = S3StorageInner::load_client(&s3_config).await?;
+            let cache = S3StorageInner::build_cache(&s3_config, &storage_config).await?;
             let inner = S3StorageInner {
                 config: s3_config,
                 storage_config,
-                bucket,
+                client,
+                cache,
             };
             let storage = S3Storage::from(inner);
             Ok(DynStorage::S3(storage))
@@ -705,6 +1201,7 @@ impl StorageFactory for S3StorageFactory {
 mod tests {
     use tracing::warn;
 
+    use super::{CustomRegion, S3CacheConfig, S3Config, S3Credentials, S3StorageRegion};
     use crate::{StaticStorageFactory, s3::S3StorageFactory, testing::storage::TestingStorage};
 
     #[tokio::test]
@@ -719,5 +1216,61 @@ mod tests {
         crate::testing::tests::full_test(testing_storage).await?;
 
         Ok(())
+    }
+
+    #[test]
+    fn static_credentials_detected() {
+        let creds = S3Credentials::new_access_key("AKIA", "secret");
+        let static_keys = creds.static_keys();
+        assert!(static_keys.is_some());
+        let keys = static_keys.unwrap();
+        assert_eq!(keys.access_key, "AKIA");
+        assert_eq!(keys.secret_key, "secret");
+        assert!(keys.session_token.is_none());
+    }
+
+    #[test]
+    fn missing_keys_use_default_chain() {
+        let creds = S3Credentials::default();
+        assert!(creds.static_keys().is_none());
+    }
+
+    #[test]
+    fn role_detection_prefers_non_empty_strings() {
+        let creds = S3Credentials {
+            role_arn: Some("arn:aws:iam::123:role/demo".into()),
+            role_session_name: Some("nitro".into()),
+            ..Default::default()
+        };
+        let role = creds.role_to_assume().expect("role should be detected");
+        assert_eq!(role.role_arn, "arn:aws:iam::123:role/demo");
+        assert_eq!(role.session_name.as_deref(), Some("nitro"));
+
+        let empty_role = S3Credentials {
+            role_arn: Some("   ".into()),
+            ..Default::default()
+        };
+        assert!(empty_role.role_to_assume().is_none());
+    }
+
+    #[test]
+    fn custom_region_returns_endpoint_and_name() {
+        let config = S3Config {
+            bucket_name: "nitro".into(),
+            region: Some(S3StorageRegion::UsEast1),
+            custom_region: Some(CustomRegion {
+                custom_region: Some("minio".into()),
+                endpoint: "https://minio.local".parse().unwrap(),
+            }),
+            credentials: S3Credentials::default(),
+            path_style: true,
+            cache: S3CacheConfig::default(),
+        };
+
+        let resolved = config
+            .resolved_region()
+            .expect("custom region should resolve");
+        assert_eq!(resolved.as_ref(), "minio");
+        assert!(config.custom_endpoint().is_some());
     }
 }

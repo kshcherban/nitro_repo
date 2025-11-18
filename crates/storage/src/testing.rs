@@ -8,7 +8,7 @@ pub mod tests;
 use crate::{
     StaticStorageFactory, StorageConfig, StorageConfigInner, StorageTypeConfig,
     local::{LocalConfig, LocalStorage, LocalStorageFactory},
-    s3::{S3Config, S3Credentials, S3StorageFactory, regions::CustomRegion},
+    s3::{S3CacheConfig, S3Config, S3Credentials, S3StorageFactory, regions::CustomRegion},
 };
 pub mod storage;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +75,7 @@ impl TestingStorageType for S3Config {
             }),
             credentials: S3Credentials::new_access_key("MY_ACCESS_KEY", "MY_SECRET_KEY"),
             path_style: true,
+            cache: S3CacheConfig::default(),
         }
     }
 }

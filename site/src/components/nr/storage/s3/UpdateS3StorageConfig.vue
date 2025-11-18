@@ -47,10 +47,69 @@
     </TwoByFormBox>
 
     <TextInput
+      id="s3-session-token-display"
+      :model-value="maskedSession"
+      type="password"
+      disabled>
+      Session Token
+    </TextInput>
+
+    <TwoByFormBox>
+      <TextInput
+        id="s3-role-arn-display"
+        v-model="model.credentials.role_arn"
+        disabled>
+        Role ARN
+      </TextInput>
+      <TextInput
+        id="s3-role-session-display"
+        v-model="model.credentials.role_session_name"
+        disabled>
+        Role Session Name
+      </TextInput>
+    </TwoByFormBox>
+
+    <TextInput
+      id="s3-external-id-display"
+      v-model="model.credentials.external_id"
+      disabled>
+      External ID
+    </TextInput>
+
+    <TextInput
       id="s3-path-style-display"
       :model-value="model.path_style ? 'Path-style' : 'Virtual-hosted'"
       disabled>
       Addressing Mode
+    </TextInput>
+
+    <TextInput
+      id="s3-cache-enabled-display"
+      :model-value="model.cache.enabled ? 'Enabled' : 'Disabled'"
+      disabled>
+      Disk Cache
+    </TextInput>
+
+    <TwoByFormBox v-if="model.cache.enabled">
+      <TextInput
+        id="s3-cache-path-display"
+        v-model="model.cache.path"
+        disabled>
+        Cache Directory
+      </TextInput>
+      <TextInput
+        id="s3-cache-max-bytes-display"
+        :model-value="model.cache.max_bytes"
+        disabled>
+        Max Size (bytes)
+      </TextInput>
+    </TwoByFormBox>
+    <TextInput
+      v-if="model.cache.enabled"
+      id="s3-cache-max-entries-display"
+      :model-value="model.cache.max_entries"
+      disabled>
+      Max Cached Entries
     </TextInput>
   </section>
 </template>
@@ -68,8 +127,27 @@ const model = defineModel<S3StorageSettings>({
 if (!model.value.credentials) {
   model.value.credentials = {};
 }
+model.value.credentials.access_key ??= "";
+model.value.credentials.secret_key ??= "";
+model.value.credentials.session_token ??= "";
+model.value.credentials.role_arn ??= "";
+model.value.credentials.role_session_name ??= "";
+model.value.credentials.external_id ??= "";
 if (typeof model.value.path_style !== "boolean") {
   model.value.path_style = true;
+}
+model.value.cache ??= {
+  enabled: false,
+  path: "",
+  max_bytes: 536870912,
+  max_entries: 2048,
+};
+model.value.cache.path ??= "";
+if (typeof model.value.cache.max_bytes !== "number") {
+  model.value.cache.max_bytes = 536870912;
+}
+if (typeof model.value.cache.max_entries !== "number") {
+  model.value.cache.max_entries = 2048;
 }
 
 const regionDisplay = computed({
@@ -98,6 +176,14 @@ const maskedSecret = computed(() => {
     return "";
   }
   return "*".repeat(Math.min(secret.length, 12));
+});
+
+const maskedSession = computed(() => {
+  const token = model.value.credentials?.session_token ?? "";
+  if (!token) {
+    return "";
+  }
+  return "*".repeat(Math.min(token.length, 12));
 });
 </script>
 

@@ -24,6 +24,8 @@ tests/
 │   ├── test_python.sh              # Python/PyPI integration tests
 │   ├── test_php.sh                 # PHP/Composer integration tests
 │   ├── test_go.sh                  # Go module integration tests
+│   ├── test_debian.sh              # Debian repository integration tests
+│   ├── test_cargo.sh               # Cargo registry integration tests
 │   └── test_helm.sh                # Helm chart integration tests
 ├── fixtures/                        # Test packages
 │   ├── maven/simple-lib/           # Maven test library
@@ -32,6 +34,7 @@ tests/
 │   ├── php/sample-lib/             # PHP test library
 │   ├── go/test-module/             # Go test module
 │   ├── helm/test-chart/            # Helm test chart
+│   ├── cargo/nitro-cargo-test/     # Cargo binary fixture
 │   └── docker/Dockerfile.testimg   # Docker test image
 ├── run_integration_tests.sh         # Main test orchestrator
 └── README.md                        # This file
@@ -47,6 +50,8 @@ tests/
 | Python      | ✅     | ✅    | 11    |
 | PHP         | ✅     | ❌    | 10    |
 | Go          | ✅     | ✅    | 16    |
+| Debian      | ✅     | ❌    | 6     |
+| Cargo       | ✅     | ❌    | 8     |
 | Helm        | ✅     | ❌    | 16    |
 
 **Legend:**
@@ -127,6 +132,9 @@ The database is initialized with:
   - `go-hosted` (GoHosted)
   - `go-proxy` (GoProxy → proxy.golang.org)
   - `helm-hosted` (HelmHosted)
+  - `helm-oci` (Helm OCI)
+  - `deb-hosted` (DebianHosted)
+  - `cargo-hosted` (CargoHosted)
 
 ### Network
 
@@ -222,6 +230,26 @@ All containers communicate on the `test-network` bridge network. Tests run insid
 14. ✅ Proxy caching verification
 15. ✅ Authentication required for upload
 16. ✅ 404 for non-existent module
+
+### Debian Tests (6 tests)
+
+1. ✅ Build `.deb` package with custom control metadata
+2. ✅ Upload package via multipart form (`distribution=stable`, `component=main`)
+3. ✅ Verify `Packages` index lists the package/version
+4. ✅ Verify `Release` file advertises suite/component metadata
+5. ✅ Download artifact from `pool/` layout
+6. ✅ Compare SHA256 hashes between original and downloaded package
+
+### Cargo Tests (8 tests)
+
+1. ✅ Publish crate via `cargo publish --registry nitro`
+2. ✅ Verify local crate archive creation
+3. ✅ Confirm sparse index JSON includes the new version
+4. ✅ Fetch `/api/v1/crates/<name>` metadata for published version
+5. ✅ Download crate via `/api/v1/crates/<name>/<version>/download`
+6. ✅ Match crate SHA256 against local build
+7. ✅ Install crate via `cargo install --registry nitro`
+8. ✅ Execute installed binary to validate runtime behavior
 
 ### Helm Tests (16 tests)
 

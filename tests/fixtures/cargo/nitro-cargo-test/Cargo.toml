@@ -1,0 +1,15 @@
+[package]
+name = "nitro-cargo-test"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nitro Repo <test@nitro.test>"]
+description = "Sample crate used by the Nitro Repo integration suite"
+license = "MIT"
+readme = "README.md"
+repository = "https://nitro.example.com/repositories/test-storage/cargo-hosted"
+keywords = ["nitro", "integration", "test"]
+categories = ["development-tools"]
+
+[[bin]]
+name = "nitro-cargo-test"
+path = "src/main.rs"

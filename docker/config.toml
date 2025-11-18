@@ -40,14 +40,14 @@ require_symbol = false
 
 
 [log.levels]
-default = "Debug"
+default = "Info"
 [log.levels.others]
-"nitro_repo" = "Debug"
-"nr_core" = "Debug"
-"nr_storage" = "Debug"
-"sqlx" = "Debug"
-"pg_extended_sqlx_queries" = "Debug"
-"h2" = "Debug"
-"tower" = "Debug"
-"tonic" = "Debug"
-"hyper_util" = "Debug"
+"nitro_repo" = "Info"
+"nr_core" = "Info"
+"nr_storage" = "Info"
+"sqlx" = "Info"
+"pg_extended_sqlx_queries" = "Info"
+"h2" = "Info"
+"tower" = "Info"
+"tonic" = "Info"
+"hyper_util" = "Info"

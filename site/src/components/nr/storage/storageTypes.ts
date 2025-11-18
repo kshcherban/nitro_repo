@@ -23,6 +23,17 @@ export interface LocalConfig {
 export interface S3CredentialsConfig {
   access_key?: string;
   secret_key?: string;
+  session_token?: string;
+  role_arn?: string;
+  role_session_name?: string;
+  external_id?: string;
+}
+
+export interface S3CacheSettings {
+  enabled: boolean;
+  path?: string;
+  max_bytes: number;
+  max_entries: number;
 }
 
 export interface S3StorageSettings {
@@ -32,6 +43,7 @@ export interface S3StorageSettings {
   endpoint?: string;
   credentials: S3CredentialsConfig;
   path_style: boolean;
+  cache: S3CacheSettings;
 }
 
 export type StorageTypeConfig =
@@ -73,8 +85,18 @@ export const storageTypes: Array<StorageType> = [
       credentials: {
         access_key: "",
         secret_key: "",
+        session_token: "",
+        role_arn: "",
+        role_session_name: "",
+        external_id: "",
       },
       path_style: true,
+      cache: {
+        enabled: false,
+        path: "",
+        max_bytes: 536870912,
+        max_entries: 2048,
+      },
     }),
   },
 ];

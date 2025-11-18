@@ -51,6 +51,10 @@ import TextInput from "@/components/form/text/TextInput.vue";
 import TwoByFormBox from "@/components/form/TwoByFormBox.vue";
 import FloatingErrorBanner from "@/components/ui/FloatingErrorBanner.vue";
 import { getStorageType, storageTypes } from "@/components/nr/storage/storageTypes";
+import type {
+  S3StorageSettings,
+  StorageTypeConfig,
+} from "@/components/nr/storage/storageTypes";
 import http from "@/http";
 import router from "@/router";
 import { useAlertsStore } from "@/stores/alerts";
@@ -110,6 +114,16 @@ async function createStorage() {
     },
   };
 
+  const validationError = validateSettings(selected.value, data.config.settings);
+  if (validationError) {
+    errorBanner.value = {
+      visible: true,
+      title: "Invalid configuration",
+      message: validationError,
+    };
+    return;
+  }
+
   resetError();
   try {
     const response = await http.post(`/api/storage/new/${selected.value}`, data);
@@ -124,8 +138,26 @@ async function createStorage() {
     errorBanner.value.title = resolved.title;
     errorBanner.value.message = resolved.message;
     console.error(resolved.debugMessage);
-    alerts.error(resolved.title, resolved.message);
   }
+}
+
+function validateSettings(selectedType: string, settings: StorageTypeConfig["settings"]): string | null {
+  if (selectedType.toLowerCase() !== "s3") {
+    return null;
+  }
+  const s3 = settings as S3StorageSettings;
+  const access = s3.credentials?.access_key?.trim();
+  const secret = s3.credentials?.secret_key?.trim();
+  const role = s3.credentials?.role_arn?.trim();
+  const hasAccess = Boolean(access);
+  const hasSecret = Boolean(secret);
+  if (hasAccess !== hasSecret) {
+    return "Provide both access and secret keys, or leave both blank.";
+  }
+  if (hasAccess && role) {
+    return "Static access keys and IAM role are mutually exclusive. Choose one authentication method.";
+  }
+  return null;
 }
 
 function resolveStorageError(error: unknown): {
