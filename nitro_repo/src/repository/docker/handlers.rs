@@ -13,10 +13,13 @@ use nr_core::{
     storage::{FileHashes, StoragePath},
     utils::base64_utils,
 };
-use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile, local::LocalStorage};
+use nr_storage::{
+    DynStorage, FileContent, FileType, Storage, StorageError, StorageFile, local::LocalStorage,
+};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, future::Future, io};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::task::spawn_blocking;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, instrument, warn};
 use url::form_urlencoded;
@@ -44,6 +47,44 @@ async fn get_file_bytes(storage_file: StorageFile) -> Result<Vec<u8>, DockerErro
             "Expected file, got directory".to_string(),
         )),
     }
+}
+
+async fn recompute_finalized_upload_from_storage_file(
+    storage_file: StorageFile,
+) -> Result<FinalizedUpload, DockerError> {
+    let StorageFile::File { content, .. } = storage_file else {
+        return Err(DockerError::InvalidManifest(
+            "Expected file, got directory".to_string(),
+        ));
+    };
+
+    let mut stream = ReaderStream::new(content);
+    let mut sha2 = Sha256::new();
+    let mut length = 0u64;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(DockerError::from)?;
+        if chunk.is_empty() {
+            continue;
+        }
+        length += chunk.len() as u64;
+        sha2.update(&chunk);
+    }
+
+    let sha2_bytes = sha2.finalize();
+    let digest_value = format!("sha256:{:x}", sha2_bytes);
+    let hashes = FileHashes {
+        md5: None,
+        sha1: None,
+        sha2_256: Some(base64_utils::encode(&sha2_bytes)),
+        sha3_256: None,
+    };
+
+    Ok(FinalizedUpload {
+        digest: digest_value,
+        hashes,
+        length,
+    })
 }
 
 /// Helper to create custom response with headers
@@ -306,7 +347,7 @@ async fn collect_repository_tags(
         total_bytes = tracing::field::Empty
     )
 )]
-pub(super) async fn stream_to_writer<S, W, F>(
+pub(super) async fn stream_to_writer<S, W, F, Fut>(
     mut stream: S,
     writer: &mut BufWriter<W>,
     mut on_chunk_written: F,
@@ -314,7 +355,8 @@ pub(super) async fn stream_to_writer<S, W, F>(
 where
     S: futures::Stream<Item = Result<Bytes, RepositoryHandlerError>> + Unpin,
     W: AsyncWrite + Unpin,
-    F: FnMut(&[u8]) -> Result<(), DockerError>,
+    F: FnMut(Bytes) -> Fut,
+    Fut: Future<Output = Result<(), DockerError>>,
 {
     let mut chunk_count = 0u64;
     let mut total_bytes = 0u64;
@@ -329,7 +371,7 @@ where
         total_bytes += chunk.len() as u64;
 
         writer.write_all(&chunk).await.map_err(DockerError::from)?;
-        on_chunk_written(&chunk)?;
+        on_chunk_written(chunk).await?;
 
         // Record progress every 10 chunks
         if chunk_count % 10 == 0 {
@@ -361,6 +403,16 @@ where
     Ok(data)
 }
 
+async fn update_upload_state_background(
+    site: NitroRepo,
+    handle: BlobUploadStateHandle,
+    chunk: Bytes,
+) -> Result<u64, DockerError> {
+    spawn_blocking(move || site.update_upload_state_handle(&handle, chunk.as_ref()))
+        .await
+        .map_err(|err| DockerError::from(io::Error::other(err)))
+}
+
 async fn write_local_stream<S>(
     storage: LocalStorage,
     repository_id: Uuid,
@@ -382,10 +434,15 @@ where
     let mut writer = BufWriter::with_capacity(LOCAL_UPLOAD_BUFFER_SIZE, file);
 
     let handle_for_stream = state_handle.clone();
+    let site_for_stream = site.clone();
 
-    stream_to_writer(stream, &mut writer, |chunk| {
-        site.update_upload_state_handle(&handle_for_stream, chunk);
-        Ok(())
+    stream_to_writer(stream, &mut writer, move |chunk| {
+        let site = site_for_stream.clone();
+        let handle = handle_for_stream.clone();
+        async move {
+            update_upload_state_background(site, handle, chunk).await?;
+            Ok(())
+        }
     })
     .await?;
 
@@ -1099,12 +1156,14 @@ async fn upload_blob_chunk(
         storage => {
             let bytes = collect_stream_bytes(stream).await?;
             if !bytes.is_empty() {
+                let chunk = Bytes::from(bytes);
                 storage
-                    .append_file(repo.id(), bytes.clone().into(), &upload_path)
+                    .append_file(repo.id(), FileContent::Bytes(chunk.clone()), &upload_path)
                     .await?;
 
-                // Update blob upload state
-                total_size = site.update_upload_state_handle(&state_handle, &bytes);
+                total_size =
+                    update_upload_state_background(site.clone(), state_handle.clone(), chunk)
+                        .await?;
             }
         }
     }
@@ -1199,12 +1258,14 @@ async fn complete_blob_upload(
         storage => {
             let bytes = collect_stream_bytes(stream).await?;
             if !bytes.is_empty() {
+                let chunk = Bytes::from(bytes);
                 storage
-                    .append_file(repo.id(), bytes.clone().into(), &upload_path)
+                    .append_file(repo.id(), FileContent::Bytes(chunk.clone()), &upload_path)
                     .await?;
 
-                // Update blob upload state
-                _current_size = site.update_upload_state_handle(&state_handle, &bytes);
+                _current_size =
+                    update_upload_state_background(site.clone(), state_handle.clone(), chunk)
+                        .await?;
             }
         }
     }
@@ -1221,20 +1282,7 @@ async fn complete_blob_upload(
             .open_file(repo.id(), &upload_path)
             .await?
             .ok_or_else(|| DockerError::BlobUploadNotFound(upload_id.to_string()))?;
-        let data_bytes = get_file_bytes(upload_file).await?;
-        let sha2_bytes = Sha256::digest(&data_bytes);
-        let digest_value = format!("sha256:{:x}", sha2_bytes);
-        let hashes = FileHashes {
-            md5: None,
-            sha1: None,
-            sha2_256: Some(base64_utils::encode(&sha2_bytes)),
-            sha3_256: None,
-        };
-        FinalizedUpload {
-            digest: digest_value,
-            hashes,
-            length: data_bytes.len() as u64,
-        }
+        recompute_finalized_upload_from_storage_file(upload_file).await?
     };
 
     if finalized.digest != digest {
@@ -1392,11 +1440,16 @@ mod tests {
     use crate::repository::test_helpers::test_storage;
     use futures::stream;
     use nr_core::storage::StoragePath;
-    use nr_storage::{FileContent, Storage};
+    use nr_storage::{FileContent, Storage, StorageFile, StorageFileMeta, StorageFileReader};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tempfile::tempdir;
     use tokio::{
         fs::{self, OpenOptions},
         io::{AsyncReadExt, BufWriter},
+        time::{Duration, sleep},
     };
     use uuid::Uuid;
 
@@ -1432,8 +1485,8 @@ mod tests {
             &mut writer,
             |chunk| {
                 total_written += chunk.len();
-                observed.extend_from_slice(chunk);
-                Ok(())
+                observed.extend_from_slice(chunk.as_ref());
+                async { Ok(()) }
             },
         )
         .await?;
@@ -1449,6 +1502,62 @@ mod tests {
         assert_eq!(total_written, payload.len());
         assert_eq!(observed, payload);
         assert_eq!(saved, payload);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_writer_handles_async_chunk_hooks() -> anyhow::Result<()> {
+        let payload = vec![13u8; 128 * 1024];
+        let dir = tempdir()?;
+        let file_path = dir.path().join("async.bin");
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&file_path)
+            .await?;
+        let mut writer = BufWriter::with_capacity(8 * 1024, file);
+
+        let processed_bytes = Arc::new(AtomicUsize::new(0));
+
+        stream_to_writer(test_stream_from_bytes(&payload, 2048), &mut writer, {
+            let processed = Arc::clone(&processed_bytes);
+            move |chunk| {
+                let processed = Arc::clone(&processed);
+                async move {
+                    sleep(Duration::from_millis(1)).await;
+                    processed.fetch_add(chunk.len(), Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        })
+        .await?;
+
+        assert_eq!(processed_bytes.load(Ordering::SeqCst), payload.len());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_finalization_matches_sha256() -> anyhow::Result<()> {
+        let payload = (0u32..(256 * 1024))
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<u8>>();
+
+        let dir = tempdir()?;
+        let file_path = dir.path().join("stream.bin");
+        std::fs::write(&file_path, &payload)?;
+
+        let reader = StorageFileReader::from(std::fs::File::open(&file_path)?);
+        let meta = StorageFileMeta::read_from_file(&file_path)?;
+        let storage_file = StorageFile::File {
+            meta,
+            content: reader,
+        };
+
+        let finalized = recompute_finalized_upload_from_storage_file(storage_file).await?;
+        assert_eq!(finalized.length as usize, payload.len());
+        let expected = format!("sha256:{:x}", Sha256::digest(&payload));
+        assert_eq!(finalized.digest, expected);
 
         Ok(())
     }

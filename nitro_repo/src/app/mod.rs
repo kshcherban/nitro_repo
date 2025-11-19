@@ -1,6 +1,6 @@
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
-use ahash::{HashMap, HashMapExt};
+use ahash::{HashMap, HashMapExt, RandomState};
 use anyhow::{Context, anyhow};
 use authentication::{
     oauth::{OAuth2Rbac, OAuth2Service},
@@ -8,6 +8,7 @@ use authentication::{
 };
 use axum::extract::State;
 use config::{Mode, OAuth2Settings, PasswordRules, SecuritySettings, SiteSetting, SsoSettings};
+use dashmap::DashMap;
 use derive_more::{AsRef, derive::Deref};
 use email::EmailSetting;
 use email_service::{EmailAccess, EmailService};
@@ -343,7 +344,7 @@ pub struct NitroRepoInner {
     pub frontend: frontend::HostedFrontend,
     pub staging_config: StagingConfig,
     services: Mutex<InternalServices>,
-    blob_upload_states: parking_lot::Mutex<HashMap<(Uuid, String), BlobUploadStateHandle>>,
+    blob_upload_states: DashMap<(Uuid, String), BlobUploadStateHandle, RandomState>,
     pub suggested_local_storage_path: PathBuf,
 }
 macro_rules! take_service {
@@ -569,7 +570,7 @@ impl NitroRepo {
             oauth2_rbac: RwLock::new(oauth2_rbac),
             staging_config,
             services: Mutex::new(services),
-            blob_upload_states: parking_lot::Mutex::new(HashMap::new()),
+            blob_upload_states: DashMap::with_hasher(RandomState::default()),
             #[cfg(feature = "frontend")]
             frontend: frontend::HostedFrontend::new(site.frontend_path)?,
             suggested_local_storage_path,
@@ -852,8 +853,9 @@ impl NitroRepo {
         upload_id: &str,
         sha256_only: bool,
     ) -> BlobUploadStateHandle {
-        let mut states = self.inner.blob_upload_states.lock();
-        states
+        let entry = self
+            .inner
+            .blob_upload_states
             .entry((repository, upload_id.to_owned()))
             .or_insert_with(|| {
                 if sha256_only {
@@ -861,8 +863,8 @@ impl NitroRepo {
                 } else {
                     BlobUploadStateHandle::new(UploadState::new())
                 }
-            })
-            .clone()
+            });
+        entry.value().clone()
     }
 
     pub fn get_upload_state_handle(
@@ -870,8 +872,10 @@ impl NitroRepo {
         repository: Uuid,
         upload_id: &str,
     ) -> Option<BlobUploadStateHandle> {
-        let states = self.inner.blob_upload_states.lock();
-        states.get(&(repository, upload_id.to_owned())).cloned()
+        self.inner
+            .blob_upload_states
+            .get(&(repository, upload_id.to_owned()))
+            .map(|entry| entry.value().clone())
     }
 
     pub fn ensure_docker_blob_upload_state_handle(
@@ -935,10 +939,11 @@ impl NitroRepo {
         repository: Uuid,
         upload_id: &str,
     ) -> Option<FinalizedUpload> {
-        let state = {
-            let mut states = self.inner.blob_upload_states.lock();
-            states.remove(&(repository, upload_id.to_owned()))
-        };
+        let state = self
+            .inner
+            .blob_upload_states
+            .remove(&(repository, upload_id.to_owned()))
+            .map(|(_, handle)| handle);
         state.map(|handle| match handle.try_into_state() {
             Ok(state) => state.finalize(),
             Err(handle) => {
@@ -950,8 +955,9 @@ impl NitroRepo {
     }
 
     pub fn abandon_blob_upload_state(&self, repository: Uuid, upload_id: &str) {
-        let mut states = self.inner.blob_upload_states.lock();
-        states.remove(&(repository, upload_id.to_owned()));
+        self.inner
+            .blob_upload_states
+            .remove(&(repository, upload_id.to_owned()));
     }
 
     pub fn update_app_url(&self, app_url: &Uri) {

@@ -24,6 +24,7 @@ mime.workspace = true
 derive_more.workspace = true
 base64.workspace = true
 ahash.workspace = true
+dashmap.workspace = true
 parking_lot.workspace = true
 http.workspace = true
 utoipa.workspace = true
@@ -34,6 +35,7 @@ pin-project.workspace = true
 futures.workspace = true
 
 bytes.workspace = true
+fs2.workspace = true
 # Hashing Algorithms
 md-5.workspace = true
 sha1.workspace = true
@@ -62,3 +64,4 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 nr-core = { workspace = true, features = ["testing"] }
 anyhow = { workspace = true }
+tempfile = "3"

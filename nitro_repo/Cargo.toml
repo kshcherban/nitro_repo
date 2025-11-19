@@ -69,6 +69,7 @@ schemars.workspace = true
 reqwest.workspace = true
 bytes.workspace = true
 ahash.workspace = true
+dashmap.workspace = true
 parking_lot.workspace = true
 oauth2 = { version = "5", features = ["reqwest"] }
 flate2 = "1"

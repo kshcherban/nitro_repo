@@ -51,6 +51,7 @@ derive_more = { version = "2.0", features = [
 ] }
 ahash = "0.8"
 parking_lot = { version = "0.12", features = [] }
+dashmap = "5"
 futures-util = "0.3.21"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -61,6 +62,7 @@ either = "1.12"
 
 
 base64 = "0.22"
+fs2 = "0.4"
 
 # Error Handling
 schemars = { git = "https://github.com/wyatt-herkamp/schemars.git", branch = "if_for_adjacent" }

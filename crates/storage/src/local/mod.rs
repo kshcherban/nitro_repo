@@ -6,6 +6,8 @@ use std::{
     sync::Arc,
 };
 
+use dashmap::DashMap;
+
 pub use stream::*;
 pub mod error;
 mod stream;
@@ -25,9 +27,9 @@ use utils::new_type_arc_type;
 
 use crate::*;
 
-use ahash::{HashMap, HashMapExt};
+use ahash::RandomState;
+use fs2::FileExt;
 use nr_core::storage::FileHashes;
-use parking_lot::Mutex as ParkingMutex;
 use std::sync::OnceLock;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalConfig {
@@ -154,17 +156,17 @@ pub struct LocalStorageInner {
 }
 impl LocalStorageInner {}
 
-fn precomputed_hashes() -> &'static ParkingMutex<HashMap<PathBuf, FileHashes>> {
-    static PRECOMPUTED: OnceLock<ParkingMutex<HashMap<PathBuf, FileHashes>>> = OnceLock::new();
-    PRECOMPUTED.get_or_init(|| ParkingMutex::new(HashMap::new()))
+fn precomputed_hashes() -> &'static DashMap<PathBuf, FileHashes, RandomState> {
+    static PRECOMPUTED: OnceLock<DashMap<PathBuf, FileHashes, RandomState>> = OnceLock::new();
+    PRECOMPUTED.get_or_init(|| DashMap::with_hasher(RandomState::default()))
 }
 
 fn store_precomputed_hash(path: PathBuf, hashes: FileHashes) {
-    precomputed_hashes().lock().insert(path, hashes);
+    precomputed_hashes().insert(path, hashes);
 }
 
 fn take_precomputed_hash(path: &Path) -> Option<FileHashes> {
-    precomputed_hashes().lock().remove(path)
+    precomputed_hashes().remove(path).map(|(_, hashes)| hashes)
 }
 #[derive(Debug, Clone)]
 pub struct LocalStorage(Arc<LocalStorageInner>);
@@ -205,6 +207,7 @@ impl LocalStorage {
                 .create(true)
                 .append(true)
                 .open(&path)?;
+            file.lock_exclusive()?;
 
             Ok::<_, LocalStorageError>((file, path))
         })
@@ -222,6 +225,7 @@ struct CreatePath {
     /// If None, then the directory already exists
     new_directory_start: Option<PathBuf>,
 }
+
 impl LocalStorageInner {
     /// Get the path for a file to be created
     #[instrument(level = "debug")]
@@ -351,6 +355,13 @@ impl LocalStorageInner {
         Ok(StorageFile::Directory { meta, files })
     }
 
+    async fn queue_meta_update(&self, path: PathBuf) -> Result<(), LocalStorageError> {
+        self.meta_update_sender
+            .send(path)
+            .await
+            .map_err(|_| LocalStorageError::MetaUpdateChannelClosed)
+    }
+
     pub async fn update_meta_and_parent_metas(
         &self,
         path: &Path,
@@ -362,57 +373,24 @@ impl LocalStorageInner {
                 if parent == self.config.path {
                     trace!("Do not update root directory");
                 } else {
-                    // Use try_send to avoid blocking when channel is full
-                    if self
-                        .meta_update_sender
-                        .try_send(parent.to_path_buf())
-                        .is_ok()
-                    {
-                        metas_updated += 1;
-                    } else {
-                        warn!(
-                            ?parent,
-                            "Metadata update channel full, skipping parent update"
-                        );
-                    }
+                    self.queue_meta_update(parent.to_path_buf()).await?;
+                    metas_updated += 1;
                 }
             }
+
             let mut next_path = greatest_parent.clone();
             for part in path.strip_prefix(&greatest_parent).unwrap().components() {
                 event!(Level::DEBUG, ?next_path, "Updating Meta");
-                // Use try_send to avoid blocking when channel is full
-                if self.meta_update_sender.try_send(next_path.clone()).is_ok() {
-                    metas_updated += 1;
-                } else {
-                    warn!(
-                        ?next_path,
-                        "Metadata update channel full, skipping directory update"
-                    );
-                }
+                self.queue_meta_update(next_path.clone()).await?;
+                metas_updated += 1;
                 next_path = next_path.join(part);
             }
         } else {
-            // Use try_send to avoid blocking when channel is full
-            if self.meta_update_sender.try_send(path.to_path_buf()).is_ok() {
+            self.queue_meta_update(path.to_path_buf()).await?;
+            metas_updated += 1;
+            if let Some(parent) = path.parent() {
+                self.queue_meta_update(parent.to_path_buf()).await?;
                 metas_updated += 1;
-            } else {
-                warn!(?path, "Metadata update channel full, skipping file update");
-            }
-            let parent = path.parent();
-            if let Some(parent) = parent {
-                // Use try_send to avoid blocking when channel is full
-                if self
-                    .meta_update_sender
-                    .try_send(parent.to_path_buf())
-                    .is_ok()
-                {
-                    metas_updated += 1;
-                } else {
-                    warn!(
-                        ?parent,
-                        "Metadata update channel full, skipping parent update"
-                    );
-                }
             }
         }
 
@@ -502,7 +480,11 @@ impl Storage for LocalStorage {
         current_span.record("file.path", debug(&path));
         debug!(?path, "Saving File");
         let mut file = fs::File::create(&path)?;
-        let bytes_written = content.write_to(&mut file)?;
+        file.lock_exclusive()?;
+        let write_result = content.write_to(&mut file);
+        let unlock_result = file.unlock();
+        let bytes_written = write_result?;
+        unlock_result?;
         if !is_hidden_file(&path) {
             // Don't run post save file for meta files
             self.clone()
@@ -544,7 +526,11 @@ impl Storage for LocalStorage {
             .create(true)
             .append(true)
             .open(&path)?;
-        let bytes_written = content.write_to(&mut file)?;
+        file.lock_exclusive()?;
+        let write_result = content.write_to(&mut file);
+        let unlock_result = file.unlock();
+        let bytes_written = write_result?;
+        unlock_result?;
 
         // Skip metadata updates for append operations entirely
         // Metadata will be updated when the file is finalized (moved/renamed)
@@ -893,11 +879,19 @@ impl StorageFactory for LocalStorageFactory {
 
 #[cfg(test)]
 mod tests {
-    use tracing::warn;
-
+    use super::*;
     use crate::{
-        StaticStorageFactory, local::LocalStorageFactory, testing::storage::TestingStorage,
+        StaticStorageFactory, StorageConfig, StorageConfigInner, StorageTypeConfig,
+        fs::FileContent,
+        local::{LocalConfig, LocalStorageFactory, LocalStorageInner},
+        testing::storage::TestingStorage,
     };
+    use fs2::FileExt;
+    use nr_core::storage::StoragePath;
+    use tempfile::tempdir;
+    use tokio::time::{Duration, sleep};
+    use tracing::warn;
+    use uuid::Uuid;
 
     #[tokio::test]
     pub async fn generic_test() -> anyhow::Result<()> {
@@ -910,6 +904,103 @@ mod tests {
                 .await?;
         let testing_storage = TestingStorage::new(local_storage);
         crate::testing::tests::full_test(testing_storage).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_waits_for_lock_release() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let storage = <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(
+            StorageConfig {
+                storage_config: StorageConfigInner::test_config(),
+                type_config: StorageTypeConfig::Local(LocalConfig {
+                    path: temp.path().to_path_buf(),
+                }),
+            },
+        )
+        .await?;
+
+        let repository = Uuid::new_v4();
+        let location = StoragePath::from("locks/blob.bin");
+        let file_path = storage.get_path(&repository, &location);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let guard_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)?;
+        guard_file.lock_exclusive()?;
+
+        let storage_clone = storage.clone();
+        let location_clone = location.clone();
+        let handle = tokio::spawn(async move {
+            storage_clone
+                .append_file(
+                    repository,
+                    FileContent::from(vec![1u8; 16]),
+                    &location_clone,
+                )
+                .await
+                .unwrap();
+        });
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            !handle.is_finished(),
+            "append_file should wait for the OS lock to release"
+        );
+
+        guard_file.unlock()?;
+        drop(guard_file);
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("append_file should complete once the lock is released")
+            .unwrap();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn metadata_updates_wait_instead_of_dropping() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let inner = LocalStorageInner {
+            config: LocalConfig {
+                path: temp.path().to_path_buf(),
+            },
+            storage_config: StorageConfigInner::test_config(),
+            shutdown_signal: Mutex::new(Some(shutdown_tx)),
+            meta_update_sender: sender,
+        };
+
+        let target = temp.path().join("repo/pkg/file.bin");
+        let parent = target.parent().unwrap().to_path_buf();
+
+        let receiver_task = tokio::spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+            let mut seen = Vec::new();
+            while let Some(path) = receiver.recv().await {
+                seen.push(path);
+                if seen.len() >= 2 {
+                    break;
+                }
+            }
+            seen
+        });
+
+        let updated = inner
+            .update_meta_and_parent_metas(&target, None)
+            .await
+            .expect("metadata updates should succeed");
+
+        assert_eq!(updated, 2, "both file and parent updates must be queued");
+
+        let seen = receiver_task.await.unwrap();
+        assert!(seen.contains(&target));
+        assert!(seen.contains(&parent));
 
         Ok(())
     }

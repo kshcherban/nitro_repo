@@ -19,6 +19,8 @@ pub enum LocalStorageError {
     PathCannotBeChanged,
     #[error("Expected a config of type Local")]
     InvalidConfigType(#[from] crate::InvalidConfigType),
+    #[error("Metadata update channel closed")]
+    MetaUpdateChannelClosed,
     #[error("Internal Unknown Error {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
