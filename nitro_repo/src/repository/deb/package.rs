@@ -1,5 +1,4 @@
-#[cfg_attr(not(feature = "frontend"), allow(unused_imports))]
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 
 use ar::Archive as ArArchive;
 use bytes::Bytes;
@@ -149,6 +148,7 @@ mod tests {
     use super::*;
     use flate2::Compression;
     use flate2::write::GzEncoder;
+    use std::io::Write;
     use tar::Builder;
     use xz2::write::XzEncoder;
 

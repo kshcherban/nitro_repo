@@ -70,7 +70,9 @@
         item-value="cachePath"
         v-model="selected"
         show-select
-        class="elevation-0">
+        class="elevation-0"
+        :items-per-page="perPage"
+        :item-length="totalPackages">
 
         <template v-slot:item.size="{ value }">
           <div class="text-end">{{ formatBytes(value) }}</div>
@@ -120,14 +122,7 @@
           :length="totalPages"
           :disabled="isDeleting" />
         <v-spacer />
-        <v-select
-          v-model="perPage"
-          :items="perPageOptions"
-          variant="outlined"
-          density="compact"
-          hide-details
-          label="Per page"
-          style="max-width: 120px;" />
+
       </v-card-actions>
     </v-card>
   </section>

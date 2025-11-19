@@ -99,15 +99,15 @@
       </TextInput>
       <TextInput
         id="s3-cache-max-bytes-display"
-        :model-value="model.cache.max_bytes"
+        :model-value="formattedMaxSize"
         disabled>
-        Max Size (bytes)
+        Max Size
       </TextInput>
     </TwoByFormBox>
     <TextInput
       v-if="model.cache.enabled"
       id="s3-cache-max-entries-display"
-      :model-value="model.cache.max_entries"
+      :model-value="String(model.cache.max_entries)"
       disabled>
       Max Cached Entries
     </TextInput>
@@ -168,6 +168,14 @@ const endpointDisplay = computed({
 const customRegionDisplay = computed({
   get: () => model.value.custom_region ?? "",
   set: () => {},
+});
+
+const formattedMaxSize = computed(() => {
+  const bytes = model.value.cache.max_bytes;
+  if (bytes >= 1024 * 1024 * 1024) {
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+  }
+  return (bytes / (1024 * 1024)).toFixed(2) + " MB";
 });
 
 const maskedSecret = computed(() => {

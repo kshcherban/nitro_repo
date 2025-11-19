@@ -5,6 +5,8 @@ import UpdateS3StorageConfig from "@/components/nr/storage/s3/UpdateS3StorageCon
 
 type StorageConfigDiscriminator = "Local" | "S3";
 
+export type StorageSettings = LocalConfig | S3StorageSettings;
+
 interface StorageType {
   label: string;
   value: string;
@@ -13,7 +15,7 @@ interface StorageType {
   component: any;
   updateComponent: any;
   configType: StorageConfigDiscriminator;
-  defaultSettings: () => Record<string, unknown>;
+  defaultSettings: () => StorageSettings;
 }
 
 export interface LocalConfig {

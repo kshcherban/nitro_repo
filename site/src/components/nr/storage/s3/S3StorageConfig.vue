@@ -139,19 +139,29 @@
         placeholder="/var/lib/nitro-cache/s3">
         Cache directory
       </TextInput>
-      <TextInput
-        id="s3-cache-max-bytes"
-        v-model.number="model.cache.max_bytes"
-        type="number"
-        min="1048576"
-        step="1048576">
-        Max size (bytes)
-      </TextInput>
+      <div style="display: flex; gap: 1rem; align-items: flex-start;">
+        <TextInput
+          id="s3-cache-size"
+          v-model="cacheSizeDisplay"
+          type="number"
+          step="0.1"
+          min="0"
+          style="flex-grow: 1;">
+          Max Size
+        </TextInput>
+        <DropDown
+          id="s3-cache-unit"
+          v-model="selectedUnit"
+          :options="unitOptions"
+          style="width: 100px; flex-shrink: 0;">
+          Unit
+        </DropDown>
+      </div>
     </TwoByFormBox>
     <TextInput
       v-if="model.cache.enabled"
       id="s3-cache-max-entries"
-      v-model.number="model.cache.max_entries"
+      v-model="maxEntriesString"
       type="number"
       min="1"
       step="1">
@@ -211,6 +221,47 @@ const ensureModel = (): S3StorageSettings => {
   }
   return model.value;
 };
+
+const unitOptions = [
+  { label: "MB", value: "MB" },
+  { label: "GB", value: "GB" },
+];
+
+const multipliers = {
+  MB: 1024 * 1024,
+  GB: 1024 * 1024 * 1024,
+} as const;
+
+type Unit = keyof typeof multipliers;
+
+const selectedUnit = ref<Unit>("MB");
+const initBytes = ensureModel().cache.max_bytes;
+if (initBytes > 0 && initBytes % multipliers.GB === 0) {
+  selectedUnit.value = "GB";
+}
+
+const cacheSizeDisplay = computed({
+  get: () => {
+    const bytes = ensureModel().cache.max_bytes;
+    const mult = multipliers[selectedUnit.value];
+    const val = bytes / mult;
+    return Number.isInteger(val) ? val.toString() : val.toFixed(2);
+  },
+  set: (val: string) => {
+    const num = parseFloat(val);
+    if (!isNaN(num)) {
+      ensureModel().cache.max_bytes = Math.floor(num * multipliers[selectedUnit.value]);
+    }
+  },
+});
+
+const maxEntriesString = computed({
+  get: () => String(ensureModel().cache.max_entries),
+  set: (value: string) => {
+    const num = parseInt(value, 10);
+    ensureModel().cache.max_entries = isNaN(num) ? 0 : num;
+  },
+});
 
 const regionsLoading = ref(false);
 const regionError = ref<string | null>(null);

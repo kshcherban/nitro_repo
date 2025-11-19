@@ -63,7 +63,7 @@ import { isAxiosError } from "axios";
 const input = ref({
   name: "",
   storageType: "",
-  storageConfigValue: {},
+  storageConfigValue: storageTypes[0]!.defaultSettings(),
 });
 const storageOptions = ref(storageTypes);
 const selectedStorageType = computed(() => getStorageType(input.value.storageType));
@@ -87,9 +87,9 @@ watch(
   () => {
     resetError();
     const current = selectedStorageType.value;
-    input.value.storageConfigValue = current?.defaultSettings
+    input.value.storageConfigValue = current
       ? current.defaultSettings()
-      : {};
+      : storageTypes[0]!.defaultSettings(); // Default to Local storage config if none is selected
   },
   { immediate: true },
 );
