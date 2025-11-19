@@ -102,7 +102,6 @@ pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         // Serve the SPA root explicitly before falling back for other routes
         .route("/", axum::routing::any(super::frontend::frontend_request))
         .nest("/api", api::api_routes())
-        .nest("/badge", super::badge::badge_routes())
         // Direct repository routes for patterns like /{storage}/{repository}/{*path}
         .route(
             "/{storage}/{repository}/{*path}",
@@ -157,7 +156,7 @@ async fn start_app_with_tls(
     bind: String,
 ) -> anyhow::Result<()> {
     let tls_acceptor = TlsAcceptor::from(tls);
-    let tcp_listener = TcpListener::bind(bind).await.unwrap();
+    let tcp_listener = TcpListener::bind(bind).await?;
 
     pin_mut!(tcp_listener);
     loop {
@@ -165,7 +164,7 @@ async fn start_app_with_tls(
         let tls_acceptor = tls_acceptor.clone();
 
         // Wait for new tcp connection
-        let (cnx, addr) = tcp_listener.accept().await.unwrap();
+        let (cnx, addr) = tcp_listener.accept().await?;
 
         tokio::spawn(async move {
             // Wait for tls handshake to happen
@@ -191,17 +190,19 @@ async fn start_app_with_tls(
 
 async fn shutdown_signal(website: NitroRepo) {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(err) = signal::ctrl_c().await {
+            error!(?err, "failed to install Ctrl+C handler");
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(err) => error!(?err, "failed to install terminate signal handler"),
+        }
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
@@ -218,8 +219,8 @@ fn rustls_server_config(
     key: impl AsRef<Path>,
     cert: impl AsRef<Path>,
 ) -> anyhow::Result<Arc<ServerConfig>> {
-    let mut key_reader = BufReader::new(File::open(key).unwrap());
-    let mut cert_reader = BufReader::new(File::open(cert).unwrap());
+    let mut key_reader = BufReader::new(File::open(key)?);
+    let mut cert_reader = BufReader::new(File::open(cert)?);
 
     let cert_chain = certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
     let mut keys = pkcs8_private_keys(&mut key_reader).collect::<Result<Vec<_>, _>>()?;

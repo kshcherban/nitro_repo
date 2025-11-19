@@ -66,7 +66,7 @@ impl RepositoryConfigType for DockerRegistryConfigType {
 
     fn default(&self) -> Result<Value, RepositoryConfigError> {
         let config = DockerRegistryConfig::Hosted;
-        Ok(serde_json::to_value(config).unwrap())
+        serde_json::to_value(config).map_err(RepositoryConfigError::SerdeError)
     }
 
     fn get_description(&self) -> ConfigDescription {

@@ -21,6 +21,6 @@ impl IntoResponse for ResponseBuildError {
             .header(CONTENT_TYPE, PLAIN_TEXT_MEDIA_TYPE)
             .extension(ErrorReason::from(self.to_string()))
             .body(axum::body::Body::from(message))
-            .unwrap()
+            .unwrap_or_default()
     }
 }

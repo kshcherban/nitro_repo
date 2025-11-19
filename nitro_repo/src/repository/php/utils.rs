@@ -2,6 +2,7 @@ use nr_core::{repository::project::ReleaseType, storage::StoragePath};
 use serde::{Deserialize, Serialize};
 
 use super::PhpRepositoryError;
+use crate::repository::RepositoryHandlerError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpPackagePathInfo {
@@ -57,7 +58,10 @@ impl TryFrom<&StoragePath> for PhpPackagePathInfo {
         let vendor = components[0].clone();
         let package = components[1].clone();
         let version = components[2].clone();
-        let file_name = components.last().cloned().unwrap();
+        let file_name = components
+            .last()
+            .cloned()
+            .ok_or(RepositoryHandlerError::NotFound)?;
         Ok(Self {
             vendor,
             package,

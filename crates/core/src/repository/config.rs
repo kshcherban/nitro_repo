@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::database::entities::repository::DBRepositoryConfig;
-pub mod project;
+
 pub mod repository_page;
 #[derive(Debug, Error)]
 pub enum RepositoryConfigError {

@@ -441,10 +441,10 @@ mod tests {
     }
 
     #[test]
-    fn simple_term_defaults_to_equals_match() {
+    fn simple_term_matches_partial_values() {
         let query = parse_search_query("hello").expect("query should parse");
         assert!(query.matches_terms(&["hello"]));
-        assert!(!query.matches_terms(&["hello-world"]));
+        assert!(query.matches_terms(&["hello-world"]));
     }
 
     #[test]

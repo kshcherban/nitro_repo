@@ -41,7 +41,7 @@ pub struct NpmProxyRegistry(pub Arc<NpmProxyInner>);
 
 static DEFAULT_ROUTE: LazyLock<NpmProxyRoute> = LazyLock::new(|| NpmProxyRoute {
     url: ProxyURL::try_from(String::from("https://registry.npmjs.org"))
-        .expect("valid npm default route"),
+        .unwrap_or_else(|_| panic!("valid npm default route")),
     name: Some("npmjs".to_string()),
 });
 

@@ -16,7 +16,11 @@ use crate::{
 pub enum RepositoryHandlerError {
     #[error("Database Error: {0}")]
     SQLXError(#[from] sqlx::Error),
-    #[error("Storage Error: {0}")]
+    #[error("Unauthorized")]
+    Unauthorized,
+    #[error("Not Found")]
+    NotFound,
+    #[error("{0}")]
     StorageError(#[from] nr_storage::StorageError),
     #[error("Unexpected Missing Body")]
     MissingBody,
@@ -45,7 +49,7 @@ impl IntoResponse for RepositoryHandlerError {
                     "Error from Internal Storage System. Please contact your admin \n {}",
                     error
                 )))
-                .unwrap(),
+                .unwrap_or_default(),
             RepositoryHandlerError::Other(error) => error.into_response_boxed(),
             other => Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -53,7 +57,7 @@ impl IntoResponse for RepositoryHandlerError {
                     "Internal Service Error  Please contact your admin \n {}",
                     other
                 )))
-                .unwrap(),
+                .unwrap_or_default(),
         }
     }
 }

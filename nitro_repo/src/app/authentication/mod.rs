@@ -418,10 +418,17 @@ pub mod password {
     #[instrument(skip(password), fields(project_module = "Authentication"))]
     pub fn encrypt_password(password: &str) -> Option<String> {
         let mut bytes = [0u8; Salt::RECOMMENDED_LENGTH];
-        OsRng
-            .try_fill_bytes(&mut bytes)
-            .expect("Failed to generate random bytes");
-        let salt = SaltString::encode_b64(&bytes).expect("Failed to generate salt");
+        if let Err(err) = OsRng.try_fill_bytes(&mut bytes) {
+            error!("Failed to generate random bytes: {err}");
+            return None;
+        }
+        let salt = match SaltString::encode_b64(&bytes) {
+            Ok(salt) => salt,
+            Err(err) => {
+                error!("Failed to encode salt: {err}");
+                return None;
+            }
+        };
         let argon2 = Argon2::default();
 
         let password = argon2.hash_password(password.as_ref(), &salt);
@@ -451,5 +458,22 @@ pub mod password {
             return Err(AuthenticationError::Unauthorized);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::password;
+
+    #[test]
+    fn encrypt_password_produces_verifiable_hash() {
+        let hashed = password::encrypt_password("super-secret");
+        assert!(hashed.is_some(), "password hashing should succeed");
+        let hash = match hashed {
+            Some(value) => value,
+            None => unreachable!("hash guaranteed by previous assertion"),
+        };
+        assert!(password::verify_password("super-secret", Some(hash.as_str())).is_ok());
+        assert!(password::verify_password("invalid", Some(hash.as_str())).is_err());
     }
 }

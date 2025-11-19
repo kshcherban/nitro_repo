@@ -1,4 +1,5 @@
-use std::{collections::HashMap, fmt};
+use std::{fmt};
+use ahash::{HashMap, HashMapExt};
 
 use axum::{
     Json,
@@ -22,6 +23,7 @@ use crate::repository::repo_http::RepositoryAuthentication;
 use crate::{
     app::{NitroRepo, RepositoryStorageName, authentication::AuthenticationRaw},
     repository::{DynRepository, Repository},
+    utils::ResponseBuilder,
 };
 
 const DEFAULT_TOKEN_LIFETIME: i64 = 15 * 60;
@@ -176,20 +178,18 @@ impl IntoResponse for DockerTokenError {
                 "errors":[{"code":"INTERNAL","message":"internal server error"}]
             }),
         };
-        let mut response = Response::builder()
+        let mut builder = ResponseBuilder::default()
             .status(status)
             .header(http::header::CONTENT_TYPE, "application/json");
 
         if matches!(self, DockerTokenError::Authentication) {
-            response = response.header(
+            builder = builder.header(
                 http::header::WWW_AUTHENTICATE,
                 "Basic realm=\"Nitro Repo Docker Token\"",
             );
         }
 
-        response
-            .body(serde_json::to_vec(&message).unwrap().into())
-            .unwrap()
+        builder.json(&message)
     }
 }
 
@@ -292,7 +292,11 @@ pub async fn handle_docker_token(
 
     let issued_at = Utc::now();
     let expires_at = issued_at + Duration::seconds(DEFAULT_TOKEN_LIFETIME);
-    let expires_at_fixed: DateTime = expires_at.with_timezone(&FixedOffset::east_opt(0).unwrap());
+    let Some(offset) = FixedOffset::east_opt(0) else {
+        error!("failed to construct UTC offset for docker token expiry");
+        return Err(DockerTokenError::Internal);
+    };
+    let expires_at_fixed: DateTime = expires_at.with_timezone(&offset);
 
     let repositories = repository_requests.into_iter().collect::<Vec<_>>();
 
@@ -404,6 +408,7 @@ fn parse_scopes(scopes: &[String]) -> Result<Vec<ParsedScope>, DockerTokenError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
     #[test]
     fn multiple_scope_query_parameters_are_collected() {
@@ -437,6 +442,31 @@ mod tests {
         assert_eq!(parsed[0].repository, "helm");
         assert!(parsed[0].actions.contains(&RepositoryActions::Read));
         assert!(parsed[0].actions.contains(&RepositoryActions::Write));
+    }
+
+    #[test]
+    fn authentication_error_sets_www_authenticate_header() {
+        let response = DockerTokenError::Authentication.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let header = response
+            .headers()
+            .get(http::header::WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(header, Some("Basic realm=\"Nitro Repo Docker Token\""));
+    }
+
+    #[tokio::test]
+    async fn forbidden_error_returns_json_payload() {
+        let response = DockerTokenError::Forbidden.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let collected = response.into_body().collect().await.unwrap();
+        let body = collected.to_bytes();
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("body should be valid JSON");
+        assert_eq!(
+            json,
+            serde_json::json!({"errors":[{"code":"DENIED","message":"requested access to the resource is denied"}]})
+        );
     }
 }
 

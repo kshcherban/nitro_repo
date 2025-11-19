@@ -59,7 +59,9 @@ impl TestCore {
         }
     }
     async fn connect(env_file: &EnvFile) -> anyhow::Result<PgPool> {
-        let env = env_file.get("DATABASE_URL").unwrap();
+        let env = env_file
+            .get("DATABASE_URL")
+            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not set"))?;
         debug!("Connecting to database {}", env);
         let db = PgPool::connect(&env).await?;
         Ok(db)

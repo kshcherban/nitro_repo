@@ -12,6 +12,8 @@ pub enum NrApiError {
     Reqwest(#[from] reqwest::Error),
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    #[error("Not Found")]
+    NotFound,
 }
 pub struct NrApiInner {
     client: reqwest::Client,
@@ -92,7 +94,10 @@ impl NrApi {
     }
 
     pub async fn get_file(&self, repo_id: Uuid, path: &str) -> Result<Response, NrApiError> {
-        let repository = self.get_repository(repo_id).await?.unwrap();
+        let repository = self
+            .get_repository(repo_id)
+            .await?
+            .ok_or(NrApiError::NotFound)?;
         let res = self
             .0
             .client

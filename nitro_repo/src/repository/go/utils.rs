@@ -1,6 +1,8 @@
 use axum::extract::Path as AxumPath;
 use nr_core::storage::StoragePath;
 
+use crate::repository::RepositoryHandlerError;
+
 use super::types::{GoModuleError, GoModulePath, GoVersion};
 
 /// Extract Go module information from a request path
@@ -109,46 +111,83 @@ impl GoModuleRequest {
         Err(GoModuleError::InvalidModulePath(path.to_string()))
     }
 
-    /// Get the storage path for this request
-    pub fn storage_path(&self) -> StoragePath {
+    /// Resolve the storage path for this request.
+    ///
+    /// Returns an error when the request requires a version but none was provided.
+    pub fn storage_path(&self) -> Result<StoragePath, RepositoryHandlerError> {
+        let path = match &self.request_type {
+            GoRequestType::ListVersions => format!("{}/@v/list", self.module_path.as_str()),
+            GoRequestType::VersionInfo => format!(
+                "{}/@v/{}.info",
+                self.module_path.as_str(),
+                self.version_or_not_found()?.as_str()
+            ),
+            GoRequestType::GoMod => format!(
+                "{}/@v/{}.mod",
+                self.module_path.as_str(),
+                self.version_or_not_found()?.as_str()
+            ),
+            GoRequestType::ModuleZip => format!(
+                "{}/@v/{}.zip",
+                self.module_path.as_str(),
+                self.version_or_not_found()?.as_str()
+            ),
+            GoRequestType::Latest => format!("{}/@latest", self.module_path.as_str()),
+            GoRequestType::GoModWithoutVersion => format!("{}/go.mod", self.module_path.as_str()),
+            GoRequestType::SumdbSupported => "sumdb/supported".to_string(),
+            GoRequestType::SumdbLookup => "sumdb/lookup".to_string(),
+            GoRequestType::SumdbTile => "sumdb/tile".to_string(),
+        };
+
+        Ok(StoragePath::from(path))
+    }
+
+    /// Compute a deterministic cache key for the request.
+    pub fn cache_key(&self) -> Result<String, RepositoryHandlerError> {
         match &self.request_type {
-            GoRequestType::ListVersions => {
-                StoragePath::from(format!("{}/@v/list", self.module_path.as_str()))
+            GoRequestType::ListVersions => Ok(format!(
+                "{}/@v/list",
+                self.module_path.as_str().trim_matches('/')
+            )),
+            GoRequestType::VersionInfo => Ok(format!(
+                "{}/@v/{}.info",
+                self.module_path.as_str().trim_matches('/'),
+                self.version_or_not_found()?.as_str()
+            )),
+            GoRequestType::GoMod => Ok(format!(
+                "{}/@v/{}.mod",
+                self.module_path.as_str().trim_matches('/'),
+                self.version_or_not_found()?.as_str()
+            )),
+            GoRequestType::ModuleZip => Ok(format!(
+                "{}/@v/{}.zip",
+                self.module_path.as_str().trim_matches('/'),
+                self.version_or_not_found()?.as_str()
+            )),
+            GoRequestType::Latest => Ok(format!(
+                "{}/@latest",
+                self.module_path.as_str().trim_matches('/')
+            )),
+            GoRequestType::GoModWithoutVersion => Ok(format!(
+                "{}/go.mod",
+                self.module_path.as_str().trim_matches('/')
+            )),
+            GoRequestType::SumdbSupported => Ok("sumdb/supported".to_string()),
+            GoRequestType::SumdbLookup | GoRequestType::SumdbTile => {
+                let key = self.sumdb_path.as_deref().unwrap_or_default();
+                if key.is_empty() {
+                    Ok("sumdb/lookup".to_string())
+                } else {
+                    Ok(format!("sumdb/{}", key.trim_start_matches('/')))
+                }
             }
-            GoRequestType::VersionInfo => {
-                let version = self.version.as_ref().unwrap();
-                StoragePath::from(format!(
-                    "{}/@v/{}.info",
-                    self.module_path.as_str(),
-                    version.as_str()
-                ))
-            }
-            GoRequestType::GoMod => {
-                let version = self.version.as_ref().unwrap();
-                StoragePath::from(format!(
-                    "{}/@v/{}.mod",
-                    self.module_path.as_str(),
-                    version.as_str()
-                ))
-            }
-            GoRequestType::ModuleZip => {
-                let version = self.version.as_ref().unwrap();
-                StoragePath::from(format!(
-                    "{}/@v/{}.zip",
-                    self.module_path.as_str(),
-                    version.as_str()
-                ))
-            }
-            GoRequestType::Latest => {
-                StoragePath::from(format!("{}/@latest", self.module_path.as_str()))
-            }
-            GoRequestType::GoModWithoutVersion => {
-                StoragePath::from(format!("{}/go.mod", self.module_path.as_str()))
-            }
-            GoRequestType::SumdbSupported => StoragePath::from("sumdb/supported"),
-            GoRequestType::SumdbLookup => StoragePath::from("sumdb/lookup"),
-            GoRequestType::SumdbTile => StoragePath::from("sumdb/tile"),
         }
+    }
+
+    fn version_or_not_found(&self) -> Result<&GoVersion, RepositoryHandlerError> {
+        self.version
+            .as_ref()
+            .ok_or(RepositoryHandlerError::NotFound)
     }
 
     /// Check if this is a read request

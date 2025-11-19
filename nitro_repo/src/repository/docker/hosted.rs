@@ -8,10 +8,7 @@ use nr_core::{
     database::entities::repository::DBRepository,
     repository::{
         Visibility,
-        config::{
-            RepositoryConfigType, get_repository_config_or_default,
-            project::{ProjectConfig, ProjectConfigType},
-        },
+        config::{RepositoryConfigType, get_repository_config_or_default},
     },
 };
 use nr_storage::DynStorage;
@@ -35,7 +32,6 @@ pub struct DockerHostedInner {
     pub active: AtomicBool,
     pub visibility: RwLock<Visibility>,
     pub push_rules: RwLock<DockerPushRules>,
-    pub project: RwLock<ProjectConfig>,
     #[debug(skip)]
     pub storage: DynStorage,
     #[debug(skip)]
@@ -58,13 +54,6 @@ impl DockerHosted {
         .await?;
         debug!("Loaded Docker Push Rules Config: {:?}", push_rules_db);
 
-        let project_db = get_repository_config_or_default::<ProjectConfigType, ProjectConfig>(
-            repository.id,
-            site.as_ref(),
-        )
-        .await?;
-        debug!("Loaded Project Config: {:?}", project_db);
-
         let active = AtomicBool::new(repository.active);
 
         let inner = DockerHostedInner {
@@ -73,7 +62,6 @@ impl DockerHosted {
             active,
             visibility: RwLock::new(repository.visibility),
             push_rules: RwLock::new(push_rules_db.value.0),
-            project: RwLock::new(project_db.value.0),
             storage,
             site,
         };
@@ -127,7 +115,6 @@ impl Repository for DockerHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             DockerPushRulesConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
     }
@@ -148,21 +135,9 @@ impl Repository for DockerHosted {
         >(self.id, self.site.as_ref())
         .await?;
 
-        let project_config_db =
-            get_repository_config_or_default::<ProjectConfigType, ProjectConfig>(
-                self.id,
-                self.site.as_ref(),
-            )
-            .await?;
-
         {
             let mut push_rules = self.push_rules.write();
             *push_rules = push_rules_db.value.0;
-        }
-
-        {
-            let mut project_config = self.project.write();
-            *project_config = project_config_db.value.0;
         }
 
         Ok(())

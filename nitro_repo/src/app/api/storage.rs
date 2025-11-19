@@ -130,7 +130,7 @@ pub async fn new_storage(
         return Ok(InvalidStorageConfig(error).into_response());
     }
 
-    let config = serde_json::to_value(request.config).unwrap();
+    let config = serde_json::to_value(request.config)?;
     let storage = NewDBStorage::new(storage_type, request.name, config)
         .insert(&site.database)
         .await?;

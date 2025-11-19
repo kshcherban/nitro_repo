@@ -1,7 +1,4 @@
-use std::{
-    cmp::min,
-    collections::{BTreeMap, HashSet},
-};
+use std::{cmp::min, collections::BTreeMap};
 
 use axum::{
     Json,
@@ -39,6 +36,7 @@ use crate::{
     },
     utils::ResponseBuilder,
 };
+use ahash::{HashSet, HashSetExt};
 use nr_core::repository::project::{CargoPackageMetadata, DebPackageMetadata, VersionData};
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
 

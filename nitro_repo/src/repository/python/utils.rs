@@ -2,6 +2,7 @@ use nr_core::{repository::project::ReleaseType, storage::StoragePath};
 use serde::{Deserialize, Serialize};
 
 use super::PythonRepositoryError;
+use crate::repository::RepositoryHandlerError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonPackagePathInfo {
@@ -40,9 +41,18 @@ impl TryFrom<&StoragePath> for PythonPackagePathInfo {
         if components.len() < 3 {
             return Err(PythonRepositoryError::InvalidPath(path.to_string()));
         }
-        let package = components.first().cloned().unwrap();
-        let version = components.get(1).cloned().unwrap();
-        let file_name = components.last().cloned().unwrap();
+        let package = components
+            .first()
+            .cloned()
+            .ok_or(RepositoryHandlerError::NotFound)?;
+        let version = components
+            .get(1)
+            .cloned()
+            .ok_or(RepositoryHandlerError::NotFound)?;
+        let file_name = components
+            .last()
+            .cloned()
+            .ok_or(RepositoryHandlerError::NotFound)?;
         Ok(Self {
             package,
             version,

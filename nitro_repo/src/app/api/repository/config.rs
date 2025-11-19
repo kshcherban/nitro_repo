@@ -1,10 +1,8 @@
 use axum::{
     Json,
-    body::Body,
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use http::StatusCode;
 use tracing::instrument;
 
 use crate::{
@@ -28,10 +26,7 @@ pub fn config_routes() -> axum::Router<NitroRepo> {
 pub struct InvalidConfigType(String);
 impl IntoResponse for InvalidConfigType {
     fn into_response(self) -> Response {
-        Response::builder()
-            .status(400)
-            .body(Body::from(format!("Invalid Config Type: {}", self.0)))
-            .unwrap()
+        ResponseBuilder::bad_request().body(format!("Invalid Config Type: {}", self.0))
     }
 }
 
@@ -57,16 +52,11 @@ pub async fn config_schema(
         return Ok(InvalidConfigType(key).into_response());
     };
 
-    let schema = config_type
-        .schema()
-        .map(|schema| Json(schema).into_response())
-        .unwrap_or_else(|| {
-            Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body("No schema found".into())
-                .unwrap()
-        });
-    Ok(schema)
+    let response = match config_type.schema() {
+        Some(schema) => Json(schema).into_response(),
+        None => ResponseBuilder::not_found().body("No schema found"),
+    };
+    Ok(response)
 }
 /// Requires Authentication to prevent abuse
 #[utoipa::path(
@@ -94,14 +84,8 @@ pub async fn config_validate(
     };
 
     let response = match config_type.validate_config(config) {
-        Ok(_) => Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(Body::empty())
-            .unwrap(),
-        Err(err) => Response::builder()
-            .status(400)
-            .body(Body::from(err.to_string()))
-            .unwrap(),
+        Ok(_) => ResponseBuilder::no_content().empty(),
+        Err(err) => ResponseBuilder::bad_request().body(err.to_string()),
     };
     Ok(response)
 }
@@ -127,13 +111,8 @@ pub async fn config_default(
     };
 
     match config_type.default() {
-        Ok(ok) => return Ok(ResponseBuilder::ok().json(&ok)),
-        Err(err) => {
-            return Ok(Response::builder()
-                .status(500)
-                .body(Body::from(err.to_string()))
-                .unwrap());
-        }
+        Ok(ok) => Ok(ResponseBuilder::ok().json(&ok)),
+        Err(err) => Ok(ResponseBuilder::internal_server_error().body(err.to_string())),
     }
 }
 #[utoipa::path(
@@ -156,10 +135,5 @@ pub async fn config_description(
     };
 
     let description = config_type.get_description();
-    let description = Response::builder()
-        .status(200)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&description).unwrap()))
-        .unwrap();
-    Ok(description)
+    Ok(ResponseBuilder::ok().json(&description))
 }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use ahash::{HashSet, HashSetExt};
 
 use anyhow::Context;
 use casbin::{CoreApi, DefaultModel, Enforcer, MemoryAdapter, MgmtApi, RbacApi};
@@ -75,27 +75,25 @@ async fn load_inline_policy(enforcer: &mut Enforcer, policy: &str) -> anyhow::Re
             .map(|segment| segment.trim().to_string())
             .filter(|segment| !segment.is_empty())
             .collect();
-        if segments.is_empty() {
-            continue;
-        }
-        let (rule_type, values) = segments.split_first().expect("non-empty vector");
-        match rule_type.as_str() {
-            "p" => {
-                enforcer
-                    .add_policy(values.to_vec())
-                    .await
-                    .with_context(|| format!("Failed to add policy on line {}", index + 1))?;
-            }
-            "g" => {
-                enforcer
-                    .add_grouping_policy(values.to_vec())
-                    .await
-                    .with_context(|| {
-                        format!("Failed to add grouping policy on line {}", index + 1)
-                    })?;
-            }
-            other => {
-                warn!(line = index + 1, rule_type = %other, "Unknown Casbin policy row");
+        if let Some((rule_type, values)) = segments.split_first() {
+            match rule_type.as_str() {
+                "p" => {
+                    enforcer
+                        .add_policy(values.to_vec())
+                        .await
+                        .with_context(|| format!("Failed to add policy on line {}", index + 1))?;
+                }
+                "g" => {
+                    enforcer
+                        .add_grouping_policy(values.to_vec())
+                        .await
+                        .with_context(|| {
+                            format!("Failed to add grouping policy on line {}", index + 1)
+                        })?;
+                }
+                other => {
+                    warn!(line = index + 1, rule_type = %other, "Unknown Casbin policy row");
+                }
             }
         }
     }

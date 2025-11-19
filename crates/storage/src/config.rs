@@ -55,8 +55,8 @@ impl TryFrom<DBStorage> for StorageConfig {
         })
     }
 }
-impl From<BorrowedStorageConfig<'_>> for StorageConfig {
-    fn from(borrowed: BorrowedStorageConfig) -> Self {
+impl<'a> From<BorrowedStorageConfig<'a>> for StorageConfig {
+    fn from(borrowed: BorrowedStorageConfig<'a>) -> Self {
         StorageConfig {
             storage_config: borrowed.storage_config.clone(),
             type_config: borrowed.config.into(),
@@ -69,69 +69,80 @@ pub struct BorrowedStorageConfig<'a> {
     pub storage_config: &'a StorageConfigInner,
     pub config: BorrowedStorageTypeConfig<'a>,
 }
-macro_rules! storage_type_config {
-    (
-        $(
-            $variant:ident($config:ty)
-        ),*
-    ) => {
-        #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-        #[serde(tag = "type", content = "settings")]
-        pub enum StorageTypeConfig {
-            $(
-                $variant($config),
-            )*
-        }
-        impl StorageTypeConfig {
-            pub fn type_name(&self) -> &'static str {
-                match self {
-                    $(
-                        StorageTypeConfig::$variant(_) => stringify!($variant),
-                    )*
-                }
-            }
-        }
-        #[derive(Debug, Clone, Copy, Serialize)]
-        #[serde(tag = "type", content = "settings")]
-        pub enum BorrowedStorageTypeConfig<'a> {
-            $(
-                $variant(&'a $config),
-            )*
-        }
-        impl From<BorrowedStorageTypeConfig<'_>> for StorageTypeConfig {
-            fn from(borrowed: BorrowedStorageTypeConfig) -> Self {
-                match borrowed {
-                    $(
-                        BorrowedStorageTypeConfig::$variant(local) => StorageTypeConfig::$variant(local.clone()),
-                    )*
-                }
-            }
-        }
-        $(
-            impl From<$config> for StorageTypeConfig {
-                fn from(config: $config) -> Self {
-                    StorageTypeConfig::$variant(config)
-                }
-            }
-        )*
-        $(
-            impl StorageTypeConfigTrait for $config {
-                fn from_type_config(dyn_config: StorageTypeConfig) -> Result<Self, InvalidConfigType>
-                    where
-                        Self: Sized{
-                    match dyn_config {
-                        StorageTypeConfig::$variant(config) => Ok(config),
-                        _ => Err(InvalidConfigType(stringify!($config), dyn_config.type_name())),
-                    }
-                }
-                fn type_name(&self) -> &'static str {
-                    stringify!($config)
-                }
-            }
-        )*
-    };
-}
-storage_type_config! {
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", content = "settings")]
+pub enum StorageTypeConfig {
     Local(LocalConfig),
-    S3(S3Config)
+    S3(Box<S3Config>),
+}
+
+impl StorageTypeConfig {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            StorageTypeConfig::Local(_) => "Local",
+            StorageTypeConfig::S3(_) => "S3",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "type", content = "settings")]
+pub enum BorrowedStorageTypeConfig<'a> {
+    Local(&'a LocalConfig),
+    S3(&'a S3Config),
+}
+
+impl<'a> From<BorrowedStorageTypeConfig<'a>> for StorageTypeConfig {
+    fn from(borrowed: BorrowedStorageTypeConfig<'a>) -> Self {
+        match borrowed {
+            BorrowedStorageTypeConfig::Local(config) => StorageTypeConfig::Local(config.clone()),
+            BorrowedStorageTypeConfig::S3(config) => {
+                StorageTypeConfig::S3(Box::new(config.clone()))
+            }
+        }
+    }
+}
+
+impl From<LocalConfig> for StorageTypeConfig {
+    fn from(config: LocalConfig) -> Self {
+        StorageTypeConfig::Local(config)
+    }
+}
+
+impl From<S3Config> for StorageTypeConfig {
+    fn from(config: S3Config) -> Self {
+        StorageTypeConfig::S3(Box::new(config))
+    }
+}
+
+impl StorageTypeConfigTrait for LocalConfig {
+    fn from_type_config(dyn_config: StorageTypeConfig) -> Result<Self, InvalidConfigType>
+    where
+        Self: Sized,
+    {
+        match dyn_config {
+            StorageTypeConfig::Local(config) => Ok(config),
+            _ => Err(InvalidConfigType("LocalConfig", dyn_config.type_name())),
+        }
+    }
+
+    fn type_name(&self) -> &'static str {
+        "LocalConfig"
+    }
+}
+
+impl StorageTypeConfigTrait for S3Config {
+    fn from_type_config(dyn_config: StorageTypeConfig) -> Result<Self, InvalidConfigType>
+    where
+        Self: Sized,
+    {
+        match dyn_config {
+            StorageTypeConfig::S3(config) => Ok(*config),
+            _ => Err(InvalidConfigType("S3Config", dyn_config.type_name())),
+        }
+    }
+
+    fn type_name(&self) -> &'static str {
+        "S3Config"
+    }
 }

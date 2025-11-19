@@ -1,7 +1,6 @@
 use std::{net::SocketAddr, str::FromStr};
 
 use axum::{
-    body::Body,
     extract::{ConnectInfo, Query, State},
     http::{
         HeaderMap, HeaderName, StatusCode,
@@ -132,12 +131,11 @@ pub async fn login(
 
     let redirect_target = sanitize_redirect(query.redirect.as_deref());
 
-    let response = Response::builder()
+    let response = ResponseBuilder::default()
         .status(StatusCode::SEE_OTHER)
         .header(SET_COOKIE, cookie.encoded().to_string())
         .header(LOCATION, redirect_target)
-        .body(Body::empty())
-        .expect("Failed to build SSO redirect response");
+        .empty();
 
     Ok(response)
 }
@@ -428,17 +426,9 @@ pub(super) fn build_user_email(raw_email: Option<&str>, username: &str) -> Resul
 
     let mut local_part = username.to_owned();
     const DOMAIN: &str = "@sso.local";
-    let max_local_len = 32 - DOMAIN.len();
-    if max_local_len <= 0 {
-        let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
-            message: "Invalid SSO email configuration".into(),
-            details: None,
-            error: None,
-        };
-        return Err(ResponseBuilder::internal_server_error().json(&api_error));
-    }
-    if local_part.len() > max_local_len {
-        local_part.truncate(max_local_len);
+    const MAX_LOCAL_LEN: usize = 32 - DOMAIN.len();
+    if local_part.len() > MAX_LOCAL_LEN {
+        local_part.truncate(MAX_LOCAL_LEN);
     }
     if local_part.len() < 3 {
         local_part.push_str("usr");
@@ -520,4 +510,22 @@ pub(super) fn sanitize_redirect(target: Option<&str>) -> HeaderValue {
         return default;
     }
     HeaderValue::from_str(target).unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_user_email;
+
+    #[test]
+    fn build_user_email_uses_raw_value_when_valid() {
+        let email = build_user_email(Some("user@example.com"), "username").unwrap();
+        assert_eq!(email.to_string(), "user@example.com");
+    }
+
+    #[test]
+    fn build_user_email_generates_fallback_with_domain() {
+        let email = build_user_email(None, "ab").unwrap();
+        assert!(email.to_string().starts_with("abusr"));
+        assert!(email.to_string().ends_with("@sso.local"));
+    }
 }

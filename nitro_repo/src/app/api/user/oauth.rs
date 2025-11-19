@@ -1,7 +1,6 @@
 use std::{io, net::SocketAddr, str::FromStr};
 
 use axum::{
-    body::Body,
     extract::{ConnectInfo, Path, Query, State},
     http::{
         StatusCode,
@@ -231,11 +230,10 @@ pub async fn authorize(
     })?;
     persist_oauth_state(&site, &auth_redirect.state, &snapshot).await?;
 
-    let response = Response::builder()
+    let response = ResponseBuilder::default()
         .status(StatusCode::SEE_OTHER)
         .header(LOCATION, auth_redirect.authorization_url.as_str())
-        .body(Body::empty())
-        .expect("Failed to build redirect response");
+        .empty();
 
     Ok(response)
 }
@@ -554,12 +552,11 @@ pub async fn callback(
         "OAuth2 login succeeded"
     );
 
-    let response = Response::builder()
+    let response = ResponseBuilder::default()
         .status(StatusCode::SEE_OTHER)
         .header(SET_COOKIE, cookie.encoded().to_string())
         .header(LOCATION, redirect_header)
-        .body(Body::empty())
-        .expect("Failed to build OAuth2 callback response");
+        .empty();
 
     Ok(response)
 }
@@ -744,11 +741,10 @@ fn oauth_service_error_response(err: OAuth2ServiceError) -> Response {
 
 fn oauth_denied_redirect(reason: &str) -> Response {
     let location = format!("/oauth/denied?reason={reason}");
-    Response::builder()
+    ResponseBuilder::default()
         .status(StatusCode::SEE_OTHER)
         .header(LOCATION, location)
-        .body(Body::empty())
-        .expect("Failed to build OAuth2 denial redirect response")
+        .empty()
 }
 
 fn internal_login_error() -> Response {
@@ -853,5 +849,16 @@ mod tests {
 
         let result = map_roles_from_claims(OAuth2ProviderKind::Microsoft, &claims, &mappings);
         assert_eq!(result, vec!["admin".to_string()]);
+    }
+
+    #[test]
+    fn oauth_denied_redirect_sets_location_header() {
+        let response = super::oauth_denied_redirect("invalid_state");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(location, Some("/oauth/denied?reason=invalid_state"));
     }
 }

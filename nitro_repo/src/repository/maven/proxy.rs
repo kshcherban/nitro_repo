@@ -14,11 +14,7 @@ use nr_core::{
     database::entities::repository::{DBRepository, DBRepositoryConfig},
     repository::{
         Visibility,
-        config::{
-            RepositoryConfigType as _, get_repository_config_or_default,
-            project::{ProjectConfig, ProjectConfigType},
-            repository_page::RepositoryPageType,
-        },
+        config::{RepositoryConfigType as _, repository_page::RepositoryPageType},
         proxy_url::ProxyURL,
     },
     storage::StoragePath,
@@ -78,7 +74,6 @@ pub struct MavenProxyInner {
     pub name: String,
     pub visibility: RwLock<Visibility>,
     pub active: AtomicBool,
-    pub project: RwLock<ProjectConfig>,
     pub config: RwLock<MavenProxyConfig>,
 }
 #[derive(Debug, Clone)]
@@ -96,19 +91,12 @@ impl MavenProxy {
         site: NitroRepo,
         proxy_config: MavenProxyConfig,
     ) -> Result<Self, RepositoryFactoryError> {
-        let project_config_db =
-            get_repository_config_or_default::<ProjectConfigType, ProjectConfig>(
-                repository.id,
-                site.as_ref(),
-            )
-            .await?;
         let inner = MavenProxyInner {
             id: repository.id,
             name: repository.name.into(),
             active: AtomicBool::new(repository.active),
             visibility: RwLock::new(repository.visibility),
             config: RwLock::new(proxy_config),
-            project: RwLock::new(project_config_db.value.0),
             storage,
             site,
         };
@@ -135,8 +123,7 @@ impl MavenProxy {
         let version_dir = path.clone().parent();
         let http_client = reqwest::Client::builder()
             .user_agent("Nitro Repo")
-            .build()
-            .expect("Failed to build HTTP Client");
+            .build()?;
 
         for file in project_download_files(&pom)? {
             debug!(?file, "Downloading file");
@@ -173,8 +160,7 @@ impl MavenProxy {
         let proxy_config = self.config.read().clone();
         let http_client = reqwest::Client::builder()
             .user_agent("Nitro Repo")
-            .build()
-            .expect("Failed to build HTTP Client");
+            .build()?;
         for route in proxy_config.routes {
             let mut path_as_string = path.to_string();
             if path_as_string.starts_with("/") {
@@ -229,8 +215,7 @@ impl MavenProxy {
         let proxy_config = self.config.read().clone();
         let http_client = reqwest::Client::builder()
             .user_agent("Nitro Repo")
-            .build()
-            .expect("Failed to build HTTP Client");
+            .build()?;
 
         for route in proxy_config.routes {
             let mut path_as_string = path.to_string();
@@ -270,7 +255,7 @@ impl MavenProxy {
                     Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
                         .body(Body::from("Failed to proxy HEAD request"))
-                        .unwrap()
+                        .unwrap_or_default()
                 });
 
                 return Ok(Some(RepoResponse::Other(response)));
@@ -299,7 +284,6 @@ impl Repository for MavenProxy {
     fn config_types(&self) -> Vec<&str> {
         vec![
             RepositoryPageType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             MavenRepositoryConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
@@ -318,12 +302,6 @@ impl Repository for MavenProxy {
     }
     #[instrument(fields(repository_type = "maven/proxy"))]
     async fn reload(&self) -> Result<(), RepositoryFactoryError> {
-        let project_config_db =
-            get_repository_config_or_default::<ProjectConfigType, ProjectConfig>(
-                self.id,
-                self.site.as_ref(),
-            )
-            .await?;
         let Some(maven_config_db) = DBRepositoryConfig::<MavenRepositoryConfig>::get_config(
             self.id,
             MavenRepositoryConfigType::get_type_static(),
@@ -335,10 +313,6 @@ impl Repository for MavenProxy {
                 MavenRepositoryConfigType::get_type_static(),
             ));
         };
-        {
-            let mut project_config = self.project.write();
-            *project_config = project_config_db.value.0;
-        }
         {
             match maven_config_db.value.0 {
                 MavenRepositoryConfig::Proxy(proxy_config) => {

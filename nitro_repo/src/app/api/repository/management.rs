@@ -1,13 +1,10 @@
 use ahash::HashMap;
 use axum::{
-    Json, Router,
-    body::Body,
-    debug_handler,
+    Json, Router, debug_handler,
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
-use http::StatusCode;
 use nr_core::{
     database::entities::repository::{DBRepository, GenericDBRepositoryConfig},
     repository::Visibility,
@@ -78,10 +75,7 @@ pub async fn new_repository(
     };
 
     let Some(loaded_storage) = site.get_storage(request.storage) else {
-        return Ok(Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body("Invalid Storage".into())
-            .unwrap());
+        return Ok(ResponseBuilder::bad_request().body("Invalid Storage"));
     };
     if DBRepository::does_name_exist_for_storage(request.storage, &name, &site.database).await? {
         return Ok(ConflictResponse::from("name").into_response());
@@ -98,16 +92,10 @@ pub async fn new_repository(
                 repository_factory.get_type(),
                 config_key
             );
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(
-                    format!(
-                        "Missing repository config type registration for key {}",
-                        config_key
-                    )
-                    .into(),
-                )
-                .unwrap());
+            return Ok(ResponseBuilder::internal_server_error().body(format!(
+                "Missing repository config type registration for key {}",
+                config_key
+            )));
         };
         match config_type.default() {
             Ok(default) => {
@@ -136,10 +124,7 @@ pub async fn new_repository(
         Ok(repository) => repository,
         Err(err) => {
             error!("Failed to create repository: {}", err);
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body("Failed to create repository".into())
-                .unwrap());
+            return Ok(ResponseBuilder::internal_server_error().body("Failed to create repository"));
         }
     };
     let db_repository = repository.insert(storage, site.as_ref()).await?;
@@ -152,10 +137,7 @@ pub async fn new_repository(
         }
         Err(err) => {
             error!("Failed to load repository: {}", err);
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body("Failed to load repository".into())
-                .unwrap());
+            return Ok(ResponseBuilder::internal_server_error().body("Failed to load repository"));
         }
     }
     Ok(ResponseBuilder::created().json(&db_repository))
@@ -290,10 +272,8 @@ pub async fn update_config(
         return Ok(RepositoryNotFound::Uuid(repository).into_response());
     };
     let Some(repository) = site.get_repository(db_repository.id) else {
-        return Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body("Repository Exists. But it is not loaded. Illegal State".into())
-            .unwrap());
+        return Ok(ResponseBuilder::internal_server_error()
+            .body("Repository Exists. But it is not loaded. Illegal State"));
     };
     if !repository.config_types().contains(&config_key.as_str()) {
         let repository = repository.get_type();
@@ -326,10 +306,8 @@ pub async fn update_config(
     GenericDBRepositoryConfig::add_or_update(db_repository.id, config_key, config, site.as_ref())
         .await?;
     if let Err(err) = repository.reload().await {
-        return Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(format!("Failed to reload repository: {}", err).into())
-            .unwrap());
+        return Ok(ResponseBuilder::internal_server_error()
+            .body(format!("Failed to reload repository: {}", err)));
     }
     Ok(ResponseBuilder::no_content().empty())
 }
@@ -359,8 +337,5 @@ pub async fn delete_repository(
 
     site.remove_repository(repository);
     // TODO: Delete all files for the repository
-    Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body(Body::empty())
-        .unwrap())
+    Ok(ResponseBuilder::no_content().empty())
 }

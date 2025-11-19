@@ -3,7 +3,6 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use http::StatusCode;
 use mime::TEXT_PLAIN_UTF_8;
 use nr_core::{
     database::entities::user::{
@@ -106,10 +105,7 @@ pub async fn get_user(
         return Ok(MissingPermission::UserManager.into_response());
     }
     let Some(user) = UserSafeData::get_by_id(user_id, &site.database).await? else {
-        return Ok(Response::builder()
-            .status(http::StatusCode::NOT_FOUND)
-            .body("User not found".into())
-            .unwrap());
+        return Ok(ResponseBuilder::not_found().body("User not found"));
     };
     Ok(Json(user).into_response())
 }
@@ -197,10 +193,7 @@ pub async fn is_taken(
     let (taken, what) = match is_taken {
         IsTaken::Username(username) => {
             if let Err(err) = Username::new(username.clone()) {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(err.to_string().into())
-                    .unwrap());
+                return Ok(ResponseBuilder::bad_request().body(err.to_string()));
             }
             (
                 user_utils::is_username_taken(&username, &site.database).await?,
@@ -209,10 +202,7 @@ pub async fn is_taken(
         }
         IsTaken::Email(email) => {
             if let Err(err) = Email::new(email.clone()) {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(err.to_string().into())
-                    .unwrap());
+                return Ok(ResponseBuilder::bad_request().body(err.to_string()));
             }
             (
                 user_utils::is_email_taken(&email, &site.database).await?,

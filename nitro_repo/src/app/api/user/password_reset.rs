@@ -2,7 +2,6 @@ use std::{net::SocketAddr, str::FromStr};
 
 use axum::{
     Json,
-    body::Body,
     extract::{ConnectInfo, Path, State},
     response::Response,
     routing::{get, post},
@@ -11,7 +10,6 @@ use axum_extra::{
     TypedHeader,
     headers::{Origin, UserAgent},
 };
-use http::StatusCode;
 use lettre::Address;
 use nr_core::database::entities::user::{
     ChangePasswordNoCheck, User, UserSafeData, UserType,
@@ -28,6 +26,7 @@ use crate::{
         email_service::{Email, EmailDebug, template},
     },
     error::InternalError,
+    utils::ResponseBuilder,
 };
 
 pub fn password_reset_routes() -> axum::Router<NitroRepo> {
@@ -81,7 +80,7 @@ async fn request_password_reset(
         Ok(ok) => ok,
         Err(err) => {
             warn!("Invalid email address: {}", err);
-            return Ok(Response::builder().status(400).body(Body::empty()).unwrap());
+            return Ok(ResponseBuilder::bad_request().empty());
         }
     };
     let request_details = RequestDetails {
@@ -89,7 +88,7 @@ async fn request_password_reset(
         user_agent: user_agent.to_string(),
     };
     let origin = if origin.is_null() {
-        return Ok(Response::builder().status(400).body(Body::empty()).unwrap());
+        return Ok(ResponseBuilder::bad_request().empty());
     } else {
         origin.to_string()
     };
@@ -105,7 +104,7 @@ async fn request_password_reset(
         };
         site.email_access.send_one_fn(address, email)
     }
-    Ok(Response::builder().status(200).body(Body::empty()).unwrap())
+    Ok(ResponseBuilder::ok().empty())
 }
 #[utoipa::path(
     get,
@@ -121,15 +120,9 @@ async fn does_exist(
 ) -> Result<Response, InternalError> {
     let token = UserPasswordReset::does_token_exist_and_valid(&token, &site.database).await?;
     if token {
-        Ok(Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(Body::empty())
-            .unwrap())
+        Ok(ResponseBuilder::no_content().empty())
     } else {
-        Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .unwrap())
+        Ok(ResponseBuilder::not_found().empty())
     }
 }
 
@@ -148,22 +141,19 @@ async fn perform_password_change(
     Json(password_reset): Json<ChangePasswordNoCheck>,
 ) -> Result<Response, InternalError> {
     let Some(request) = UserPasswordReset::get_if_valid(&token, &site.database).await? else {
-        return Ok(Response::builder().status(404).body(Body::empty()).unwrap());
+        return Ok(ResponseBuilder::not_found().empty());
     };
 
     let Some(encrypted_password) = password::encrypt_password(&password_reset.password) else {
-        return Ok(Response::builder().status(400).body(Body::empty()).unwrap());
+        return Ok(ResponseBuilder::bad_request().empty());
     };
     let Some(user) = UserSafeData::get_by_id(request.user_id, &site.database).await? else {
-        return Ok(Response::builder().status(404).body(Body::empty()).unwrap());
+        return Ok(ResponseBuilder::not_found().empty());
     };
     user.update_password(Some(encrypted_password), &site.database)
         .await?;
 
     request.set_used(&site.database).await?;
 
-    Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body(Body::empty())
-        .unwrap())
+    Ok(ResponseBuilder::no_content().empty())
 }

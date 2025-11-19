@@ -13,9 +13,7 @@ use nr_core::{
     },
     repository::{
         Visibility,
-        config::{
-            RepositoryConfigType, project::ProjectConfigType, repository_page::RepositoryPageType,
-        },
+        config::{RepositoryConfigType, repository_page::RepositoryPageType},
         project::{
             Author, CargoDependencyMetadata, CargoPackageMetadata, Licence, ProjectSource,
             ReleaseType, VersionData,
@@ -365,7 +363,9 @@ impl CargoHosted {
         let digest = hasher.finalize();
         let mut checksum = String::with_capacity(digest.len() * 2);
         for byte in digest {
-            write!(&mut checksum, "{byte:02x}").expect("write hex checksum");
+            write!(&mut checksum, "{byte:02x}").map_err(|err| {
+                CargoRepositoryError::InvalidRequest(format!("Failed to write checksum: {err}"))
+            })?;
         }
         Ok(checksum)
     }
@@ -554,7 +554,6 @@ impl Repository for CargoHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             CargoRepositoryConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]

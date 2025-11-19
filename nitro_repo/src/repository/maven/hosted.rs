@@ -14,7 +14,6 @@ use nr_core::{
         Visibility,
         config::{
             RepositoryConfigType, get_repository_config_or_default,
-            project::{ProjectConfig, ProjectConfigType},
             repository_page::RepositoryPageType,
         },
         project::ProjectResolution,
@@ -46,7 +45,6 @@ pub struct MavenHostedInner {
     pub active: AtomicBool,
     pub visibility: RwLock<Visibility>,
     pub push_rules: RwLock<MavenPushRules>,
-    pub project: RwLock<ProjectConfig>,
     #[debug(skip)]
     pub storage: DynStorage,
     #[debug(skip)]
@@ -141,20 +139,13 @@ impl MavenHosted {
         .await?;
         debug!("Loaded Push Rules Config: {:?}", push_rules_db);
 
-        let project_db = get_repository_config_or_default::<ProjectConfigType, ProjectConfig>(
-            repository.id,
-            site.as_ref(),
-        )
-        .await?;
         let active = AtomicBool::new(repository.active);
-        debug!("Loaded Frontend Config: {:?}", project_db);
         let inner = MavenHostedInner {
             id: repository.id,
             name: repository.name.into(),
             active,
             visibility: RwLock::new(repository.visibility),
             push_rules: RwLock::new(push_rules_db.value.0),
-            project: RwLock::new(project_db.value.0),
             storage,
             site,
         };
@@ -199,7 +190,6 @@ impl Repository for MavenHosted {
         vec![
             RepositoryPageType::get_type_static(),
             MavenPushRulesConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             MavenRepositoryConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
@@ -220,21 +210,9 @@ impl Repository for MavenHosted {
         >(self.id, self.site.as_ref())
         .await?;
 
-        let project_config_db =
-            get_repository_config_or_default::<ProjectConfigType, ProjectConfig>(
-                self.id,
-                self.site.as_ref(),
-            )
-            .await?;
-
         {
             let mut push_rules = self.push_rules.write();
             *push_rules = push_rules_db.value.0;
-        }
-
-        {
-            let mut project_config = self.project.write();
-            *project_config = project_config_db.value.0;
         }
 
         Ok(())

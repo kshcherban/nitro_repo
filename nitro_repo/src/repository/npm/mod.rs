@@ -59,6 +59,8 @@ pub enum NPMRegistryError {
         "Invalid GET request. The requested route is invalid to the NPM Registry. This could be a bug. AS the code is very sketchy"
     )]
     InvalidGetRequest,
+    #[error("Version not found")]
+    VersionNotFound,
     #[error("Invalid Package Attachment. Error: {0}")]
     InvalidPackageAttachment(DecodeError),
     #[error("Only one release or attachment can be uploaded at a time")]
@@ -144,22 +146,22 @@ impl IntoResponse for NPMRegistryError {
             NPMRegistryError::InvalidGetRequest => Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body("Invalid GET request".into())
-                .unwrap(),
+                .unwrap_or_default(),
             NPMRegistryError::ProxyUpstream { url, status } => Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(format!("Proxy upstream {url} returned status {status}").into())
-                .unwrap(),
+                .unwrap_or_default(),
             NPMRegistryError::ProxyFetch { url, error } => Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(format!("Failed to fetch from proxy {url}: {error}").into())
-                .unwrap(),
+                .unwrap_or_default(),
             NPMRegistryError::Other(other) => other.into_response_boxed(),
             bad_request => {
                 debug!("Bad Request: {:?}", bad_request);
                 Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .body(bad_request.to_string().into())
-                    .unwrap()
+                    .unwrap_or_default()
             }
         }
     }

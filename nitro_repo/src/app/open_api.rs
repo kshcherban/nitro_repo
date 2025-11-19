@@ -25,7 +25,7 @@ use super::{
         user_management::UserManagementAPI,
     },
 };
-use crate::app::{api::project::ProjectRoutes, badge::BadgeRoutes};
+use crate::app::api::project::ProjectRoutes;
 #[derive(OpenApi)]
 #[openapi(
     modifiers(&SecurityAddon),
@@ -35,7 +35,6 @@ use crate::app::{api::project::ProjectRoutes, badge::BadgeRoutes};
         (path = "/api/storage", api = StorageAPI, tags=["storage"]),
         (path = "/api/repository", api = RepositoryAPI, tags=["repository"]),
         (path = "/api/security", api = SecurityAPI, tags=["security"]),
-        (path="/badge", api = BadgeRoutes),
         (path="/api/project", api = ProjectRoutes, tags= ["project", "repository"]),
     ),
     paths(

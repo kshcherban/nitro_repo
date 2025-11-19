@@ -1,8 +1,5 @@
-use std::{
-    collections::HashMap,
-    io::{Cursor, Read, Write},
-    sync::Arc,
-};
+use std::{io::{Cursor, Read, Write}, sync::Arc};
+use ahash::{HashMap, HashMapExt};
 
 use axum::http::header::CONTENT_TYPE;
 use bytes::Bytes;
@@ -36,9 +33,7 @@ use super::{
     utils::{generate_go_mod, generate_go_module_info},
 };
 use crate::repository::{RepositoryAuthConfigType, utils::RepositoryExt};
-use nr_core::repository::config::{
-    RepositoryConfigType, project::ProjectConfigType, repository_page::RepositoryPageType,
-};
+use nr_core::repository::config::{RepositoryConfigType, repository_page::RepositoryPageType};
 use nr_core::user::permissions::RepositoryActions;
 
 #[derive(Debug)]
@@ -487,7 +482,9 @@ impl GoHosted {
                     )),
                 ))
             })?;
-            normalized_files.entry(canonical_path).or_insert(bytes);
+            normalized_files
+                .entry(canonical_path)
+                .or_insert_with(|| bytes.to_vec());
         }
 
         normalized_files.insert(format!("{}go.mod", root_prefix), go_mod_bytes.to_vec());
@@ -548,7 +545,6 @@ impl Repository for GoHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             super::configs::GoRepositoryConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
@@ -783,7 +779,7 @@ impl Repository for GoHosted {
                                 .header(CONTENT_TYPE, "application/zip")
                                 .header(CONTENT_LENGTH, content_length)
                                 .body(axum::body::Body::from(content))
-                                .unwrap();
+                                .unwrap_or_default();
                             Ok(response.into())
                         }
                         Ok(None) => Ok(RepoResponse::basic_text_response(
@@ -1130,16 +1126,12 @@ fn longest_common_prefix(components: &[Vec<String>]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::repository::test_helpers::test_storage;
-    use uuid::Uuid;
+    use crate::repository::go::configs::GoRepositoryConfig;
 
     #[test]
     fn test_go_hosted_basic_functionality() {
         // Test that GoHosted can be constructed with basic properties
         // This test focuses on the basic structure without complex setup
-
-        use crate::repository::go::configs::GoRepositoryConfig;
 
         let config = GoRepositoryConfig::Hosted;
         assert!(matches!(config, GoRepositoryConfig::Hosted));

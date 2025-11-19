@@ -1,8 +1,9 @@
 use std::{
-    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
+
+use ahash::{HashMap, HashMapExt};
 
 use oauth2::basic::{
     BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
@@ -92,7 +93,7 @@ impl OAuth2Service {
                 warn!("Google OAuth2 provider is configured but missing client credentials");
             } else {
                 let runtime = OAuth2ProviderRuntime::new_google(cfg, &settings)
-                    .map_err(|err| OAuth2ServiceError::ClientConstruction(err))?;
+                    .map_err(OAuth2ServiceError::ClientConstruction)?;
                 providers.insert(OAuth2ProviderKind::Google, runtime);
             }
         }
@@ -102,7 +103,7 @@ impl OAuth2Service {
                 warn!("Microsoft OAuth2 provider is configured but missing client credentials");
             } else {
                 let runtime = OAuth2ProviderRuntime::new_microsoft(cfg, &settings)
-                    .map_err(|err| OAuth2ServiceError::ClientConstruction(err))?;
+                    .map_err(OAuth2ServiceError::ClientConstruction)?;
                 providers.insert(OAuth2ProviderKind::Microsoft, runtime);
             }
         }

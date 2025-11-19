@@ -200,7 +200,7 @@ fn parse_chart_artifact(path: &StoragePath) -> Option<ChartArtifactPath> {
         return None;
     }
 
-    let file = segments.pop().unwrap();
+    let file = segments.pop()?;
     let mut expected_chart_dir: Option<&str> = None;
     let alias = if segments.is_empty() {
         false

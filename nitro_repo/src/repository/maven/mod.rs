@@ -9,10 +9,7 @@ use nr_core::{
         DBError,
         entities::repository::{DBRepository, DBRepositoryConfig},
     },
-    repository::{
-        config::{RepositoryConfigType, project::ProjectConfigType},
-        project::ReleaseType,
-    },
+    repository::{config::RepositoryConfigType, project::ReleaseType},
     storage::StoragePath,
 };
 use nr_macros::DynRepositoryHandler;
@@ -39,7 +36,6 @@ impl RepositoryType for MavenRepositoryType {
     fn config_types(&self) -> Vec<&str> {
         vec![
             MavenPushRulesConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
     }
@@ -198,18 +194,18 @@ impl IntoResponse for MavenError {
                     "XML Deserialize Error: {}",
                     err
                 )))
-                .unwrap(),
+                .unwrap_or_default(),
             MavenError::MavenRS(e) => axum::http::Response::builder()
                 .status(500)
                 .body(axum::body::Body::from(format!("Maven Error: {}", e)))
-                .unwrap(),
+                .unwrap_or_default(),
             err => axum::http::Response::builder()
                 .status(500)
                 .body(axum::body::Body::from(format!(
                     "Internal Server Error: {}",
                     err
                 )))
-                .unwrap(),
+                .unwrap_or_default(),
         }
     }
 }

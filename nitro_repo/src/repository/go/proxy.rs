@@ -24,19 +24,19 @@ use super::{
 use crate::{
     app::NitroRepo,
     repository::utils::can_read_repository_with_auth,
-    repository::{RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest},
+    repository::{
+        RepoResponse, Repository, RepositoryFactoryError, RepositoryHandlerError, RepositoryRequest,
+    },
 };
 
 use crate::repository::RepositoryAuthConfigType;
 
-use nr_core::repository::config::{
-    project::ProjectConfigType, repository_page::RepositoryPageType,
-};
+use nr_core::repository::config::repository_page::RepositoryPageType;
 
 // Default Go proxy route
 static DEFAULT_GO_PROXY_ROUTE: LazyLock<GoProxyRoute> = LazyLock::new(|| GoProxyRoute {
     url: ProxyURL::try_from(String::from("https://proxy.golang.org"))
-        .expect("valid Go proxy default route"),
+        .unwrap_or_else(|_| panic!("valid Go proxy default route")),
     name: Some("Go Official Proxy".to_string()),
     priority: Some(0),
 });
@@ -371,42 +371,11 @@ impl GoProxy {
     }
 
     /// Generate cache key for request
-    fn generate_cache_key(&self, request: &GoModuleRequest) -> String {
-        match &request.request_type {
-            GoRequestType::SumdbSupported => "sumdb/supported".to_string(),
-            GoRequestType::SumdbLookup | GoRequestType::SumdbTile => {
-                let key = request.sumdb_path.as_deref().unwrap_or_default();
-                if key.is_empty() {
-                    "sumdb/lookup".to_string()
-                } else {
-                    format!("sumdb/{}", key.trim_start_matches('/'))
-                }
-            }
-            GoRequestType::ListVersions => {
-                format!("{}/@v/list", request.module_path.as_str().trim_matches('/'))
-            }
-            GoRequestType::VersionInfo => format!(
-                "{}/@v/{}.info",
-                request.module_path.as_str().trim_matches('/'),
-                request.version.as_ref().unwrap().as_str()
-            ),
-            GoRequestType::GoMod => format!(
-                "{}/@v/{}.mod",
-                request.module_path.as_str().trim_matches('/'),
-                request.version.as_ref().unwrap().as_str()
-            ),
-            GoRequestType::ModuleZip => format!(
-                "{}/@v/{}.zip",
-                request.module_path.as_str().trim_matches('/'),
-                request.version.as_ref().unwrap().as_str()
-            ),
-            GoRequestType::Latest => {
-                format!("{}/@latest", request.module_path.as_str().trim_matches('/'))
-            }
-            GoRequestType::GoModWithoutVersion => {
-                format!("{}/go.mod", request.module_path.as_str().trim_matches('/'))
-            }
-        }
+    fn generate_cache_key(
+        &self,
+        request: &GoModuleRequest,
+    ) -> Result<String, RepositoryHandlerError> {
+        request.cache_key()
     }
 
     /// Legacy cache key format used before hierarchical cache layout (for migration).
@@ -475,7 +444,7 @@ impl GoProxy {
         &self,
         request: &GoModuleRequest,
     ) -> Result<Option<Vec<u8>>, crate::repository::RepositoryHandlerError> {
-        let cache_key = self.generate_cache_key(request);
+        let cache_key = self.generate_cache_key(request)?;
 
         // Try cache (with legacy migration)
         if let Some(cached_content) = self.fetch_cached_content(request, &cache_key).await? {
@@ -644,7 +613,7 @@ impl GoProxy {
             builder = builder.header(header::LAST_MODIFIED, last_modified);
         }
 
-        let response = builder.body(axum::body::Body::empty()).unwrap();
+        let response = builder.body(axum::body::Body::empty()).unwrap_or_default();
 
         Ok(Some(response.into()))
     }
@@ -664,7 +633,6 @@ impl Repository for GoProxy {
     fn config_types(&self) -> Vec<&str> {
         vec![
             GoRepositoryConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
@@ -739,7 +707,7 @@ impl Repository for GoProxy {
                         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
                         .header(CONTENT_LENGTH, "4") // "true"
                         .body(axum::body::Body::empty())
-                        .unwrap();
+                        .unwrap_or_default();
                     Ok(response.into())
                 }
                 GoRequestType::SumdbLookup | GoRequestType::SumdbTile => {
@@ -749,12 +717,12 @@ impl Repository for GoProxy {
                         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
                         .header(CONTENT_LENGTH, "30") // "sumdb not implemented"
                         .body(axum::body::Body::empty())
-                        .unwrap();
+                        .unwrap_or_default();
                     Ok(response.into())
                 }
                 _ => {
                     // For other requests, try to find cached content or proxy a HEAD request upstream
-                    let cache_key = this.generate_cache_key(&module_request);
+                    let cache_key = this.generate_cache_key(&module_request)?;
 
                     // Check cache first
                     if let Some(cached_content) = this
@@ -783,7 +751,7 @@ impl Repository for GoProxy {
                             .header(CONTENT_TYPE, content_type)
                             .header(CONTENT_LENGTH, content_length)
                             .body(axum::body::Body::empty())
-                            .unwrap();
+                            .unwrap_or_default();
                         return Ok(response.into());
                     }
 
@@ -897,7 +865,7 @@ impl Repository for GoProxy {
                                 .header(CONTENT_TYPE, "application/zip")
                                 .header(CONTENT_LENGTH, content_length)
                                 .body(axum::body::Body::from(content))
-                                .unwrap();
+                                .unwrap_or_default();
                             Ok(response.into())
                         }
                         GoRequestType::VersionInfo => {
@@ -962,8 +930,6 @@ impl Repository for GoProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::test_helpers::test_storage;
-    use uuid::Uuid;
 
     #[test]
     fn test_proxy_route_sorting() {

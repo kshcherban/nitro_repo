@@ -1,12 +1,10 @@
 use axum::{
     Json,
-    body::Body,
     extract::{Path, State},
     response::Response,
     routing::{delete, get, post},
 };
 use axum_extra::{TypedHeader, headers::UserAgent};
-use http::StatusCode;
 use nr_core::{
     database::entities::user::{
         UserType,
@@ -68,10 +66,7 @@ async fn create(
 ) -> Result<Response, InternalError> {
     let source = format!("API Request ({})", user_agent);
     if new_token.repository_scopes.is_empty() && new_token.scopes.is_empty() {
-        return Ok(Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body("No Scopes Provided".into())
-            .unwrap());
+        return Ok(ResponseBuilder::bad_request().body("No Scopes Provided"));
     }
     let repositories: Vec<(Uuid, Vec<RepositoryActions>)> = new_token
         .repository_scopes
@@ -140,14 +135,8 @@ async fn delete_token(
 ) -> Result<Response, InternalError> {
     let Some(token) = AuthToken::get_by_id_and_user_id(id, auth.get_id(), site.as_ref()).await?
     else {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .unwrap());
+        return Ok(ResponseBuilder::not_found().empty());
     };
     token.delete(site.as_ref()).await?;
-    Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body(Body::empty())
-        .unwrap())
+    Ok(ResponseBuilder::no_content().empty())
 }

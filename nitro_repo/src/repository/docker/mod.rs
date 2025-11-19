@@ -38,7 +38,7 @@ use super::{
 };
 use crate::{
     app::authentication::AuthenticationError,
-    utils::{IntoErrorResponse, bad_request::BadRequestErrors},
+    utils::{IntoErrorResponse, ResponseBuilder, bad_request::BadRequestErrors},
 };
 
 pub static REPOSITORY_TYPE_ID: &str = "docker";
@@ -156,86 +156,49 @@ impl IntoErrorResponse for DockerError {
     }
 }
 
+fn docker_error_payload(code: &str, message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({
+        "errors": [{
+            "code": code,
+            "message": message.into(),
+        }]
+    })
+}
+
+fn docker_error_response(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
+    ResponseBuilder::default()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .json(&docker_error_payload(code, message))
+}
+
 impl IntoResponse for DockerError {
     fn into_response(self) -> Response {
         use http::StatusCode;
 
         match self {
             DockerError::ManifestNotFound(ref msg) | DockerError::BlobNotFound(ref msg) => {
-                Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header("Content-Type", "application/json")
-                    .body(
-                        serde_json::json!({
-                            "errors": [{
-                                "code": "MANIFEST_UNKNOWN",
-                                "message": msg,
-                            }]
-                        })
-                        .to_string()
-                        .into(),
-                    )
-                    .unwrap()
+                docker_error_response(StatusCode::NOT_FOUND, "MANIFEST_UNKNOWN", msg)
             }
             DockerError::InvalidManifest(ref msg) | DockerError::InvalidTag(ref msg) => {
-                Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header("Content-Type", "application/json")
-                    .body(
-                        serde_json::json!({
-                            "errors": [{
-                                "code": "MANIFEST_INVALID",
-                                "message": msg,
-                            }]
-                        })
-                        .to_string()
-                        .into(),
-                    )
-                    .unwrap()
+                docker_error_response(StatusCode::BAD_REQUEST, "MANIFEST_INVALID", msg)
             }
-            DockerError::DigestMismatch { expected, actual } => Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .header("Content-Type", "application/json")
-                .body(
-                    serde_json::json!({
-                        "errors": [{
-                            "code": "DIGEST_INVALID",
-                            "message": format!("Digest mismatch: expected {}, got {}", expected, actual),
-                        }]
-                    })
-                    .to_string()
-                    .into(),
-                )
-                .unwrap(),
-            DockerError::TagOverwriteNotAllowed(ref tag) => Response::builder()
-                .status(StatusCode::CONFLICT)
-                .header("Content-Type", "application/json")
-                .body(
-                    serde_json::json!({
-                        "errors": [{
-                            "code": "TAG_INVALID",
-                            "message": format!("Tag {} already exists and overwrite is not allowed", tag),
-                        }]
-                    })
-                    .to_string()
-                    .into(),
-                )
-                .unwrap(),
+            DockerError::DigestMismatch { expected, actual } => docker_error_response(
+                StatusCode::BAD_REQUEST,
+                "DIGEST_INVALID",
+                format!("Digest mismatch: expected {}, got {}", expected, actual),
+            ),
+            DockerError::TagOverwriteNotAllowed(ref tag) => docker_error_response(
+                StatusCode::CONFLICT,
+                "TAG_INVALID",
+                format!("Tag {} already exists and overwrite is not allowed", tag),
+            ),
             DockerError::Other(other) => other.into_response_boxed(),
-            err => Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("Content-Type", "application/json")
-                .body(
-                    serde_json::json!({
-                        "errors": [{
-                            "code": "UNKNOWN",
-                            "message": err.to_string(),
-                        }]
-                    })
-                    .to_string()
-                    .into(),
-                )
-                .unwrap(),
+            err => docker_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "UNKNOWN",
+                err.to_string(),
+            ),
         }
     }
 }

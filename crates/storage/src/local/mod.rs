@@ -379,7 +379,11 @@ impl LocalStorageInner {
             }
 
             let mut next_path = greatest_parent.clone();
-            for part in path.strip_prefix(&greatest_parent).unwrap().components() {
+            for part in path
+                .strip_prefix(&greatest_parent)
+                .unwrap_or(Path::new(""))
+                .components()
+            {
                 event!(Level::DEBUG, ?next_path, "Updating Meta");
                 self.queue_meta_update(next_path.clone()).await?;
                 metas_updated += 1;
@@ -598,7 +602,7 @@ impl Storage for LocalStorage {
             let parent = parent_directory.clone();
             spawn_blocking(move || fs::create_dir_all(parent))
                 .await
-                .map_err(|e| LocalStorageError::other(e))??;
+                .map_err(LocalStorageError::other)??;
         }
 
         let current_span = Span::current();
@@ -611,13 +615,13 @@ impl Storage for LocalStorage {
         let to = to_path.clone();
         spawn_blocking(move || fs::rename(&from, &to))
             .await
-            .map_err(|e| LocalStorageError::other(e))??;
+            .map_err(LocalStorageError::other)??;
 
         // Delete old metadata (wrap in spawn_blocking)
         let from_meta = from_path.clone();
         spawn_blocking(move || LocationMeta::delete_local(&from_meta))
             .await
-            .map_err(|e| LocalStorageError::other(e))??;
+            .map_err(LocalStorageError::other)??;
 
         // Update metadata for new location
         if !is_hidden_file(&to_path) {
@@ -674,7 +678,7 @@ impl Storage for LocalStorage {
             let path_clone = path.clone();
             spawn_blocking(move || storage.open_file(path_clone))
                 .await
-                .map_err(|err| LocalStorageError::other(err))??
+                .map_err(LocalStorageError::other)??
         };
         Ok(Some(file))
     }
@@ -690,7 +694,9 @@ impl Storage for LocalStorage {
         info!(?self, "Unloading Local Storage");
         let shutdown_signal = self.0.shutdown_signal.lock().await.take();
         if let Some(shutdown_signal) = shutdown_signal {
-            shutdown_signal.send(()).unwrap();
+            if let Err(e) = shutdown_signal.send(()) {
+                tracing::error!("Failed to send shutdown signal: {:?}", e);
+            }
         } else {
             error!("Shutdown Signal already sent");
         }

@@ -66,20 +66,43 @@ pub async fn path_helper(
     }
     let path = std::path::Path::new(&path);
     let response = if path.exists() {
-        // List directories
-        let mut directories = vec![];
-        for entry in std::fs::read_dir(path).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_dir()
-                && let Some(file_name) = path.file_name()
-            {
-                directories.push(file_name.to_string_lossy().to_string());
-            }
-        }
-        LocalStoragePathHelperResponse::Directories(directories)
+        LocalStoragePathHelperResponse::Directories(collect_directories(path)?)
     } else {
         LocalStoragePathHelperResponse::PathDoesNotExist
     };
     Ok(ResponseBuilder::ok().json(&response))
+}
+
+fn collect_directories(path: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut directories = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir()
+            && let Some(file_name) = path.file_name()
+        {
+            directories.push(file_name.to_string_lossy().to_string());
+        }
+    }
+    Ok(directories)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_directories;
+    use std::{fs, path::Path};
+    use tempfile::tempdir;
+
+    #[test]
+    fn collect_directories_lists_child_directories_only() {
+        let tmp = tempdir().expect("create temp dir");
+        let base = tmp.path();
+        let dir_a = base.join("alpha");
+        fs::create_dir(&dir_a).expect("create dir");
+        fs::write(base.join("file.txt"), b"data").expect("write file");
+
+        let directories = collect_directories(Path::new(base)).expect("collect directories");
+
+        assert_eq!(directories, vec!["alpha".to_string()]);
+    }
 }

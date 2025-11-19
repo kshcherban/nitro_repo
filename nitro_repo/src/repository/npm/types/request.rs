@@ -44,7 +44,7 @@ impl IntoResponse for InvalidNPMCommand {
         Response::builder()
             .status(http::StatusCode::BAD_REQUEST)
             .body(self.to_string().into())
-            .unwrap()
+            .unwrap_or_default()
     }
 }
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -142,7 +142,7 @@ impl PublishVersion {
     ) -> Result<NewVersion, NPMRegistryError> {
         let release_type = get_release_type(&self.version);
         let extra = VersionData {
-            extra: Some(serde_json::to_value(self).unwrap()),
+            extra: Some(serde_json::to_value(self)?),
             ..Default::default()
         };
         Ok(NewVersion {

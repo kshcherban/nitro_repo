@@ -9,7 +9,7 @@ use futures_util::{FutureExt, StreamExt};
 use handlebars::Handlebars;
 use lettre::{
     Address, AsyncSmtpTransport, AsyncTransport, Message,
-    message::{MessageBuilder, MultiPart, SinglePart, header},
+    message::{Mailbox, MessageBuilder, MultiPart, SinglePart, header},
     transport::smtp::authentication::Credentials,
 };
 use rust_embed::RustEmbed;
@@ -182,9 +182,11 @@ impl EmailService {
         let service_notify = notify.clone();
         let transport = Self::build_connection(email.clone()).await;
 
-        let mut message_builder = Message::builder().from(email.from.parse().unwrap());
+        let from = parse_mailbox(&email.from, "from")?;
+        let mut message_builder = Message::builder().from(from);
         if let Some(reply_to) = &email.reply_to {
-            message_builder = message_builder.reply_to(reply_to.parse().unwrap());
+            let reply_to_mailbox = parse_mailbox(reply_to, "reply_to")?;
+            message_builder = message_builder.reply_to(reply_to_mailbox);
         }
 
         let mut email_handlebars = Handlebars::new();
@@ -330,5 +332,26 @@ impl EmailService {
                 None
             }
         }
+    }
+}
+
+fn parse_mailbox(value: &str, field: &str) -> io::Result<Mailbox> {
+    value
+        .parse()
+        .map_err(|err| io::Error::other(format!("Invalid {field} email address: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mailbox;
+
+    #[test]
+    fn parse_mailbox_accepts_valid_addresses() {
+        assert!(parse_mailbox("user@example.com", "from").is_ok());
+    }
+
+    #[test]
+    fn parse_mailbox_rejects_invalid_addresses() {
+        assert!(parse_mailbox("invalid-address", "from").is_err());
     }
 }

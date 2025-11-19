@@ -24,7 +24,7 @@ use crate::{
     app::NitroRepo,
     repository::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
-        RepositoryRequest,
+        RepositoryHandlerError, RepositoryRequest,
         npm::{NPMRegistryConfigType, NPMRegistryError, types::PublishRequest},
         utils::RepositoryExt,
     },
@@ -78,9 +78,12 @@ impl NPMHostedRegistry {
         if versions.len() != 1 {
             return Err(NPMRegistryError::OnlyOneReleaseOrAttachmentAtATime);
         }
-        let (version, data) = versions.into_iter().next().unwrap();
+        let (version, data) = versions
+            .into_iter()
+            .next()
+            .ok_or(NPMRegistryError::VersionNotFound)?;
         {
-            let storage_config: nr_storage::BorrowedStorageConfig = self.storage.storage_config();
+            let storage_config: nr_storage::BorrowedStorageConfig<'_> = self.storage.storage_config();
             data.dist.validate_tarball(
                 &storage_config.storage_config.storage_name,
                 &self.repository.name,
@@ -99,7 +102,7 @@ impl NPMHostedRegistry {
             let mut path = version_path.clone();
             if file.starts_with("@") && file.contains("/") {
                 let split = file.split("/").collect::<Vec<&str>>();
-                path.push_mut(split.last().unwrap());
+                path.push_mut(split.last().ok_or(RepositoryHandlerError::NotFound)?);
             } else {
                 path.push_mut(&file);
             }
@@ -217,7 +220,7 @@ impl Repository for NPMHostedRegistry {
                     time: times,
                 };
                 debug!(?project_response, "Returning Project");
-                let as_string = serde_json::to_string(&project_response).unwrap();
+                let as_string = serde_json::to_string(&project_response)?;
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header(CONTENT_TYPE, "application/json")
@@ -240,7 +243,7 @@ impl Repository for NPMHostedRegistry {
                 };
                 debug!(?version, "Got Version");
                 if let Some(extra) = version.extra.0.extra {
-                    let as_string = serde_json::to_string(&extra).unwrap();
+                    let as_string = serde_json::to_string(&extra)?;
                     Ok(Response::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, "application/json")

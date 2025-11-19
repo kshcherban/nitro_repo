@@ -9,7 +9,7 @@ use nr_core::{
     },
     repository::{
         Visibility,
-        config::{project::ProjectConfigType, repository_page::RepositoryPageType},
+        config::repository_page::RepositoryPageType,
         project::{PhpPackageMetadata, VersionData},
     },
     user::permissions::RepositoryActions,
@@ -181,7 +181,6 @@ impl Repository for PhpHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             PhpRepositoryConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]

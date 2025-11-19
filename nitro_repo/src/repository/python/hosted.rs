@@ -16,7 +16,7 @@ use nr_core::{
     },
     repository::{
         Visibility,
-        config::{project::ProjectConfigType, repository_page::RepositoryPageType},
+        config::repository_page::RepositoryPageType,
         project::{PythonPackageMetadata, VersionData},
     },
     user::permissions::RepositoryActions,
@@ -301,7 +301,6 @@ impl Repository for PythonHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             PythonRepositoryConfigType::get_type_static(),
-            ProjectConfigType::get_type_static(),
             RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]

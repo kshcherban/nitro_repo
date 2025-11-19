@@ -25,9 +25,7 @@ use nr_core::{
             user::user_utils,
         },
     },
-    repository::config::{
-        RepositoryConfigType, project::ProjectConfigType, repository_page::RepositoryPageType,
-    },
+    repository::config::{RepositoryConfigType, repository_page::RepositoryPageType},
 };
 use nr_core::{storage::FileHashes, utils::base64_utils};
 use nr_storage::{DynStorage, STORAGE_FACTORIES, Storage, StorageConfig, StorageFactory};
@@ -72,7 +70,7 @@ use crate::{
     utils::ip_addr::HasForwardedHeader,
 };
 pub mod api;
-pub mod badge;
+
 pub mod responses;
 pub mod web;
 #[derive(Debug, Serialize, Clone, ToSchema)]
@@ -1074,7 +1072,6 @@ impl NitroRepo {
 pub type NitroRepoState = State<NitroRepo>;
 
 pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
-    &ProjectConfigType,
     &RepositoryPageType,
     &DockerRegistryConfigType,
     &DockerPushRulesConfigType,

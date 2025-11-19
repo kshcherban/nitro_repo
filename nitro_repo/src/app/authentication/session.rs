@@ -5,9 +5,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use chrono::{DateTime, Duration, FixedOffset, Local};
-use http::StatusCode;
 use rand::{Rng, SeedableRng, distr::Alphanumeric, rngs::StdRng};
 use redb::{
     CommitError, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
@@ -27,7 +26,7 @@ use crate::{
         NitroRepo,
         config::{Mode, get_current_directory},
     },
-    utils::IntoErrorResponse,
+    utils::{IntoErrorResponse, ResponseBuilder},
 };
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -55,10 +54,7 @@ impl IntoResponse for SessionError {
             "Session Manager Error {:?}. Please Contact the Admin about Session DB Corruption",
             self
         );
-        Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(message.into())
-            .unwrap()
+        ResponseBuilder::internal_server_error().body(message)
     }
 }
 impl IntoErrorResponse for SessionError {
@@ -113,7 +109,7 @@ impl Session {
             created: Local::now().fixed_offset(),
         }
     }
-    pub fn from_tuple(tuple: SessionTuple) -> Result<Self, SessionError> {
+    pub fn from_tuple(tuple: SessionTuple<'_>) -> Result<Self, SessionError> {
         let (user_id, session_id, user_agent, ip_addr, expires, created) = tuple;
 
         let expires = DateTime::<FixedOffset>::parse_from_rfc3339(&expires).inspect_err(|err| {
@@ -149,7 +145,7 @@ impl Session {
         )
     }
 }
-const TABLE: TableDefinition<&str, SessionTuple> = TableDefinition::new("sessions");
+const TABLE: TableDefinition<&'static str, SessionTuple<'static>> = TableDefinition::new("sessions");
 
 pub struct SessionManager {
     config: SessionManagerConfig,
@@ -313,12 +309,17 @@ impl SessionManager {
         }
     }
     pub fn start_cleaner(this: NitroRepo) -> Option<JoinHandle<()>> {
-        let how_often = this
-            .session_manager
-            .config
-            .cleanup_interval
-            .to_std()
-            .expect("Duration is too large");
+        let cleanup_interval = this.session_manager.config.cleanup_interval;
+        let how_often = match cleanup_interval_to_std(cleanup_interval) {
+            Some(interval) => interval,
+            None => {
+                error!(
+                    ?cleanup_interval,
+                    "Session cleanup interval must be positive"
+                );
+                return None;
+            }
+        };
         debug!("Starting Session Cleaner with interval: {:?}", how_often);
         this.session_manager.running.store(true, Ordering::Relaxed);
         let result = tokio::spawn(async move {
@@ -416,6 +417,10 @@ pub fn create_session_id(exists_call_back: impl Fn(&str) -> bool) -> String {
     }
 }
 
+fn cleanup_interval_to_std(duration: Duration) -> Option<std::time::Duration> {
+    duration.to_std().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +448,16 @@ mod tests {
             0,
             "fresh session database should contain zero sessions"
         );
+    }
+
+    #[test]
+    fn cleanup_interval_to_std_rejects_negative_duration() {
+        assert!(cleanup_interval_to_std(Duration::seconds(-5)).is_none());
+    }
+
+    #[test]
+    fn cleanup_interval_to_std_allows_positive_duration() {
+        let converted = cleanup_interval_to_std(Duration::seconds(42));
+        assert_eq!(converted.map(|duration| duration.as_secs()), Some(42));
     }
 }

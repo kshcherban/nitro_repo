@@ -35,7 +35,7 @@ pub struct OciImageManifest {
     pub layers: Vec<Descriptor>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<std::collections::HashMap<String, String>>,
+    pub annotations: Option<ahash::HashMap<String, String>>,
 }
 
 /// OCI Image Index (Manifest List)
@@ -51,7 +51,7 @@ pub struct OciImageIndex {
     pub manifests: Vec<ManifestDescriptor>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<std::collections::HashMap<String, String>>,
+    pub annotations: Option<ahash::HashMap<String, String>>,
 }
 
 /// Content descriptor for manifests, configs, and layers
@@ -68,7 +68,7 @@ pub struct Descriptor {
     pub urls: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<std::collections::HashMap<String, String>>,
+    pub annotations: Option<ahash::HashMap<String, String>>,
 }
 
 /// Manifest descriptor with platform information
@@ -85,7 +85,7 @@ pub struct ManifestDescriptor {
     pub platform: Option<Platform>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<std::collections::HashMap<String, String>>,
+    pub annotations: Option<ahash::HashMap<String, String>>,
 }
 
 /// Platform information for multi-arch images

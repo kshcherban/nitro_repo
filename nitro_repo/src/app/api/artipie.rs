@@ -1,6 +1,5 @@
 use axum::{
     Router,
-    body::Body,
     extract::{OriginalUri, Path, State},
     response::Response,
     routing::{any, get, post},
@@ -119,11 +118,10 @@ async fn api_repository_root_redirect(
 }
 
 fn redirect(location: String) -> Response {
-    Response::builder()
+    ResponseBuilder::default()
         .status(StatusCode::TEMPORARY_REDIRECT)
         .header(LOCATION, location)
-        .body(Body::empty())
-        .unwrap()
+        .empty()
 }
 
 async fn resolve_repository(

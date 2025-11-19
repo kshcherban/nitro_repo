@@ -59,7 +59,7 @@ impl RepositoryConfigType for MavenRepositoryConfigType {
     }
     fn default(&self) -> Result<Value, RepositoryConfigError> {
         let config = MavenRepositoryConfig::Hosted;
-        Ok(serde_json::to_value(config).unwrap())
+        Ok(serde_json::to_value(config)?)
     }
     fn get_description(&self) -> ConfigDescription {
         ConfigDescription {

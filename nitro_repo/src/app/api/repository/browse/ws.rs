@@ -13,6 +13,7 @@ use nr_storage::{
 use opentelemetry::trace::Status;
 use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use strum::EnumIs;
 use tokio::select;
 use tracing::{
@@ -52,8 +53,8 @@ pub enum WebsocketOutgoingMessage {
 }
 impl From<WebsocketOutgoingMessage> for Message {
     fn from(message: WebsocketOutgoingMessage) -> Self {
-        let message = serde_json::to_string(&message).unwrap();
-        Message::Text(Utf8Bytes::from(message))
+        let payload = encode_outgoing_message(&message);
+        Message::Text(Utf8Bytes::from(payload))
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIs)]
@@ -62,6 +63,32 @@ pub enum WSPermissionsStatus {
     Pending,
     Authorized,
 }
+
+fn encode_outgoing_message(message: &WebsocketOutgoingMessage) -> String {
+    match serde_json::to_string(message) {
+        Ok(json) => json,
+        Err(err) => {
+            warn!(?err, "Failed to serialize outgoing WebSocket message");
+            json!({
+                "type": "Error",
+                "data": "Internal server error"
+            })
+            .to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WebsocketOutgoingMessage, encode_outgoing_message};
+
+    #[test]
+    fn encode_outgoing_message_serializes_simple_variant() {
+        let payload = encode_outgoing_message(&WebsocketOutgoingMessage::EndOfDirectory);
+        assert!(payload.contains("EndOfDirectory"));
+    }
+}
+
 pub struct BrowseWSState {
     pub repository: DynRepository,
     pub site: NitroRepo,

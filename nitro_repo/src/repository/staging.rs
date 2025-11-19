@@ -1,10 +1,9 @@
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use bytes::Bytes;
 use chrono::Duration;
 use derive_more::derive::Deref;
-use http::StatusCode;
 use nr_core::database::entities::stages::{DBStage, NewDBStageFile};
 use redb::Result;
 use serde::{Deserialize, Serialize};
@@ -24,10 +23,7 @@ impl IntoResponse for StagingManagerError {
     fn into_response(self) -> axum::response::Response {
         error!("{}", self);
         let message = format!("Staging Manager Error {:?}. ", self);
-        Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(message.into())
-            .unwrap()
+        crate::utils::ResponseBuilder::internal_server_error().body(message)
     }
 }
 /// Stages are stored locally before being moved to the storage

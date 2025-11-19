@@ -3,7 +3,7 @@
 //! Implements the Docker Registry HTTP API V2 specification.
 //! Reference: https://docs.docker.com/registry/spec/api/
 
-use axum::{body::Body, response::Response};
+use axum::body::Body;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
@@ -32,6 +32,7 @@ use super::{
 use crate::{
     app::{BlobUploadStateHandle, FinalizedUpload, NitroRepo},
     repository::repo_http::RepositoryAuthentication,
+    utils::ResponseBuilder,
 };
 use uuid::Uuid;
 
@@ -89,11 +90,11 @@ async fn recompute_finalized_upload_from_storage_file(
 
 /// Helper to create custom response with headers
 fn custom_response(status: StatusCode, headers: Vec<(&str, &str)>, body: Vec<u8>) -> RepoResponse {
-    let mut builder = Response::builder().status(status);
+    let mut builder = ResponseBuilder::default().status(status);
     for (key, value) in headers {
         builder = builder.header(key, value);
     }
-    RepoResponse::Other(builder.body(Body::from(body)).unwrap())
+    RepoResponse::Other(builder.body(Body::from(body)))
 }
 
 const LOCAL_UPLOAD_BUFFER_SIZE: usize = 4 * 1024 * 1024;
@@ -133,12 +134,10 @@ impl PaginationError {
                 "message": message,
             }]
         });
-        let response = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
+        let response = ResponseBuilder::bad_request()
             .header("Content-Type", "application/json")
             .header("Docker-Distribution-API-Version", "registry/2.0")
-            .body(Body::from(body.to_string()))
-            .expect("failed to build pagination error response");
+            .body(body.to_string());
         RepoResponse::Other(response)
     }
 }
@@ -238,8 +237,7 @@ fn paginate_lexically(all: &[String], pagination: &Pagination) -> PaginatedList 
 
 fn build_catalog_response(page: PaginatedList) -> RepoResponse {
     let payload = serde_json::json!({ "repositories": page.values });
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
+    let mut builder = ResponseBuilder::ok()
         .header("Content-Type", "application/json")
         .header("Docker-Distribution-API-Version", "registry/2.0");
 
@@ -252,12 +250,7 @@ fn build_catalog_response(page: PaginatedList) -> RepoResponse {
         builder = builder.header("Link", link_value);
     }
 
-    let bytes = serde_json::to_vec(&payload).expect("catalog serialization cannot fail");
-    RepoResponse::Other(
-        builder
-            .body(Body::from(bytes))
-            .expect("failed to build catalog response"),
-    )
+    RepoResponse::Other(builder.json(&payload))
 }
 
 async fn list_catalog(
@@ -275,8 +268,7 @@ fn build_tags_response(repository_name: &str, page: PaginatedList) -> RepoRespon
         "tags": page.values,
     });
 
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
+    let mut builder = ResponseBuilder::ok()
         .header("Content-Type", "application/json")
         .header("Docker-Distribution-API-Version", "registry/2.0");
 
@@ -292,11 +284,7 @@ fn build_tags_response(repository_name: &str, page: PaginatedList) -> RepoRespon
         builder = builder.header("Link", link_value);
     }
 
-    RepoResponse::Other(
-        builder
-            .body(Body::from(payload.to_string()))
-            .expect("failed to build tags response"),
-    )
+    RepoResponse::Other(builder.json(&payload))
 }
 
 fn is_digest_reference(candidate: &str) -> bool {
@@ -821,16 +809,12 @@ async fn get_blob(
     let size = meta.file_type.file_size;
     let stream = ReaderStream::new(reader);
 
-    let mut builder = Response::builder().status(StatusCode::OK);
+    let mut builder = ResponseBuilder::ok();
     builder = builder.header("Docker-Content-Digest", digest);
     builder = builder.header("Content-Length", size.to_string());
     builder = builder.header("Content-Type", "application/octet-stream");
 
-    Ok(RepoResponse::Other(
-        builder
-            .body(Body::from_stream(stream))
-            .expect("failed to build blob response"),
-    ))
+    Ok(RepoResponse::Other(builder.body(Body::from_stream(stream))))
 }
 
 /// HEAD /v2/<name>/blobs/<digest> - Check blob exists
@@ -1439,8 +1423,10 @@ mod tests {
     use super::*;
     use crate::repository::test_helpers::test_storage;
     use futures::stream;
+    use http_body_util::BodyExt;
     use nr_core::storage::StoragePath;
     use nr_storage::{FileContent, Storage, StorageFile, StorageFileMeta, StorageFileReader};
+    use serde_json::json;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1638,6 +1624,57 @@ mod tests {
             parse_pagination_params(Some("n=5&last=acme%2Fapi")).expect("query should be parsed");
         assert_eq!(params.limit, Some(5));
         assert_eq!(params.last.as_deref(), Some("acme/api"));
+    }
+
+    #[test]
+    fn pagination_error_response_sets_docker_headers() {
+        let response = PaginationError::InvalidLimit
+            .into_response()
+            .into_response_default();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get("Docker-Distribution-API-Version")
+                .and_then(|value| value.to_str().ok()),
+            Some("registry/2.0")
+        );
+        assert_eq!(
+            headers
+                .get("Content-Type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn catalog_response_sets_link_header_when_cursor_present() {
+        let page = PaginatedList {
+            values: vec!["alpha".into()],
+            next: Some(PaginationCursor {
+                last: "alpha".into(),
+                limit: 3,
+            }),
+        };
+        let response = build_catalog_response(page).into_response_default();
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("Link").and_then(|value| value.to_str().ok()),
+            Some("</v2/_catalog?last=alpha&n=3>; rel=\"next\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_response_serializes_repository_list() {
+        let page = PaginatedList {
+            values: vec!["alpha".into(), "beta".into()],
+            next: None,
+        };
+        let response = build_catalog_response(page).into_response_default();
+        let collected = response.into_body().collect().await.unwrap();
+        let body = collected.to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload, json!({"repositories": ["alpha", "beta"]}));
     }
 
     #[tokio::test]

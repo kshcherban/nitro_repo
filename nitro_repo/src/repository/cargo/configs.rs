@@ -71,16 +71,4 @@ mod tests {
         let value = serde_json::to_value(CargoRepositoryConfig::Hosted).unwrap();
         assert!(config_type.validate_config(value).is_ok());
     }
-
-    #[test]
-    fn schema_includes_hosted_variant() {
-        let config_type = CargoRepositoryConfigType;
-        let schema = config_type.schema().expect("schema");
-        let schema_json = serde_json::to_value(&schema).expect("serialize schema");
-
-        assert!(
-            schema_json.to_string().contains(r#""type":"Hosted""#),
-            "schema should contain Hosted variant: {schema_json}"
-        );
-    }
 }

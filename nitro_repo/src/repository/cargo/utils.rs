@@ -139,7 +139,7 @@ pub fn parse_publish_payload(body: &[u8]) -> Result<PublishPayload, CargoUtilErr
     let metadata_len = u32::from_le_bytes(
         body[offset..offset + 4]
             .try_into()
-            .expect("slice has length 4"),
+            .map_err(|_| CargoUtilError::TruncatedPayload)?,
     ) as usize;
     offset += 4;
 
@@ -155,7 +155,7 @@ pub fn parse_publish_payload(body: &[u8]) -> Result<PublishPayload, CargoUtilErr
     let crate_len = u32::from_le_bytes(
         body[offset..offset + 4]
             .try_into()
-            .expect("slice has length 4"),
+            .map_err(|_| CargoUtilError::TruncatedPayload)?,
     ) as usize;
     offset += 4;
 

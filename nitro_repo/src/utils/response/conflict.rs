@@ -47,7 +47,7 @@ fn example() -> Value {
         details: Some("Some_Field"),
         error: None,
     };
-    serde_json::to_value(response).unwrap()
+    serde_json::to_value(response).unwrap_or_default()
 }
 
 impl From<&'static str> for ConflictResponse {

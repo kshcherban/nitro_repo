@@ -3,7 +3,7 @@ use std::{borrow::Cow, fs::OpenOptions, io::Read, path::Path};
 use rust_embed::RustEmbed;
 use tracing::error;
 
-use crate::error::InternalError;
+use crate::error::{IllegalStateError, InternalError};
 
 #[derive(RustEmbed)]
 #[folder = "$CARGO_MANIFEST_DIR/resources"]
@@ -37,9 +37,13 @@ impl Resources {
             file.read_to_end(&mut buffer)?;
             Ok(Cow::Owned(buffer))
         } else {
-            Ok(Resources::get(file)
-                .expect("Embedded Resource was not found")
-                .data)
+            Resources::get(file)
+                .map(|resource| resource.data)
+                .ok_or_else(|| {
+                    InternalError::from(IllegalStateError(
+                        "Embedded resource was not found during file lookup",
+                    ))
+                })
         }
     }
 }

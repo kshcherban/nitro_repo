@@ -49,6 +49,90 @@ pub use repo_auth::*;
 
 use super::{DynRepository, RepositoryHandlerError, repo_tracing::RepositoryRequestTracing};
 
+use crate::utils::ResponseBuilder;
+
+const DOCKER_API_VERSION: &str = "registry/2.0";
+const DOCKER_JSON_CONTENT_TYPE: &str = "application/json";
+
+fn docker_v2_ok_response() -> Response {
+    ResponseBuilder::ok()
+        .header("Docker-Distribution-API-Version", DOCKER_API_VERSION)
+        .header(CONTENT_TYPE, DOCKER_JSON_CONTENT_TYPE)
+        .body("{}")
+}
+
+fn docker_v2_unauthorized_response(challenge: &str, body: &str) -> Response {
+    ResponseBuilder::unauthorized()
+        .header("WWW-Authenticate", challenge)
+        .header("Docker-Distribution-API-Version", DOCKER_API_VERSION)
+        .header(CONTENT_TYPE, DOCKER_JSON_CONTENT_TYPE)
+        .body(body.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docker_v2_ok_response_sets_headers() {
+        let response = docker_v2_ok_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get("Docker-Distribution-API-Version")
+                .and_then(|value| value.to_str().ok()),
+            Some(DOCKER_API_VERSION)
+        );
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some(DOCKER_JSON_CONTENT_TYPE)
+        );
+    }
+
+    #[test]
+    fn docker_v2_unauthorized_response_sets_challenge() {
+        let response = docker_v2_unauthorized_response("Bearer realm=\"test\"", "{}");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get("WWW-Authenticate")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer realm=\"test\"")
+        );
+    }
+
+    #[test]
+    fn www_authenticate_response_sets_header_and_body() {
+        let response =
+            RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"").into_response_default();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get("WWW-Authenticate")
+                .and_then(|value| value.to_str().ok()),
+            Some("Basic realm=\"Nitro Repo\"")
+        );
+    }
+
+    #[test]
+    fn forbidden_response_returns_expected_status_and_message() {
+        let response = RepoResponse::forbidden().into_response_default();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn unsupported_method_response_mentions_method() {
+        let response = RepoResponse::unsupported_method_response(Method::POST, "docker")
+            .into_response_default();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+}
+
 pub fn repository_router() -> axum::Router<NitroRepo> {
     Router::new()
         .route("/{storage}/{repository}/{*path}", any(handle_repo_request))
@@ -73,24 +157,14 @@ pub async fn handle_docker_v2_base_public(
     );
 
     if is_authenticated {
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header("Docker-Distribution-API-Version", "registry/2.0")
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
+        return docker_v2_ok_response();
     }
 
     let challenge = build_registry_bearer_challenge(&site, Some(&headers));
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("WWW-Authenticate", challenge)
-        .header("Docker-Distribution-API-Version", "registry/2.0")
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            r#"{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}"#,
-        ))
-        .unwrap()
+    docker_v2_unauthorized_response(
+        &challenge,
+        r#"{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}"#,
+    )
 }
 
 /// Handle Docker V2 catchall - routes to either base endpoint or path rewrite
@@ -107,30 +181,19 @@ async fn handle_docker_v2_catchall(
 
     // If path is just "/" or empty, this is the base V2 endpoint
     if path.is_empty() || path == "/" {
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Docker-Distribution-API-Version", "registry/2.0")
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap());
+        return Ok(docker_v2_ok_response());
     }
 
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     if segments.is_empty() {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("Not Found"))
-            .unwrap());
+        return Ok(ResponseBuilder::not_found().body("Not Found"));
     }
     let mut index = 0usize;
     if segments.get(0) == Some(&"repositories") {
         index += 1;
     }
     if segments.len() <= index + 1 {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("Not Found"))
-            .unwrap());
+        return Ok(ResponseBuilder::not_found().body("Not Found"));
     }
 
     let storage = segments[index].to_string();
@@ -179,13 +242,7 @@ async fn handle_docker_v2_catchall(
             &["pull", "push"],
         );
         let body = docker_unauthorized_body(&docker_scope, &["pull", "push"]);
-        return Ok(Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", challenge)
-            .header("Docker-Distribution-API-Version", "registry/2.0")
-            .header("Content-Type", "application/json")
-            .body(Body::from(body))
-            .unwrap());
+        return Ok(docker_v2_unauthorized_response(&challenge, &body));
     }
 
     // Build the repo request path with v2/ prefix
@@ -219,20 +276,20 @@ async fn handle_docker_v2_catchall(
         let challenge =
             build_docker_bearer_challenge(&site_for_challenge, None, &docker_scope, actions);
         let body = docker_unauthorized_body(&docker_scope, actions);
-        let mut builder = Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", challenge)
-            .header("Docker-Distribution-API-Version", "registry/2.0")
-            .header("Content-Type", "application/json");
-
         let (parts, _) = response.into_parts();
+        let mut builder = ResponseBuilder::unauthorized()
+            .header("WWW-Authenticate", challenge)
+            .header("Docker-Distribution-API-Version", DOCKER_API_VERSION)
+            .header(CONTENT_TYPE, DOCKER_JSON_CONTENT_TYPE);
+
         for (key, value) in parts.headers.iter() {
-            if key != "www-authenticate" && key != "content-length" && key != "content-type" {
-                builder = builder.header(key, value);
+            if key == "www-authenticate" || key == "content-length" || key == "content-type" {
+                continue;
             }
+            builder = builder.header(key, value.clone());
         }
 
-        Ok(builder.body(Body::from(body)).unwrap())
+        Ok(builder.body(body))
     } else {
         Ok(response)
     }
@@ -340,10 +397,7 @@ impl IntoResponse for RepositoryRequestError {
         match self {
             Self::InvalidPath(err) => {
                 error!(?err, "Failed to parse path");
-                Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::from(err.to_string()))
-                    .unwrap()
+                ResponseBuilder::bad_request().body(err.to_string())
             }
             Self::AuthorizationError(err) => {
                 error!(?err, "Failed to authenticate request");
@@ -368,8 +422,7 @@ fn response_file(
         mime_type,
         file_hash,
     } = meta.file_type();
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
+    let mut response = ResponseBuilder::ok()
         .header(CONTENT_LENGTH, file_size.to_string())
         .header(LAST_MODIFIED, last_modified);
 
@@ -392,7 +445,7 @@ fn response_file(
     };
 
     let body = Body::new(content.into_body(file_size));
-    response.body(body).unwrap()
+    response.body(body)
 }
 
 #[derive(Debug, From)]
@@ -411,21 +464,18 @@ impl RepoResponse {
     pub fn into_response_default(self) -> Response {
         match self {
             Self::FileResponse(file) => match *file {
-                StorageFile::Directory { meta, files } => Response::builder()
+                StorageFile::Directory { meta, files } => ResponseBuilder::default()
                     .status(StatusCode::NOT_IMPLEMENTED)
                     .header(CONTENT_TYPE, mime::TEXT_HTML.to_string())
-                    .body(Body::from("Build HTML Page listing"))
-                    .unwrap(),
+                    .body("Build HTML Page listing"),
                 StorageFile::File { meta, content } => response_file(meta, content),
             },
             Self::FileMetaResponse(meta) => {
                 let last_modified = date_time_for_header(meta.modified());
-                let mut response = Response::builder()
-                    .status(StatusCode::OK)
-                    .header(LAST_MODIFIED, last_modified);
+                let mut response = ResponseBuilder::ok().header(LAST_MODIFIED, last_modified);
                 match meta.file_type() {
                     nr_storage::FileType::Directory { .. } => {
-                        response.header(CONTENT_TYPE, mime::TEXT_HTML.to_string())
+                        response = response.header(CONTENT_TYPE, mime::TEXT_HTML.to_string());
                     }
                     nr_storage::FileType::File(FileFileType {
                         file_hash,
@@ -438,11 +488,10 @@ impl RepoResponse {
                         if let Some(mime_type) = mime_type {
                             response = response.header(CONTENT_TYPE, mime_type.to_string());
                         }
-                        response.header(CONTENT_LENGTH, file_size.to_string())
+                        response = response.header(CONTENT_LENGTH, file_size.to_string());
                     }
                 }
-                .body(Body::empty())
-                .unwrap()
+                response.body(Body::empty())
             }
             Self::Other(response) => response,
         }
@@ -462,11 +511,10 @@ impl RepoResponse {
             }
         };
 
-        Response::builder()
+        ResponseBuilder::default()
             .status(status)
             .header(CONTENT_LOCATION, header)
-            .body(Body::empty())
-            .unwrap()
+            .empty()
             .into()
     }
     pub fn require_nitro_deploy() -> Self {
@@ -477,17 +525,14 @@ impl RepoResponse {
     }
     pub fn internal_error(error: impl Error) -> Self {
         error!(?error, "Internal Error");
-        Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::from(format!("Internal Error: {}", error)))
-            .unwrap()
+        ResponseBuilder::internal_server_error()
+            .body(format!("Internal Error: {}", error))
             .into()
     }
     pub fn basic_text_response(status: StatusCode, message: impl Into<String>) -> Self {
-        Response::builder()
+        ResponseBuilder::default()
             .status(status)
-            .body(Body::from(message.into()))
-            .unwrap()
+            .body(message.into())
             .into()
     }
     pub fn indexing_not_allowed() -> Self {
@@ -497,36 +542,22 @@ impl RepoResponse {
         )
     }
     pub fn www_authenticate(value: &str) -> Self {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
+        ResponseBuilder::unauthorized()
             .header("WWW-Authenticate", value)
-            .body(Body::from("Unauthorized"))
-            .unwrap()
+            .body("Unauthorized")
             .into()
     }
     pub fn unauthorized() -> Self {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body(Body::from("Unauthorized"))
-            .unwrap()
-            .into()
+        ResponseBuilder::unauthorized().body("Unauthorized").into()
     }
     pub fn forbidden() -> Self {
-        Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(Body::from(
-                "You do not have permission to access this repository",
-            ))
-            .unwrap()
+        ResponseBuilder::forbidden()
+            .body("You do not have permission to access this repository")
             .into()
     }
     pub fn require_auth_token() -> Self {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body(Body::from(
-                "Authentication Token is required for this repository.",
-            ))
-            .unwrap()
+        ResponseBuilder::unauthorized()
+            .body("Authentication Token is required for this repository.")
             .into()
     }
     pub fn disabled_repository() -> Self {
@@ -536,13 +567,12 @@ impl RepoResponse {
         method: ::http::Method,
         repository_type: &str,
     ) -> RepoResponse {
-        Response::builder()
+        ResponseBuilder::default()
             .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(Body::from(format!(
+            .body(format!(
                 "Method {} is not supported for repository type {}",
                 method, repository_type
-            )))
-            .unwrap()
+            ))
             .into()
     }
 }
@@ -630,13 +660,7 @@ async fn handle_repo_request_core(
                 };
                 let challenge = build_docker_bearer_challenge(&site, None, &docker_scope, actions);
                 let body = docker_unauthorized_body(&docker_scope, actions);
-                let response = Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .header("WWW-Authenticate", challenge)
-                    .header("Docker-Distribution-API-Version", "registry/2.0")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap();
+                let response = docker_v2_unauthorized_response(&challenge, &body);
                 return Ok(response);
             } else {
                 return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
@@ -704,13 +728,7 @@ async fn handle_repo_request_core(
                 actions,
             );
             let body = docker_unauthorized_body(&docker_scope, actions);
-            let response = Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", challenge)
-                .header("Docker-Distribution-API-Version", "registry/2.0")
-                .header("Content-Type", "application/json")
-                .body(Body::from(body))
-                .unwrap();
+            let response = docker_v2_unauthorized_response(&challenge, &body);
             return Ok(response);
         } else {
             return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")

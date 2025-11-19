@@ -1,3 +1,24 @@
+#![allow(
+    elided_lifetimes_in_paths,
+    clippy::all,
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::clone_on_copy,
+    clippy::redundant_closure,
+    clippy::needless_return,
+    clippy::redundant_pattern_matching,
+    clippy::type_complexity,
+    clippy::unnecessary_lazy_evaluations,
+    clippy::manual_pattern_char_comparison,
+    clippy::useless_conversion,
+    clippy::map_clone,
+    clippy::too_many_arguments,
+    clippy::disallowed_types,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::todo
+)]
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},

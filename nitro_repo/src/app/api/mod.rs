@@ -68,12 +68,9 @@ pub async fn scopes() -> Response {
     let scopes = NRScope::iter()
         .map(|scope| scope.description())
         .collect::<Vec<_>>();
-    let scopes = serde_json::to_string(&scopes).unwrap();
-    Response::builder()
-        .status(StatusCode::OK)
+    ResponseBuilder::ok()
         .header("Content-Type", "application/json")
-        .body(scopes.into())
-        .unwrap()
+        .json(&scopes)
 }
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct InstallRequest {
@@ -148,4 +145,21 @@ async fn route_not_found(request: Request) -> Response {
     ResponseBuilder::not_found()
         .error_reason("Route not found")
         .json(&response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    use serde_json::Value;
+
+    #[tokio::test]
+    async fn scopes_returns_json_list() {
+        let response = scopes().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let collected = response.into_body().collect().await.unwrap();
+        let body = collected.to_bytes();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed.is_array());
+    }
 }

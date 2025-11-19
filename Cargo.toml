@@ -69,7 +69,7 @@ schemars = { git = "https://github.com/wyatt-herkamp/schemars.git", branch = "if
 
 thiserror = "2"
 anyhow = "1"
-badge-maker = { git = "https://github.com/wyatt-herkamp/badge-maker.git", branch = "updates_and_improvements" }
+
 auto_impl = "1.2"
 once_cell = "1"
 regex = "1"
@@ -116,9 +116,29 @@ features = [
 version = "0.12"
 features = ["stream", "http2", "json", "rustls-tls"]
 default-features = false
+
 [workspace.lints.rust]
 async_fn_in_trait = "allow"
 deprecated = "deny"
+unsafe_code = "forbid"          # only allow in special crates, see below
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_imports = "deny"
+dead_code = "warn"
+
+[workspace.lints.clippy]
+# Hard errors – things that must not land in prod
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"                  # `panic!`, `unreachable!`, etc. (outside tests)
+todo = "deny"
+unimplemented = "deny"
+# Locking / concurrency related
+mutex_atomic = "warn"            # suggests using Atomic* instead of Mutex for simple scalars
+await_holding_lock = "deny"      # absolutely critical for async code
+needless_borrow = "warn"         # often shows lock misuse patterns
+large_stack_arrays = "warn"      # can be relevant around stack-heavy concurrent code
+significant_drop_in_scrutinee = "warn"  # dangerous drops, including locks, inside patterns
 
 [profile.dev.package."argon2"]
 opt-level = 3

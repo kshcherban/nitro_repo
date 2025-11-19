@@ -67,7 +67,13 @@ impl TryFrom<String> for NPMPackageName {
                     reason: "Scope cannot be empty",
                 });
             }
-            let name = parts.get(1).map(|s| s.to_string()).unwrap();
+            let name = parts
+                .get(1)
+                .map(|s| s.to_string())
+                .ok_or(InvalidNPMPackageName {
+                    name: "unknown".to_string(),
+                    reason: "No package name provided",
+                })?;
             NPMPackageName::validate_name(&name)?;
             NPMPackageName::validate_name(&scope)?;
             Ok(NPMPackageName {

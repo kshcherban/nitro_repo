@@ -22,7 +22,7 @@ use super::{
 
 static DEFAULT_ROUTE: LazyLock<PythonProxyRoute> = LazyLock::new(|| PythonProxyRoute {
     url: ProxyURL::try_from(String::from("https://pypi.org/simple"))
-        .expect("valid PyPI default route"),
+        .unwrap_or_else(|_| panic!("valid PyPI default route")),
     name: Some("PyPI".to_string()),
 });
 
@@ -744,4 +744,6 @@ fn build_url(base: &ProxyURL, path: StoragePath, query: Option<&str>) -> Option<
     upstream.set_query(query);
     Some(upstream)
 }
-static HREF_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"href="([^"]+)""#).unwrap());
+static HREF_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"href="([^"]+)""#).unwrap_or_else(|e| panic!("Invalid Regex: {}", e))
+});

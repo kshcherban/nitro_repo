@@ -23,10 +23,7 @@ macro_rules! impl_into_error_response_for_axum_into_response {
 pub struct IllegalStateError(pub &'static str);
 impl IntoResponse for IllegalStateError {
     fn into_response(self) -> axum::response::Response {
-        axum::response::Response::builder()
-            .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-            .body(axum::body::Body::from(self.to_string()))
-            .unwrap()
+        ResponseBuilder::internal_server_error().body(self.to_string())
     }
 }
 impl_into_error_response_for_axum_into_response!(IllegalStateError);

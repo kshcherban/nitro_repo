@@ -279,8 +279,8 @@ impl S3DiskCache {
             .clone()
             .unwrap_or_else(|| default_cache_dir(storage_name));
         fs::create_dir_all(&dir).await?;
-        let capacity = NonZeroUsize::new(config.max_entries.max(1))
-            .unwrap_or_else(|| NonZeroUsize::new(1).expect("non zero"));
+        let capacity =
+            NonZeroUsize::new(config.max_entries.max(1)).unwrap_or(NonZeroUsize::MIN);
         let state = CacheState {
             entries: LruCache::new(capacity),
             current_bytes: 0,
@@ -603,10 +603,10 @@ impl S3StorageInner {
 
         let mut files = Vec::new();
         for file in first.contents() {
-            if let Some(key) = file.key() {
-                if let Some(meta) = self.get_meta(key).await? {
-                    files.push(meta);
-                }
+            if let Some(key) = file.key()
+                && let Some(meta) = self.get_meta(key).await?
+            {
+                files.push(meta);
             }
         }
         for sub_directory in first
@@ -1073,7 +1073,7 @@ impl Storage for S3Storage {
                     .as_deref()
                     .map(Mime::from_str)
                     .transpose()
-                    .unwrap()
+                    .unwrap_or_default()
                     .map(SerdeMime),
                 file_hash: FileHashes::default(),
             },
@@ -1121,7 +1121,8 @@ impl Storage for S3Storage {
         _repository: Uuid,
         _location: &StoragePath,
     ) -> Result<Option<Self::DirectoryStream>, Self::Error> {
-        todo!()
+        // Streaming directories is not supported for S3; callers can fall back to listings.
+        Ok(None)
     }
 }
 #[derive(Debug, Default)]
