@@ -110,7 +110,17 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO repository_configs (repository_id, key, value) VALUES
-    ('33333333-0000-0000-0000-000000000001'::uuid, 'docker', '{"type": "Hosted"}'::jsonb),
+    (
+        '33333333-0000-0000-0000-000000000001'::uuid,
+        'docker',
+        '{
+            "type": "Proxy",
+            "config": {
+                "upstream_url": "https://registry-1.docker.io",
+                "cache_enabled": true
+            }
+        }'::jsonb
+    ),
     ('33333333-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 
