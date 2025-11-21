@@ -1,5 +1,7 @@
 use std::{cmp::min, collections::BTreeMap};
 
+use futures::{StreamExt, stream};
+
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -203,6 +205,35 @@ pub async fn list_cached_packages(
 
 fn should_ignore(name: &str) -> bool {
     name.starts_with('.') || name.ends_with(".nr-meta")
+}
+
+const MAX_STORAGE_CONCURRENCY: usize = 8;
+
+async fn map_ordered_concurrent<T, R, E, Fut, F>(
+    items: Vec<T>,
+    concurrency: usize,
+    f: F,
+) -> Result<Vec<R>, E>
+where
+    T: Send + 'static,
+    R: Send + 'static,
+    E: Send + 'static,
+    Fut: std::future::Future<Output = Result<R, E>> + Send + 'static,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+{
+    let max_in_flight = concurrency.max(1);
+    let mut stream = stream::iter(items.into_iter().enumerate().map(|(idx, item)| {
+        let fut = f(item);
+        async move { (idx, fut.await) }
+    }))
+    .buffer_unordered(max_in_flight);
+
+    let mut ordered = Vec::new();
+    while let Some((idx, result)) = stream.next().await {
+        ordered.push((idx, result?));
+    }
+    ordered.sort_by_key(|(idx, _)| *idx);
+    Ok(ordered.into_iter().map(|(_, value)| value).collect())
 }
 
 async fn list_directory_packages(
@@ -419,6 +450,13 @@ struct DebPackageRow {
     version: String,
     extra: SqlxJson<VersionData>,
     created_at: DateTime<FixedOffset>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MavenVersionRow {
+    project_key: String,
+    version: String,
+    version_path: String,
 }
 
 fn deb_metadata(data: &VersionData) -> Option<DebPackageMetadata> {
@@ -767,7 +805,7 @@ async fn list_maven_hosted_packages(
         return Ok(ResponseBuilder::ok().json(&empty));
     }
 
-    let rows = sqlx::query(
+    let rows = sqlx::query_as::<_, MavenVersionRow>(
         r#"
         SELECT
             p.key AS project_key,
@@ -787,49 +825,14 @@ async fn list_maven_hosted_packages(
     .await?;
 
     let storage = repository.get_storage();
-    let mut items = Vec::new();
+    let version_chunks = map_ordered_concurrent(rows, MAX_STORAGE_CONCURRENCY, move |row| {
+        let storage = storage.clone();
+        let repository_id = repository.id();
+        async move { load_maven_version_entries(storage, repository_id, row).await }
+    })
+    .await?;
 
-    for row in rows {
-        let project_key: String = row.try_get("project_key")?;
-        let version: String = row.try_get("version")?;
-        let version_path: String = row.try_get("version_path")?;
-
-        let normalized_path = if version_path.ends_with('/') {
-            version_path.clone()
-        } else {
-            format!("{}/", version_path)
-        };
-
-        let storage_path = nr_core::storage::StoragePath::from(normalized_path.as_str());
-        let Some(StorageFile::Directory { files, .. }) =
-            storage.open_file(repository.id(), &storage_path).await?
-        else {
-            continue;
-        };
-
-        let cache_prefix = version_path.trim_end_matches('/');
-        let package_label = format!("{}:{}", project_key, version);
-
-        for meta in files.iter() {
-            if should_ignore(meta.name()) {
-                continue;
-            }
-            if let FileType::File(file_meta) = meta.file_type() {
-                let cache_path = if cache_prefix.is_empty() {
-                    meta.name().to_string()
-                } else {
-                    format!("{}/{}", cache_prefix, meta.name())
-                };
-                items.push(PackageFileEntry {
-                    package: package_label.clone(),
-                    name: meta.name().to_string(),
-                    cache_path,
-                    size: file_meta.file_size,
-                    modified: meta.modified().clone(),
-                });
-            }
-        }
-    }
+    let items: Vec<PackageFileEntry> = version_chunks.into_iter().flatten().collect();
 
     let response = PackageListResponse {
         page: current_page,
@@ -838,6 +841,54 @@ async fn list_maven_hosted_packages(
         items,
     };
     Ok(ResponseBuilder::ok().json(&response))
+}
+
+async fn load_maven_version_entries(
+    storage: DynStorage,
+    repository_id: Uuid,
+    row: MavenVersionRow,
+) -> Result<Vec<PackageFileEntry>, InternalError> {
+    let MavenVersionRow {
+        project_key,
+        version,
+        version_path,
+    } = row;
+    let normalized_path = ensure_trailing_slash(&version_path);
+    let storage_path = nr_core::storage::StoragePath::from(normalized_path);
+    let Some(StorageFile::Directory { files, .. }) =
+        storage.open_file(repository_id, &storage_path).await?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let cache_prefix = version_path.trim_end_matches('/');
+    let package_label = format!("{}:{}", project_key, version);
+
+    let mut file_entries: Vec<_> = files.iter().collect();
+    file_entries.sort_by(|a, b| a.name().cmp(b.name()));
+
+    let mut items = Vec::new();
+    for meta in file_entries {
+        if should_ignore(meta.name()) {
+            continue;
+        }
+        if let FileType::File(file_meta) = meta.file_type() {
+            let cache_path = if cache_prefix.is_empty() {
+                meta.name().to_string()
+            } else {
+                format!("{cache_prefix}/{}", meta.name())
+            };
+            items.push(PackageFileEntry {
+                package: package_label.clone(),
+                name: meta.name().to_string(),
+                cache_path,
+                size: file_meta.file_size,
+                modified: meta.modified().clone(),
+            });
+        }
+    }
+
+    Ok(items)
 }
 
 async fn list_deb_packages(
@@ -1673,7 +1724,12 @@ mod tests {
     };
     use serde_json::json;
     use sha2::{Digest, Sha256};
+    use std::sync::Arc;
     use tempfile::TempDir;
+    use tokio::{
+        sync::Barrier,
+        time::{Duration, sleep, timeout},
+    };
 
     async fn local_storage() -> Result<(DynStorage, TempDir)> {
         let tempdir = tempfile::tempdir()?;
@@ -1693,6 +1749,41 @@ mod tests {
         )
         .await?;
         Ok((DynStorage::Local(local), tempdir))
+    }
+
+    #[tokio::test]
+    async fn map_ordered_concurrent_executes_tasks_in_parallel() -> Result<()> {
+        let barrier = Arc::new(Barrier::new(2));
+        let inputs = vec![1, 2];
+        let fut = super::map_ordered_concurrent(inputs.clone(), 2, move |value| {
+            let barrier = barrier.clone();
+            async move {
+                barrier.wait().await;
+                Ok::<_, ()>(value)
+            }
+        });
+
+        let values = timeout(Duration::from_millis(250), fut)
+            .await
+            .expect("tasks should complete in parallel")
+            .expect("task execution should succeed");
+        assert_eq!(values, inputs);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn map_ordered_concurrent_preserves_input_order() -> Result<()> {
+        let inputs = vec![1, 2, 3, 4];
+        let results = super::map_ordered_concurrent(inputs.clone(), 4, move |value| async move {
+            let delay = Duration::from_millis((5 - value) as u64 * 5);
+            sleep(delay).await;
+            Ok::<_, ()>(value * 2)
+        })
+        .await
+        .expect("task execution should succeed");
+
+        assert_eq!(results, inputs.iter().map(|v| v * 2).collect::<Vec<_>>());
+        Ok(())
     }
 
     #[tokio::test]

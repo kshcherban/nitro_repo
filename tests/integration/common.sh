@@ -143,7 +143,7 @@ clear_last_log() {
 #######################################
 wait_for_server() {
     local max_wait="${1:-60}"
-    local elapsed=
+    local elapsed=0
 
     print_color "$YELLOW" "Waiting for Nitro Repo server at $NITRO_URL..."
 
@@ -153,8 +153,8 @@ wait_for_server() {
             return 0
         fi
         sleep 1
-        ((elapsed++))
-        if [ $((elapsed % 10)) -eq 0 ]; then
+        ((elapsed+=1))
+        if [ $elapsed -gt 0 ] && [ $((elapsed % 10)) -eq 0 ]; then
             echo "  Still waiting... (${elapsed}s / ${max_wait}s)"
         fi
     done

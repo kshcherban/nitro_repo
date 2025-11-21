@@ -13,10 +13,6 @@ lifespan = 86400
 cleanup_interval = 3600
 database_location = "/data/sessions.redb"
 
-[site]
-app_url = "http://localhost:8000"
-
-
 [security]
 allow_basic_without_tokens = true
 

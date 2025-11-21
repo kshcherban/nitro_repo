@@ -226,7 +226,7 @@ for suite in "${TEST_SUITES[@]}"; do
 
     if [ ! -f "$TEST_SCRIPT" ]; then
         print_color "$RED" "✗ Test script not found: $TEST_SCRIPT"
-        ((FAILED_SUITES++))
+        ((FAILED_SUITES+=1))
         FAILED_SUITE_NAMES+=("$suite")
         continue
     fi
@@ -241,10 +241,10 @@ for suite in "${TEST_SUITES[@]}"; do
     if docker compose -f "${DOCKER_DIR}/docker-compose.test.yml" exec -T test-runner \
        bash "/tests/test_${suite}.sh"; then
         print_color "$GREEN" "✓ ${suite} tests PASSED"
-        ((PASSED_SUITES++))
+        ((PASSED_SUITES+=1))
     else
         print_color "$RED" "✗ ${suite} tests FAILED"
-        ((FAILED_SUITES++))
+        ((FAILED_SUITES+=1))
         FAILED_SUITE_NAMES+=("$suite")
     fi
 

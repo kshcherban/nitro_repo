@@ -78,6 +78,7 @@ services:
       - NITRO_DOCKER_HOST=nitro-repo:8888
     volumes:
       - ../integration:/tests:ro
+      - ../performance:/perf-tests:ro
       - ../fixtures:/fixtures:ro
       - test-results:/results
     command: /bin/bash -c "sleep infinity"
