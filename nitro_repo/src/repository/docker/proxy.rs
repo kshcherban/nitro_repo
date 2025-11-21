@@ -974,6 +974,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleted_manifest_is_downloaded_again() -> anyhow::Result<()> {
+        use crate::app::api::repository::packages::delete_docker_package;
+
+        let manifest = br#"{"schemaVersion":2}"#;
+        let blob = b"bin";
+        let (base, server) = start_upstream_server(manifest, blob).await?;
+
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let upstream = ProxyUpstream::new(&DockerProxyConfig {
+            upstream_url: base,
+            upstream_auth: None,
+            cache_enabled: true,
+        })?;
+
+        // Cache manifest once
+        fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            None,
+        )
+        .await?;
+
+        let manifest_path = StoragePath::from("v2/library/alpine/manifests/latest");
+        assert!(
+            storage.file_exists(repository_id, &manifest_path).await?,
+            "manifest should be cached before deletion"
+        );
+
+        // Simulate admin deletion via API helper
+        delete_docker_package(&storage, repository_id, manifest_path.to_string().as_str())
+            .await
+            .expect("docker deletion should succeed");
+
+        assert!(
+            !storage.file_exists(repository_id, &manifest_path).await?,
+            "manifest cache file should be removed"
+        );
+
+        // Next fetch should re-download from upstream and cache again
+        let refreshed = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            None,
+        )
+        .await?;
+        assert_eq!(refreshed.bytes, manifest);
+        assert!(
+            storage.file_exists(repository_id, &manifest_path).await?,
+            "manifest should be cached again after re-download"
+        );
+
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn blob_digest_mismatch_is_reported() -> anyhow::Result<()> {
         use axum::routing::get;
 

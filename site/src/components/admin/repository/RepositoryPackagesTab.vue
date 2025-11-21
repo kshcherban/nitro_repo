@@ -38,7 +38,7 @@
               color="error"
               variant="flat"
               prepend-icon="mdi-delete"
-              :disabled="selectedCount === 0 || isDeleting || isDockerProxy"
+              :disabled="selectedCount === 0 || isDeleting"
               :loading="isDeleting"
               @click="deleteSelected">
               Delete Selected
