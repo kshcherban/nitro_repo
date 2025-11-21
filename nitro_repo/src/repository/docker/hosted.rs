@@ -13,6 +13,7 @@ use nr_core::{
 };
 use nr_storage::DynStorage;
 use parking_lot::RwLock;
+use reqwest::Url;
 use tracing::{debug, error, instrument};
 use uuid::Uuid;
 
@@ -36,10 +37,18 @@ pub struct DockerHostedInner {
     pub storage: DynStorage,
     #[debug(skip)]
     pub site: NitroRepo,
+    #[debug(skip)]
+    pub proxy: Option<ProxySettings>,
 }
 
 #[derive(Debug, Clone, Deref)]
 pub struct DockerHosted(Arc<DockerHostedInner>);
+
+#[derive(Debug, Clone)]
+pub struct ProxySettings {
+    pub upstream: Url,
+    pub client: reqwest::Client,
+}
 
 impl DockerHosted {
     pub async fn load(
@@ -64,9 +73,27 @@ impl DockerHosted {
             push_rules: RwLock::new(push_rules_db.value.0),
             storage,
             site,
+            proxy: None,
         };
 
         Ok(Self(Arc::new(inner)))
+    }
+
+    pub async fn load_proxy(
+        repository: DBRepository,
+        storage: DynStorage,
+        site: NitroRepo,
+        upstream_url: &str,
+    ) -> Result<Self, RepositoryFactoryError> {
+        let mut hosted = Self::load(repository, storage, site).await?;
+        let upstream = Url::parse(upstream_url).map_err(|err| {
+            RepositoryFactoryError::InvalidConfig(super::REPOSITORY_TYPE_ID, err.to_string())
+        })?;
+        let client = reqwest::Client::new();
+        Arc::get_mut(&mut hosted.0)
+            .expect("no other references during construction")
+            .proxy = Some(ProxySettings { upstream, client });
+        Ok(hosted)
     }
 }
 
@@ -165,5 +192,15 @@ impl Repository for DockerHosted {
 
     async fn handle_head(&self, request: RepositoryRequest) -> Result<RepoResponse, Self::Error> {
         super::handlers::handle_head(self.clone(), request).await
+    }
+}
+
+impl DockerHosted {
+    pub fn is_proxy(&self) -> bool {
+        self.0.proxy.is_some()
+    }
+
+    pub fn upstream(&self) -> Option<&ProxySettings> {
+        self.0.proxy.as_ref()
     }
 }

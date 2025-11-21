@@ -129,7 +129,10 @@ impl Default for GoProxyConfig {
                 priority: Some(0),
             }],
             Err(err) => {
-                tracing::warn!(?err, "Default Go proxy URL invalid, falling back to empty route set");
+                tracing::warn!(
+                    ?err,
+                    "Default Go proxy URL invalid, falling back to empty route set"
+                );
                 Vec::new()
             }
         };
@@ -200,9 +203,15 @@ impl RepositoryConfigType for GoRepositoryConfigType {
                     }
 
                     // Try to parse as URL to ensure it's valid
-                    if let Err(_e) = url::Url::parse(url_str) {
-                        return Err(RepositoryConfigError::InvalidConfig(
+                    let parsed_url = url::Url::parse(url_str).map_err(|_| {
+                        RepositoryConfigError::InvalidConfig(
                             "Go proxy route has invalid URL format",
+                        )
+                    })?;
+
+                    if !matches!(parsed_url.scheme(), "http" | "https") {
+                        return Err(RepositoryConfigError::InvalidConfig(
+                            "Go proxy routes must use http or https",
                         ));
                     }
 

@@ -14,7 +14,10 @@ use nr_core::{
     repository::{
         RepositoryName, Visibility,
         browse::{BrowseFile, BrowseResponse},
-        config::repository_page::{PageType, RepositoryPage},
+        config::{
+            RepositoryConfigType,
+            repository_page::{PageType, RepositoryPage},
+        },
         project::ProjectResolution,
     },
     storage::{StorageName, StoragePath},
@@ -108,6 +111,8 @@ pub struct RepositoryListEntry {
     pub storage_name: StorageName,
     pub name: RepositoryName,
     pub repository_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_kind: Option<String>,
     pub visibility: Visibility,
     pub active: bool,
     pub updated_at: chrono::DateTime<chrono::FixedOffset>,
@@ -230,17 +235,20 @@ pub async fn get_repository(
             }
         }
     }
+    let repository_kind = resolve_repository_kind(&config, &site).await?;
+
     let response = RepositoryListEntry {
         id: config.id,
         storage_id: config.storage_id,
         storage_name: config.storage_name,
         name: config.name,
-        repository_type: config.repository_type,
+        repository_type: config.repository_type.clone(),
         visibility: config.visibility,
         active: config.active,
         updated_at: config.updated_at,
         created_at: config.created_at,
         auth_enabled: auth_config.enabled,
+        repository_kind,
         storage_usage_bytes: storage_usage,
         storage_usage_updated_at,
     };
@@ -302,6 +310,7 @@ pub async fn list_repositories(
             storage_name: repository.storage_name.clone(),
             name: repository.name.clone(),
             repository_type: repository.repository_type.clone(),
+            repository_kind: resolve_repository_kind(&repository, &site).await?,
             visibility: repository.visibility,
             active: repository.active,
             updated_at: repository.updated_at,
@@ -312,6 +321,37 @@ pub async fn list_repositories(
         });
     }
     Ok(ResponseBuilder::ok().json(&entries))
+}
+
+async fn resolve_repository_kind(
+    repository: &DBRepositoryWithStorageName,
+    site: &NitroRepo,
+) -> Result<Option<String>, InternalError> {
+    if repository.repository_type != crate::repository::docker::REPOSITORY_TYPE_ID {
+        return Ok(None);
+    }
+
+    use crate::repository::docker::{DockerRegistryConfig, DockerRegistryConfigType};
+    use nr_core::database::entities::repository::DBRepositoryConfig;
+
+    let config = DBRepositoryConfig::<DockerRegistryConfig>::get_config(
+        repository.id,
+        DockerRegistryConfigType::get_type_static(),
+        site.as_ref(),
+    )
+    .await?;
+
+    let Some(config) = config else {
+        return Ok(None);
+    };
+
+    let kind = match config.value.0 {
+        DockerRegistryConfig::Hosted => "hosted",
+        DockerRegistryConfig::Proxy(_) => "proxy",
+    }
+    .to_string();
+
+    Ok(Some(kind))
 }
 
 async fn compute_repository_storage_usage(site: &NitroRepo, repository_id: Uuid) -> Option<u64> {

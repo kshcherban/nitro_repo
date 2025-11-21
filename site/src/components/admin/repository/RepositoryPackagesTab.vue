@@ -38,7 +38,7 @@
               color="error"
               variant="flat"
               prepend-icon="mdi-delete"
-              :disabled="selectedCount === 0 || isDeleting"
+              :disabled="selectedCount === 0 || isDeleting || isDockerProxy"
               :loading="isDeleting"
               @click="deleteSelected">
               Delete Selected
@@ -266,6 +266,9 @@ const derivedHostedFromPackages = computed(() => {
 const repositoryType = computed(() => props.repositoryType?.toLowerCase() ?? "");
 const isDockerRepository = computed(() => repositoryType.value === "docker");
 const isDebRepository = computed(() => repositoryType.value === "deb");
+const isDockerProxy = computed(
+  () => isDockerRepository.value && props.repositoryKind?.toLowerCase() === "proxy",
+);
 
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
@@ -308,6 +311,9 @@ const timestampColumnTitle = computed(() =>
 
 const emptyRepositoryMessage = computed(() => {
   if (isDockerRepository.value) {
+    if (isDockerProxy.value) {
+      return "No images cached yet. Pull an image through this proxy to populate the list.";
+    }
     return "No images yet. Push an image to populate this list.";
   }
   return isHostedRepository.value

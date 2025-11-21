@@ -16,3 +16,28 @@ export const DockerFrontendDefinition: FrontendRepositoryType = {
     },
   ],
 };
+
+export type DockerConfigType =
+  | {
+      type: "Hosted";
+    }
+  | {
+      type: "Proxy";
+      config: DockerProxyConfig;
+    };
+
+export interface DockerProxyConfig {
+  upstream_url: string;
+  cache_enabled: boolean;
+  upstream_auth?: {
+    username: string;
+    password: string;
+  };
+}
+
+export function defaultDockerProxyConfig(): DockerProxyConfig {
+  return {
+    upstream_url: "https://registry-1.docker.io",
+    cache_enabled: true,
+  };
+}

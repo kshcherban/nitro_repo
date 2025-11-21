@@ -107,6 +107,11 @@ const toggleButton = computed(() => {
   return { label: "Enable Repository", color: "primary" as const };
 });
 
+function repositoryTypeLabel(repo: RepositoryWithStorageName) {
+  const kind = (repo.repository_kind ?? "hosted").toLowerCase();
+  return `${repo.repository_type.toLowerCase()} (${kind})`;
+}
+
 const metaItems = computed(() => {
   if (!props.repository) {
     return [];
@@ -118,7 +123,7 @@ const metaItems = computed(() => {
     },
     {
       label: "Repository Type",
-      value: props.repository.repository_type,
+      value: repositoryTypeLabel(props.repository),
     },
     {
       label: "Storage Name",

@@ -83,7 +83,8 @@ impl NPMHostedRegistry {
             .next()
             .ok_or(NPMRegistryError::VersionNotFound)?;
         {
-            let storage_config: nr_storage::BorrowedStorageConfig<'_> = self.storage.storage_config();
+            let storage_config: nr_storage::BorrowedStorageConfig<'_> =
+                self.storage.storage_config();
             data.dist.validate_tarball(
                 &storage_config.storage_config.storage_name,
                 &self.repository.name,

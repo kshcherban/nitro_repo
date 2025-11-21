@@ -4,11 +4,10 @@ Docker Repositories implement the Docker Registry HTTP API V2 specification, pro
 
 ## Repository Modes
 
-Currently, Docker repositories support:
+Docker repositories support two modes:
 
-- **Hosted** - The repository is hosted on the server and is used to store Docker/OCI container images. This is used to create a private Docker registry.
-
-Proxy mode for Docker registries is planned for future releases.
+- **Hosted** – Store and serve images directly from Nitro Repo (private or public).
+- **Proxy (pull-through cache)** – Read-only cache in front of a public upstream registry. Nitro Repo fetches manifests and blobs on demand, stores them locally (if caching is enabled), and serves subsequent pulls from the cache. Push, delete, and upload operations are rejected with 405 responses.
 
 ## Docker Registry API V2
 
@@ -77,6 +76,20 @@ docker push your-registry.com/storage/repository/my-app:latest
 ```bash
 docker pull your-registry.com/storage/repository/my-app:latest
 ```
+
+### Proxy Quick Start
+
+1. Create a Docker repository and choose **Proxy** as the type. Set the upstream URL (for example, `https://registry-1.docker.io`). Caching is enabled by default.
+2. Pull images using the same Docker Registry v2 path scheme as hosted repositories:
+   ```bash
+   docker pull your-registry.com/storage/repository/library/nginx:latest
+   ```
+3. On first pull, Nitro Repo retrieves the manifest and layers from the upstream registry and stores them under `v2/<storage>/<repository>/...`. Subsequent pulls are served from the local cache.
+
+Limitations:
+- Proxy repositories are read-only (push, delete, and upload requests return 405).
+- Upstream authentication is not yet supported; only public images can be proxied.
+- Cached content has no TTL; remove cached manifests/blobs through repository package management if you need to reclaim space.
 
 ## Browsing and Management
 

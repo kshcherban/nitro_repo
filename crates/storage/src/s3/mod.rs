@@ -279,8 +279,7 @@ impl S3DiskCache {
             .clone()
             .unwrap_or_else(|| default_cache_dir(storage_name));
         fs::create_dir_all(&dir).await?;
-        let capacity =
-            NonZeroUsize::new(config.max_entries.max(1)).unwrap_or(NonZeroUsize::MIN);
+        let capacity = NonZeroUsize::new(config.max_entries.max(1)).unwrap_or(NonZeroUsize::MIN);
         let state = CacheState {
             entries: LruCache::new(capacity),
             current_bytes: 0,

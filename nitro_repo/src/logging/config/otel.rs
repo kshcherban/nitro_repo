@@ -3,6 +3,18 @@ use opentelemetry::{KeyValue, StringValue};
 use serde::{Deserialize, Serialize};
 
 use super::{AppLoggerType, LoggingLevels};
+
+pub(crate) trait EnvProvider {
+    fn get(&self, key: &str) -> Option<String>;
+}
+
+struct RealEnv;
+
+impl EnvProvider for RealEnv {
+    fn get(&self, key: &str) -> Option<String> {
+        std::env::var(key).ok()
+    }
+}
 /// Tracing Config Resource Values.
 ///
 /// ```toml
@@ -80,6 +92,10 @@ impl OtelConfig {
     /// This should be called after deserialization to apply environment variable overrides
     /// Note: Config file values take precedence over environment variables
     pub fn apply_env_fallback(self) -> Self {
+        self.apply_env_fallback_with_env(&RealEnv)
+    }
+
+    pub(crate) fn apply_env_fallback_with_env<P: EnvProvider>(self, env: &P) -> Self {
         // Environment variables are applied during the Default() implementation
         // Since config file deserialization overrides defaults, we don't need to
         // do anything special here - the config file values already take precedence
@@ -87,12 +103,30 @@ impl OtelConfig {
         // Only apply endpoint env var if it wasn't overridden in config
         let mut endpoint = self.endpoint;
         if endpoint == "http://localhost:4317" {
-            if let Ok(otel_endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+            if let Some(otel_endpoint) = env.get("OTEL_EXPORTER_OTLP_ENDPOINT") {
                 endpoint = otel_endpoint;
             }
         }
 
         OtelConfig { endpoint, ..self }
+    }
+
+    fn default_with_env<P: EnvProvider>(env: &P) -> Self {
+        // Enable tracing if NITRO_TRACING_ENABLED environment variable is set
+        // This can be overridden by config file settings
+        let enabled = env.get("NITRO_TRACING_ENABLED").is_some();
+
+        Self {
+            enabled,
+            protocol: TracingProtocol::GRPC,
+            endpoint: env
+                .get("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|| "http://localhost:4317".to_owned()),
+            config: OtelResourceMap::default(),
+            traces: true,
+            logs: false, // Don't send logs to OTLP - logs should always be available locally
+            levels: LoggingLevels::default(),
+        }
     }
 }
 impl AppLoggerType for OtelConfig {
@@ -102,20 +136,7 @@ impl AppLoggerType for OtelConfig {
 }
 impl Default for OtelConfig {
     fn default() -> Self {
-        // Enable tracing if NITRO_TRACING_ENABLED environment variable is set
-        // This can be overridden by config file settings
-        let enabled = std::env::var("NITRO_TRACING_ENABLED").is_ok();
-
-        Self {
-            enabled,
-            protocol: TracingProtocol::GRPC,
-            endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-                .unwrap_or_else(|_| "http://localhost:4317".to_owned()),
-            config: OtelResourceMap::default(),
-            traces: true,
-            logs: false, // Don't send logs to OTLP - logs should always be available locally
-            levels: LoggingLevels::default(),
-        }
+        Self::default_with_env(&RealEnv)
     }
 }
 
@@ -145,7 +166,25 @@ impl From<TracingProtocol> for opentelemetry_otlp::Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct FakeEnv {
+        values: HashMap<&'static str, &'static str>,
+    }
+
+    impl FakeEnv {
+        fn with(mut self, key: &'static str, value: &'static str) -> Self {
+            self.values.insert(key, value);
+            self
+        }
+    }
+
+    impl EnvProvider for FakeEnv {
+        fn get(&self, key: &str) -> Option<String> {
+            self.values.get(key).map(|value| (*value).to_string())
+        }
+    }
 
     #[test]
     fn test_tracing_protocol_default() {
@@ -155,64 +194,45 @@ mod tests {
 
     #[test]
     fn test_env_var_fallback() {
-        // Test that the environment variable fallback works with Default() implementation
-
-        // Clear environment variable first
-        unsafe { env::remove_var("NITRO_TRACING_ENABLED") };
-
-        // Default should be false without env var
-        let config1 = OtelConfig::default();
+        let empty_env = FakeEnv::default();
+        let config1 = OtelConfig::default_with_env(&empty_env);
         assert!(!config1.enabled);
 
-        // Set environment variable
-        unsafe { env::set_var("NITRO_TRACING_ENABLED", "1") };
+        let enabled_env = FakeEnv::default().with("NITRO_TRACING_ENABLED", "1");
+        let config2 = OtelConfig::default_with_env(&enabled_env);
+        assert!(config2.enabled);
 
-        let config2 = OtelConfig::default();
-        assert!(config2.enabled); // Should be true with env var in Default()
-
-        // Test that explicit config construction (simulating config file) overrides env var
         let config3 = OtelConfig {
             enabled: false,
-            ..Default::default()
+            ..config2.clone()
         };
         assert!(!config3.enabled); // Should stay false as explicitly set
 
-        // The apply_env_fallback method shouldn't change the enabled field
-        let config4 = config3.apply_env_fallback();
-        assert!(!config4.enabled); // Should remain false
-
-        // Clean up
-        unsafe { env::remove_var("NITRO_TRACING_ENABLED") };
+        let config4 = config3.apply_env_fallback_with_env(&enabled_env);
+        assert!(!config4.enabled);
     }
 
     #[test]
     fn test_endpoint_env_fallback() {
-        // Test endpoint environment variable fallback
-        unsafe { env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT") };
-
-        let config1 = OtelConfig::default().apply_env_fallback();
+        let empty_env = FakeEnv::default();
+        let config1 =
+            OtelConfig::default_with_env(&empty_env).apply_env_fallback_with_env(&empty_env);
         assert_eq!(config1.endpoint, "http://localhost:4317");
 
-        // Set environment variable
-        unsafe {
-            env::set_var(
-                "OTEL_EXPORTER_OTLP_ENDPOINT",
-                "http://custom-collector:9999",
-            )
-        };
-
-        let config2 = OtelConfig::default().apply_env_fallback();
+        let endpoint_env = FakeEnv::default().with(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "http://custom-collector:9999",
+        );
+        let config2 =
+            OtelConfig::default_with_env(&endpoint_env).apply_env_fallback_with_env(&endpoint_env);
         assert_eq!(config2.endpoint, "http://custom-collector:9999");
 
         // Test that explicit config file value overrides env var
         let config3 = OtelConfig {
             endpoint: "http://explicit-config:8080".to_string(),
-            ..Default::default()
+            ..OtelConfig::default_with_env(&empty_env)
         }
-        .apply_env_fallback();
+        .apply_env_fallback_with_env(&endpoint_env);
         assert_eq!(config3.endpoint, "http://explicit-config:8080");
-
-        // Clean up
-        unsafe { env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT") };
     }
 }

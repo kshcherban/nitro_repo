@@ -46,6 +46,7 @@
           Storage Name
         </div>
         <div :class="['col']">Repository Type</div>
+        <div :class="['col']">Kind</div>
         <div :class="['col']">Auth</div>
         <div :class="['col']">Storage</div>
         <div :class="['col']">Active</div>
@@ -72,7 +73,15 @@
           :title="repository.storage_name">
           {{ repository.storage_name }}
         </div>
-        <div class="col">{{ repository.repository_type }}</div>
+        <div class="col">{{ repositoryTypeLabel(repository) }}</div>
+        <div class="col">
+          <v-chip
+            size="small"
+            :color="kindColor(repository)"
+            variant="tonal">
+            {{ repositoryKindLabel(repository) }}
+          </v-chip>
+        </div>
         <div class="col">{{ repository.auth_enabled ? 'On' : 'Off' }}</div>
         <div class="col">{{ formatBytes(repository.storage_usage_bytes) }}</div>
         <div class="col">{{ repository.active }}</div>
@@ -127,6 +136,23 @@ function sortList(a: RepositoryWithStorageName, b: RepositoryWithStorageName) {
     default:
       return 0;
   }
+}
+
+function repositoryKindLabel(repo: RepositoryWithStorageName) {
+  return (repo.repository_kind ?? "hosted").toLowerCase() === "proxy" ? "Proxy" : "Hosted";
+}
+
+function repositoryTypeLabel(repo: RepositoryWithStorageName) {
+  const kind = repositoryKindLabel(repo).toLowerCase();
+  const type = repo.repository_type.toLowerCase();
+  if (type === "docker" || kind === "proxy") {
+    return `${type} (${kind})`;
+  }
+  return repo.repository_type;
+}
+
+function kindColor(repo: RepositoryWithStorageName) {
+  return repositoryKindLabel(repo) === "Proxy" ? "primary" : "default";
 }
 const filteredTable = computed(() => {
   if (props.repositories == undefined) {

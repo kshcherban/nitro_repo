@@ -71,8 +71,14 @@
             </span>
             <div>
               <div class="text-h6">{{ repo.name || "Unknown" }}</div>
-              <div class="text-caption text-medium-emphasis">
-                {{ (repo.repository_type || "").toUpperCase() }}
+              <div class="text-caption text-medium-emphasis d-flex align-center gap-2">
+                <span>{{ (repo.repository_type || "").toUpperCase() }}</span>
+                <v-chip
+                  size="x-small"
+                  :color="repo.repository_kind?.toLowerCase() === 'proxy' ? 'primary' : 'default'"
+                  variant="tonal">
+                  {{ repositoryKindLabel(repo) }}
+                </v-chip>
               </div>
             </div>
           </v-card-title>
@@ -164,6 +170,9 @@ const repoStore = useRepositoryStore();
 const session = sessionStore();
 const user = computed(() => session.user);
 const isAdmin = computed(() => Boolean(user.value?.admin));
+function repositoryKindLabel(repo: RepositoryWithStorageName) {
+  return (repo.repository_kind ?? "hosted").toLowerCase() === "proxy" ? "Proxy" : "Hosted";
+}
 
 interface PackageSearchResponse {
   repository_id: string;

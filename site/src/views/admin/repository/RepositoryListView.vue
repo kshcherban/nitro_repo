@@ -56,6 +56,14 @@
             item-value="id"
             @click:row="handleRowClick"
             class="elevation-0 repository-table">
+            <template v-slot:item.repository_kind="{ value }">
+              <v-chip
+                size="small"
+                :color="value === 'Proxy' ? 'primary' : 'default'"
+                variant="tonal">
+                {{ value }}
+              </v-chip>
+            </template>
             <template v-slot:item.auth_enabled="{ value }">
               <v-chip
                 :color="value ? 'success' : 'default'"
@@ -145,6 +153,12 @@ const headers: DataTableHeader[] = [
     sortable: true,
   },
   {
+    title: 'Kind',
+    key: 'repository_kind',
+    value: 'repository_kind',
+    sortable: false,
+  },
+  {
     title: 'Auth',
     key: 'auth_enabled',
     value: 'auth_enabled',
@@ -178,6 +192,7 @@ const tableItems = computed(() => {
     name: repo.name,
     storage_name: repo.storage_name,
     repository_type: repo.repository_type,
+    repository_kind: (repo.repository_kind ?? "hosted").toLowerCase() === "proxy" ? "Proxy" : "Hosted",
     auth_enabled: repo.auth_enabled,
     storage_usage_bytes: repo.storage_usage_bytes,
     active: repo.active,

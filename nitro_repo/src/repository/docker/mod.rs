@@ -20,6 +20,7 @@ use nr_core::{
 };
 use nr_macros::DynRepositoryHandler;
 use nr_storage::DynStorage;
+use proxy::DockerProxy;
 
 pub mod auth;
 pub mod configs;
@@ -48,8 +49,7 @@ pub static REPOSITORY_TYPE_ID: &str = "docker";
 #[repository_handler(error = DockerError)]
 pub enum DockerRegistry {
     Hosted(DockerHosted),
-    // Proxy support can be added later
-    // Proxy(DockerProxy),
+    Proxy(DockerProxy),
 }
 
 impl DockerRegistry {
@@ -76,9 +76,9 @@ impl DockerRegistry {
                 let hosted = DockerHosted::load(repo, storage, website).await?;
                 Ok(DockerRegistry::Hosted(hosted))
             }
-            DockerRegistryConfig::Proxy(_proxy_config) => {
-                // Proxy support to be implemented
-                Err(RepositoryFactoryError::InvalidSubType)
+            DockerRegistryConfig::Proxy(proxy_config) => {
+                let proxy = DockerProxy::load(repo, storage, website, proxy_config).await?;
+                Ok(DockerRegistry::Proxy(proxy))
             }
         }
     }
@@ -134,9 +134,16 @@ impl_from_error_for_other!(DBError);
 impl_from_error_for_other!(sqlx::Error);
 impl_from_error_for_other!(serde_json::Error);
 impl_from_error_for_other!(std::io::Error);
+impl_from_error_for_other!(reqwest::Error);
 impl_from_error_for_other!(AuthenticationError);
 impl_from_error_for_other!(RepositoryHandlerError);
 impl_from_error_for_other!(nr_storage::StorageError);
+
+impl From<url::ParseError> for DockerError {
+    fn from(err: url::ParseError) -> Self {
+        DockerError::InvalidManifest(err.to_string())
+    }
+}
 
 impl From<DockerError> for RepositoryHandlerError {
     fn from(err: DockerError) -> Self {

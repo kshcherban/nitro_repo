@@ -34,6 +34,7 @@
           Storage Name
         </div>
         <div :class="['col']">Repository Type</div>
+        <div :class="['col']">Kind</div>
         <div :class="['col']">Active</div>
       </div>
       <div
@@ -57,7 +58,15 @@
           :title="repository.storage_name">
           {{ repository.storage_name }}
         </div>
-        <div class="col">{{ repository.repository_type }}</div>
+        <div class="col">{{ repositoryTypeLabel(repository) }}</div>
+        <div class="col">
+          <v-chip
+            size="small"
+            :color="kindColor(repository)"
+            variant="tonal">
+            {{ repositoryKindLabel(repository) }}
+          </v-chip>
+        </div>
         <div class="col">{{ repository.active }}</div>
       </div>
     </div>
@@ -153,6 +162,23 @@ function sortList(a: RepositoryWithStorageName, b: RepositoryWithStorageName) {
     default:
       return 0;
   }
+}
+
+function repositoryKindLabel(repo: RepositoryWithStorageName) {
+  return (repo.repository_kind ?? "hosted").toString().toLowerCase() === "proxy"
+    ? "Proxy"
+    : "Hosted";
+}
+
+function repositoryTypeLabel(repo: RepositoryWithStorageName) {
+  const kind = repositoryKindLabel(repo).toLowerCase();
+  return repo.repository_type.toLowerCase() === "docker"
+    ? `docker (${kind})`
+    : repo.repository_type;
+}
+
+function kindColor(repo: RepositoryWithStorageName) {
+  return repositoryKindLabel(repo) === "Proxy" ? "primary" : "default";
 }
 
 const filteredTable = computed(() => {

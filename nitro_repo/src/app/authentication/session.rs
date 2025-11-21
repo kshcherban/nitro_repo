@@ -145,7 +145,8 @@ impl Session {
         )
     }
 }
-const TABLE: TableDefinition<&'static str, SessionTuple<'static>> = TableDefinition::new("sessions");
+const TABLE: TableDefinition<&'static str, SessionTuple<'static>> =
+    TableDefinition::new("sessions");
 
 pub struct SessionManager {
     config: SessionManagerConfig,

@@ -1,5 +1,5 @@
-use std::{fmt};
 use ahash::{HashMap, HashMapExt};
+use std::fmt;
 
 use axum::{
     Json,

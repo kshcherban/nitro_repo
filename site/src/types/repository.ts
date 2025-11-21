@@ -6,6 +6,7 @@ import GoConfig from "@/components/nr/repository/types/go/GoConfig.vue";
 import HelmConfig from "@/components/nr/repository/types/helm/HelmConfig.vue";
 import CargoConfig from "@/components/nr/repository/types/cargo/CargoConfig.vue";
 import DebConfig from "@/components/nr/repository/types/deb/DebConfig.vue";
+import DockerConfig from "@/components/nr/repository/types/docker/DockerConfig.vue";
 
 import type { Component } from "vue";
 import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
@@ -108,6 +109,11 @@ export const configTypes: ConfigType[] = [
     name: "helm",
     title: "Helm Repository Config",
     component: HelmConfig,
+  },
+  {
+    name: "docker",
+    title: "Docker Repository Config",
+    component: DockerConfig,
   },
   {
     name: "deb",

@@ -1,5 +1,8 @@
-use std::{io::{Cursor, Read, Write}, sync::Arc};
 use ahash::{HashMap, HashMapExt};
+use std::{
+    io::{Cursor, Read, Write},
+    sync::Arc,
+};
 
 use axum::http::header::CONTENT_TYPE;
 use bytes::Bytes;

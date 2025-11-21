@@ -268,6 +268,9 @@ const repositoryType = computed(() => props.repositoryType?.toLowerCase() ?? "")
 const isDockerRepository = computed(() => repositoryType.value === "docker");
 const isGoRepository = computed(() => repositoryType.value === "go");
 const isDebRepository = computed(() => repositoryType.value === "deb");
+const isDockerProxy = computed(
+  () => isDockerRepository.value && props.repositoryKind?.toLowerCase() === "proxy",
+);
 
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
@@ -400,6 +403,12 @@ const pageLabel = computed(() => {
 });
 
 const emptyRepositoryMessage = computed(() => {
+  if (isDockerRepository.value) {
+    if (isDockerProxy.value) {
+      return "No images cached yet. Pull an image through this proxy to populate the list.";
+    }
+    return "No images yet. Push an image to populate this list.";
+  }
   if (isHostedRepository.value) {
     return "No packages yet. Upload a package to populate this list.";
   }
