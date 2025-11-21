@@ -24,6 +24,7 @@ use tracing::{
     info, info_span, instrument, trace, warn,
 };
 use utils::new_type_arc_type;
+use walkdir::WalkDir;
 
 use crate::*;
 
@@ -215,6 +216,42 @@ impl LocalStorage {
         .map_err(|err| LocalStorageError::IOError(std::io::Error::other(err)))??;
 
         Ok((tokio::fs::File::from_std(std_file), path))
+    }
+
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            storage.type = "local",
+            storage.id = %self.storage_config.storage_id,
+            repository = %repository,
+        )
+    )]
+    pub async fn repository_size_bytes(&self, repository: Uuid) -> Result<u64, LocalStorageError> {
+        let root_path = self.get_path(&repository, &StoragePath::from("/"));
+        if !root_path.exists() {
+            return Ok(0);
+        }
+
+        let path = root_path.clone();
+        spawn_blocking(move || -> Result<u64, LocalStorageError> {
+            let mut total = 0u64;
+            for entry in WalkDir::new(&path).follow_links(false) {
+                let entry = entry.map_err(LocalStorageError::other)?;
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let file_path = entry.path();
+                if is_hidden_file(file_path) {
+                    continue;
+                }
+                let metadata = entry.metadata().map_err(LocalStorageError::other)?;
+                total += metadata.len();
+            }
+            Ok(total)
+        })
+        .await
+        .map_err(LocalStorageError::other)?
     }
 }
 struct CreatePath {
@@ -1007,6 +1044,58 @@ mod tests {
         let seen = receiver_task.await.unwrap();
         assert!(seen.contains(&target));
         assert!(seen.contains(&parent));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repository_size_bytes_counts_regular_files() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let storage = <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(
+            StorageConfig {
+                storage_config: StorageConfigInner::test_config(),
+                type_config: StorageTypeConfig::Local(LocalConfig {
+                    path: temp.path().to_path_buf(),
+                }),
+            },
+        )
+        .await?;
+
+        let repository = Uuid::new_v4();
+        let repo_root = temp.path().join(repository.to_string());
+        let nested = repo_root.join("nested");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(repo_root.join("alpha.bin"), vec![0u8; 10])?;
+        std::fs::write(nested.join("beta.bin"), vec![0u8; 25])?;
+        std::fs::write(repo_root.join(".nr-meta"), vec![0u8; 100])?;
+        std::fs::write(nested.join("beta.bin.nr-meta"), vec![0u8; 100])?;
+
+        let size = storage.repository_size_bytes(repository).await?;
+
+        assert_eq!(
+            size, 35,
+            "only regular files should be counted, meta files are ignored"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repository_size_bytes_missing_repo_returns_zero() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let storage = <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(
+            StorageConfig {
+                storage_config: StorageConfigInner::test_config(),
+                type_config: StorageTypeConfig::Local(LocalConfig {
+                    path: temp.path().to_path_buf(),
+                }),
+            },
+        )
+        .await?;
+
+        let repository = Uuid::new_v4();
+        let size = storage.repository_size_bytes(repository).await?;
+        assert_eq!(size, 0);
 
         Ok(())
     }

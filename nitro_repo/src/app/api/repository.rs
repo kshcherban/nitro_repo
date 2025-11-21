@@ -371,6 +371,26 @@ async fn calculate_repository_storage_usage(
     let storage = repository.get_storage();
     let repository_id = repository.id();
 
+    if let nr_storage::DynStorage::Local(local) = storage.clone() {
+        match local.repository_size_bytes(repository_id).await {
+            Ok(size) => return Ok(size),
+            Err(err) => {
+                warn!(
+                    %repository_id,
+                    %err,
+                    "Fast local storage usage refresh failed; falling back to metadata traversal"
+                );
+            }
+        }
+    }
+
+    calculate_repository_storage_usage_fallback(storage, repository_id).await
+}
+
+async fn calculate_repository_storage_usage_fallback(
+    storage: nr_storage::DynStorage,
+    repository_id: Uuid,
+) -> Result<u64, nr_storage::StorageError> {
     // Start with root directory
     let root_path = StoragePath::from("/");
     let Some(root_entry) = storage.open_file(repository_id, &root_path).await? else {
@@ -378,12 +398,8 @@ async fn calculate_repository_storage_usage(
     };
 
     match root_entry {
-        StorageFile::File { meta, .. } => {
-            // Repository is a single file
-            return Ok(meta.file_type.file_size);
-        }
+        StorageFile::File { meta, .. } => Ok(meta.file_type.file_size),
         StorageFile::Directory { files, .. } => {
-            // Process all files in parallel with a controlled concurrency limit
             use tokio::task::JoinSet;
             const MAX_CONCURRENT_TASKS: usize = 20;
 
@@ -391,40 +407,30 @@ async fn calculate_repository_storage_usage(
             let mut tasks = JoinSet::new();
             let mut queue: VecDeque<String> = VecDeque::new();
 
-            // Add immediate subdirectories to queue
             for entry in &files {
-                match entry.file_type() {
-                    FileType::Directory(_) => {
-                        let mut path = String::from("/");
-                        path.push_str(entry.name());
-                        path.push('/');
-                        queue.push_back(path);
-                    }
-                    FileType::File(_) => {
-                        // Will be processed below
-                    }
+                if let FileType::Directory(_) = entry.file_type() {
+                    let mut path = String::from("/");
+                    path.push_str(entry.name());
+                    path.push('/');
+                    queue.push_back(path);
                 }
             }
 
-            // Process all immediate files in parallel
             for entry in &files {
                 if let FileType::File(file_meta) = entry.file_type() {
                     if tasks.len() < MAX_CONCURRENT_TASKS {
                         let file_size = file_meta.file_size;
                         tasks.spawn(async move { file_size });
                     } else {
-                        // If we hit the limit, wait for some tasks to complete
                         while let Some(result) = tasks.join_next().await {
                             total += result.unwrap_or(0);
                         }
-                        // Now add this file
                         let file_size = file_meta.file_size;
                         tasks.spawn(async move { file_size });
                     }
                 }
             }
 
-            // Process subdirectories concurrently
             while let Some(path) = queue.pop_front() {
                 let storage_path = StoragePath::from(path.as_str());
                 if let Ok(Some(entry)) = storage.open_file(repository_id, &storage_path).await {
@@ -436,7 +442,6 @@ async fn calculate_repository_storage_usage(
                                         let file_size = file_meta.file_size;
                                         tasks.spawn(async move { file_size });
                                     } else {
-                                        // Wait for tasks to complete
                                         while let Some(result) = tasks.join_next().await {
                                             total += result.unwrap_or(0);
                                         }
@@ -456,7 +461,6 @@ async fn calculate_repository_storage_usage(
                 }
             }
 
-            // Wait for all remaining tasks to complete
             while let Some(result) = tasks.join_next().await {
                 total += result.unwrap_or(0);
             }

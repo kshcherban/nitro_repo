@@ -202,7 +202,11 @@ fn parse_bearer_challenge(header: &str) -> Option<BearerChallenge> {
             _ => {}
         }
     }
-    realm.map(|realm| BearerChallenge { realm, service, scope })
+    realm.map(|realm| BearerChallenge {
+        realm,
+        service,
+        scope,
+    })
 }
 
 async fn read_storage_file_bytes(file: StorageFile) -> Result<Vec<u8>, DockerError> {
