@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use std::{
-    borrow::Cow, env, num::NonZeroUsize, ops::Deref, path::PathBuf, str::FromStr, sync::Arc,
+    borrow::Cow, env, num::NonZeroUsize, ops::Deref, path::PathBuf, pin::Pin, str::FromStr,
+    sync::Arc,
 };
 
 use aws_config::BehaviorVersion;
@@ -22,7 +23,7 @@ use mime::Mime;
 use nr_core::storage::{FileHashes, SerdeMime, StoragePath};
 use regions::{CustomRegion, S3StorageRegion};
 use sha2::{Digest, Sha256};
-use tokio::{fs, sync::Mutex, task};
+use tokio::{fs, io::BufReader, sync::Mutex, task};
 use url::Url;
 
 pub mod regions;
@@ -506,7 +507,14 @@ impl S3StorageInner {
         }
         if let Some(cache) = &self.cache {
             let key = self.cache_key(repository, location);
+            let data_len = data.len();
             cache.put(&key, data, content_type.as_deref()).await?;
+            debug!(
+                repository = %repository,
+                path = %location,
+                bytes = data_len,
+                "Cached S3 object locally"
+            );
         }
         Ok(())
     }
@@ -823,6 +831,33 @@ async fn collect_body(stream: ByteStream) -> Result<Bytes, S3StorageError> {
         .map_err(|err| S3StorageError::AwsSdkError(err.to_string()))?;
     Ok(aggregated.into_bytes())
 }
+
+const MAX_BUFFERED_OBJECT_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum BodyRetrievalStrategy {
+    BufferAndCache,
+    StreamWithoutCache,
+}
+
+impl BodyRetrievalStrategy {
+    fn from_content_length(length: Option<u64>, cache_enabled: bool) -> Self {
+        if cache_enabled && length.is_some_and(|len| len <= MAX_BUFFERED_OBJECT_BYTES) {
+            return BodyRetrievalStrategy::BufferAndCache;
+        }
+        BodyRetrievalStrategy::StreamWithoutCache
+    }
+
+    fn should_cache(self) -> bool {
+        matches!(self, BodyRetrievalStrategy::BufferAndCache)
+    }
+}
+
+fn byte_stream_to_reader(stream: ByteStream) -> crate::StorageFileReader {
+    let reader = BufReader::new(stream.into_async_read());
+    let reader: Pin<Box<dyn tokio::io::AsyncRead + Send>> = Box::pin(reader);
+    crate::StorageFileReader::AsyncReader(reader)
+}
 #[derive(Debug, Clone)]
 pub struct S3Storage(Arc<S3StorageInner>);
 new_type_arc_type!(S3Storage(S3StorageInner));
@@ -980,9 +1015,7 @@ impl Storage for S3Storage {
         let meta_path = self.s3_path(&repository, &meta_location);
         let body = serde_json::to_vec(&value)
             .map(ByteStream::from)
-            .map_err(|err| {
-                S3StorageError::IOError(std::io::Error::other(err))
-            })?;
+            .map_err(|err| S3StorageError::IOError(std::io::Error::other(err)))?;
 
         self.aws_client()
             .put_object()
@@ -1197,9 +1230,10 @@ impl Storage for S3Storage {
         if content_type
             .as_deref()
             .is_some_and(|ct| ct == "application/x-directory")
-            && let Some(meta) = self.get_directory_meta(&path).await? {
-                return Ok(Some(meta));
-            }
+            && let Some(meta) = self.get_directory_meta(&path).await?
+        {
+            return Ok(Some(meta));
+        }
 
         let file_size: u64 = head
             .content_length()
@@ -1227,7 +1261,10 @@ impl Storage for S3Storage {
         };
         Ok(Some(meta))
     }
-    #[instrument(name = "Storage::open_file", fields(storage_type = "s3"))]
+    #[instrument(
+        name = "Storage::open_file",
+        fields(storage_type = "s3", repository = %repository, location = %location)
+    )]
     async fn open_file(
         &self,
         repository: uuid::Uuid,
@@ -1278,11 +1315,30 @@ impl Storage for S3Storage {
         {
             return self.index_directory(&path).await;
         }
-        let response_length = response
+        let response_length_opt = response
             .content_length()
-            .unwrap_or_default()
-            .try_into()
-            .unwrap_or_default();
+            .and_then(|len| len.try_into().ok());
+        let response_length = response_length_opt.unwrap_or_default();
+        let cache_allowed = self.should_cache(location);
+        let strategy =
+            BodyRetrievalStrategy::from_content_length(response_length_opt, cache_allowed);
+        debug!(
+            repository = %repository,
+            path = %path,
+            object_size = response_length,
+            streaming = matches!(strategy, BodyRetrievalStrategy::StreamWithoutCache),
+            cache_allowed,
+            "Fetched object from S3"
+        );
+        if cache_allowed && !strategy.should_cache() {
+            debug!(
+                repository = %repository,
+                path = %path,
+                object_size = response_length,
+                threshold = MAX_BUFFERED_OBJECT_BYTES,
+                "Skipping cache write for oversized S3 object"
+            );
+        }
 
         let meta = StorageFileMeta::<FileFileType> {
             name: location.to_string(),
@@ -1299,18 +1355,23 @@ impl Storage for S3Storage {
             modified: Local::now().fixed_offset(),
             created: Local::now().fixed_offset(),
         };
-        let body = collect_body(response.body).await?;
-        self.cache_put(
-            &repository,
-            location,
-            body.clone(),
-            response_content_type.clone(),
-        )
-        .await?;
-        let result = StorageFile::File {
-            meta,
-            content: crate::StorageFileReader::Bytes(FileContentBytes::Bytes(body)),
+        let content = match strategy {
+            BodyRetrievalStrategy::BufferAndCache => {
+                let body = collect_body(response.body).await?;
+                if strategy.should_cache() {
+                    self.cache_put(
+                        &repository,
+                        location,
+                        body.clone(),
+                        response_content_type.clone(),
+                    )
+                    .await?;
+                }
+                crate::StorageFileReader::Bytes(FileContentBytes::Bytes(body))
+            }
+            BodyRetrievalStrategy::StreamWithoutCache => byte_stream_to_reader(response.body),
         };
+        let result = StorageFile::File { meta, content };
 
         Ok(Some(result))
     }
@@ -1512,7 +1573,10 @@ impl StorageFactory for S3StorageFactory {
 mod tests {
     use tracing::warn;
 
-    use super::{CustomRegion, S3CacheConfig, S3Config, S3Credentials, S3StorageRegion};
+    use super::{
+        BodyRetrievalStrategy, CustomRegion, MAX_BUFFERED_OBJECT_BYTES, S3CacheConfig, S3Config,
+        S3Credentials, S3StorageRegion,
+    };
     use crate::{
         FileType, StaticStorageFactory, Storage, s3::S3StorageFactory,
         testing::storage::TestingStorage,
@@ -1587,6 +1651,32 @@ mod tests {
             .expect("custom region should resolve");
         assert_eq!(resolved.as_ref(), "minio");
         assert!(config.custom_endpoint().is_some());
+    }
+
+    #[test]
+    fn body_strategy_caches_small_objects() {
+        let result =
+            BodyRetrievalStrategy::from_content_length(Some(MAX_BUFFERED_OBJECT_BYTES - 1), true);
+        assert_eq!(result, BodyRetrievalStrategy::BufferAndCache);
+    }
+
+    #[test]
+    fn body_strategy_streams_large_objects() {
+        let result =
+            BodyRetrievalStrategy::from_content_length(Some(MAX_BUFFERED_OBJECT_BYTES + 1), true);
+        assert_eq!(result, BodyRetrievalStrategy::StreamWithoutCache);
+    }
+
+    #[test]
+    fn body_strategy_streams_when_cache_disabled() {
+        let result = BodyRetrievalStrategy::from_content_length(Some(1), false);
+        assert_eq!(result, BodyRetrievalStrategy::StreamWithoutCache);
+    }
+
+    #[test]
+    fn body_strategy_streams_when_size_unknown() {
+        let result = BodyRetrievalStrategy::from_content_length(None, true);
+        assert_eq!(result, BodyRetrievalStrategy::StreamWithoutCache);
     }
 
     #[tokio::test]
