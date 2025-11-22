@@ -2,14 +2,14 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use nr_core::{
     database::entities::storage::{DBStorage, DBStorageNoConfig, NewDBStorage, StorageDBType},
     storage::StorageName,
     user::permissions::HasPermissions,
 };
-use nr_storage::{StorageConfig, StorageTypeConfig, local::LocalConfig};
+use nr_storage::{StorageConfig, StorageConfigInner, StorageTypeConfig, local::LocalConfig};
 use serde::{Deserialize, Serialize};
 use tracing::{error, instrument};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -27,7 +27,7 @@ use crate::{
 };
 #[derive(OpenApi)]
 #[openapi(
-    paths(list_storages, new_storage, get_storage),
+    paths(list_storages, new_storage, get_storage, update_storage),
     components(schemas(DBStorage, NewStorageRequest, StorageTypeConfig, LocalConfig)),
     nest(
         (path = "/local", api = local::LocalStorageAPI, tags=["local", "storage"]),
@@ -44,6 +44,7 @@ pub fn storage_routes() -> axum::Router<crate::app::api::storage::NitroRepo> {
         .route("/list", get(list_storages))
         .route("/new/{storage_type}", post(new_storage))
         .route("/{id}", get(get_storage))
+        .route("/{id}", put(update_storage))
         .nest("/local", local::local_storage_routes())
         .nest("/s3", s3::s3_storage_api())
 }
@@ -89,6 +90,11 @@ pub async fn list_storages(
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct NewStorageRequest {
     pub name: StorageName,
+    pub config: StorageTypeConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct UpdateStorageRequest {
     pub config: StorageTypeConfig,
 }
 
@@ -156,6 +162,79 @@ pub async fn new_storage(
     }
     Ok(ResponseBuilder::created().json(&storage))
 }
+
+#[utoipa::path(
+    put,
+    path = "/{id}",
+    request_body = UpdateStorageRequest,
+    responses(
+        (status = 200, description = "Storage Successfully Updated", body = DBStorage),
+        (status = 400, description = "Invalid Storage Config"),
+        (status = 404, description = "Storage not found"),
+    ),
+    params(
+        ("id" = Uuid, Path, description = "Storage ID"),
+    )
+)]
+#[instrument]
+pub async fn update_storage(
+    auth: Authentication,
+    State(site): State<NitroRepo>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<UpdateStorageRequest>,
+) -> Result<Response, InternalError> {
+    if !auth.is_admin_or_system_manager() {
+        return Ok(MissingPermission::StorageManager.into_response());
+    }
+
+    let Some(existing) = DBStorage::get_by_id(id, &site.database).await? else {
+        return Ok(ResponseBuilder::not_found().body("Storage not found"));
+    };
+
+    let Some(factory) = site.get_storage_factory(&existing.storage_type) else {
+        return Ok(InvalidStorageType(existing.storage_type).into_response());
+    };
+
+    // Validate provided config matches storage type
+    if !existing
+        .storage_type
+        .eq_ignore_ascii_case(request.config.type_name())
+    {
+        return Ok(InvalidStorageType(existing.storage_type).into_response());
+    }
+
+    if let Err(error) = factory.test_storage_config(request.config.clone()).await {
+        error!(%error, storage = %id, "Failed to test updated storage config");
+        return Ok(InvalidStorageConfig(error).into_response());
+    }
+
+    // Persist new config
+    let config_json = serde_json::to_value(request.config.clone())?;
+    let updated =
+        DBStorage::update_config(id, serde_json::json!(config_json).into(), &site.database).await?;
+    let Some(updated) = updated else {
+        return Ok(ResponseBuilder::not_found().body("Storage not found"));
+    };
+
+    // Rebuild runtime storage and replace
+    let storage_config = StorageConfig {
+        storage_config: StorageConfigInner {
+            storage_name: updated.name.clone().into(),
+            storage_id: updated.id,
+            storage_type: updated.storage_type.clone(),
+            created_at: updated.created_at,
+        },
+        type_config: request.config.clone(),
+    };
+    let new_storage = factory
+        .create_storage(storage_config)
+        .await
+        .map_err(InternalError::from)?;
+    site.replace_storage(updated.id, new_storage);
+
+    Ok(ResponseBuilder::ok().json(&updated))
+}
+
 #[utoipa::path(
     post,
     path = "/{id}",

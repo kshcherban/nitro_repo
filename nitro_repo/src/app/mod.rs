@@ -819,6 +819,10 @@ impl NitroRepo {
         let mut storages = self.storages.write();
         storages.insert(id, storage);
     }
+    pub fn replace_storage(&self, id: Uuid, storage: DynStorage) {
+        let mut storages = self.storages.write();
+        storages.insert(id, storage);
+    }
     pub fn add_repository(&self, id: Uuid, repository: DynRepository) {
         let mut repositories = self.repositories.write();
         repositories.insert(id, repository);

@@ -184,8 +184,11 @@ impl IntoResponse for DockerError {
         use http::StatusCode;
 
         match self {
-            DockerError::ManifestNotFound(ref msg) | DockerError::BlobNotFound(ref msg) => {
+            DockerError::ManifestNotFound(ref msg) => {
                 docker_error_response(StatusCode::NOT_FOUND, "MANIFEST_UNKNOWN", msg)
+            }
+            DockerError::BlobNotFound(ref msg) => {
+                docker_error_response(StatusCode::NOT_FOUND, "BLOB_UNKNOWN", msg)
             }
             DockerError::InvalidManifest(ref msg) | DockerError::InvalidTag(ref msg) => {
                 docker_error_response(StatusCode::BAD_REQUEST, "MANIFEST_INVALID", msg)

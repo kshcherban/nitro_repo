@@ -137,4 +137,26 @@ impl DBStorage {
             .await?;
         Ok(result == 0)
     }
+
+    /// Update the config JSON for a storage and return the updated row.
+    pub async fn update_config(
+        id: Uuid,
+        config: Json<Value>,
+        database: &sqlx::PgPool,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let updated = sqlx::query_as::<_, DBStorage>(
+            r#"
+            UPDATE storages
+            SET config = $2, updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            "#,
+        )
+        .bind(id)
+        .bind(config)
+        .fetch_optional(database)
+        .await?;
+
+        Ok(updated)
+    }
 }

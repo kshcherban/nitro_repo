@@ -540,18 +540,27 @@ impl S3StorageInner {
     ) -> Result<String, S3StorageError> {
         let mut path = repository.to_string();
         let mut conflicting_path = StoragePath::default();
-        for part in location.clone().into_iter() {
+        let mut iter = location.clone().into_iter().peekable();
+
+        while let Some(part) = iter.next() {
             path.push('/');
             path.push_str(part.as_ref());
             conflicting_path.push_mut(part.as_ref());
-            if !self.is_directory(&path).await? {
+
+            let is_last = iter.peek().is_none();
+            let exists_as_object = self.does_path_exist(&path).await?;
+
+            if exists_as_object && !is_last {
+                // A parent segment is a concrete object, so we cannot place a child under it.
                 return Err(PathCollisionError {
                     path: location.clone(),
                     conflicts_with: conflicting_path,
                 }
                 .into());
             }
+            // If this is the last segment, overwriting an existing object is allowed.
         }
+
         Ok(path)
     }
     #[instrument]
@@ -1496,6 +1505,56 @@ impl Storage for S3Storage {
         Ok(Some(VecDirectoryListStream::new(entries, dir_meta)))
     }
 }
+
+impl S3Storage {
+    /// Calculate total object size for a repository using paginated ListObjectsV2 calls.
+    /// Skips internal Nitro Repo metadata objects.
+    pub async fn repository_size_bytes(&self, repository: Uuid) -> Result<u64, S3StorageError> {
+        let prefix = format!("{repository}/");
+        let mut continuation: Option<String> = None;
+        let mut total: u64 = 0;
+
+        loop {
+            let mut request = self
+                .aws_client()
+                .list_objects_v2()
+                .bucket(self.bucket())
+                .prefix(prefix.clone());
+
+            if let Some(token) = &continuation {
+                request = request.continuation_token(token);
+            }
+
+            let response = request
+                .send()
+                .await
+                .map_err(S3StorageError::from_sdk_error)?;
+
+            for obj in response.contents() {
+                if let Some(key) = obj.key() {
+                    if S3StorageInner::is_hidden_file(key) {
+                        continue;
+                    }
+                    let size = obj.size().unwrap_or_default().max(0) as u64;
+                    total = total.saturating_add(size);
+                }
+            }
+
+            if response.is_truncated().unwrap_or(false) {
+                continuation = response
+                    .next_continuation_token()
+                    .map(|token| token.to_string());
+                if continuation.is_some() {
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        Ok(total)
+    }
+}
 #[derive(Debug, Default)]
 pub struct S3StorageFactory;
 impl StaticStorageFactory for S3StorageFactory {
@@ -1711,6 +1770,34 @@ mod tests {
             file_meta.mime_type.as_ref().map(|mime| mime.as_ref()),
             Some("application/octet-stream")
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repository_size_bytes_totals_object_sizes() -> anyhow::Result<()> {
+        let Some(config) = crate::testing::start_storage_test("s3")? else {
+            warn!("S3 Storage Test Skipped");
+            return Ok(());
+        };
+
+        let storage =
+            <S3StorageFactory as StaticStorageFactory>::create_storage_from_config(config).await?;
+
+        let repository = uuid::Uuid::new_v4();
+        let small_path = StoragePath::from("cache/a.txt");
+        let large_path = StoragePath::from("layers/b.bin");
+
+        storage
+            .save_file(repository, b"hello".to_vec().into(), &small_path)
+            .await?;
+        storage
+            .save_file(repository, vec![0u8; 2048].into(), &large_path)
+            .await?;
+
+        let size = storage.repository_size_bytes(repository).await?;
+
+        assert_eq!(size, 5 + 2048);
 
         Ok(())
     }

@@ -384,6 +384,19 @@ async fn calculate_repository_storage_usage(
         }
     }
 
+    if let nr_storage::DynStorage::S3(s3) = storage.clone() {
+        match s3.repository_size_bytes(repository_id).await {
+            Ok(size) => return Ok(size),
+            Err(err) => {
+                warn!(
+                    %repository_id,
+                    %err,
+                    "Fast S3 storage usage refresh failed; falling back to metadata traversal"
+                );
+            }
+        }
+    }
+
     calculate_repository_storage_usage_fallback(storage, repository_id).await
 }
 

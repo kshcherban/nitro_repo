@@ -11,7 +11,7 @@
       <div>{{ errorBanner.message }}</div>
     </v-alert>
 
-    <v-card
+<v-card
       data-testid="repository-create-card"
       :class="{ 'go-repository-form': selectedRepositoryType === 'go' }">
       <v-card-title class="d-flex align-center justify-space-between">
@@ -66,6 +66,64 @@
               v-model="requiredConfigValues[config.configName]" />
           </div>
 
+          <div
+            v-if="isS3Storage && selectedRepositoryType.toLowerCase() === 'docker'"
+            class="mt-6">
+            <h3 class="text-subtitle-1 mb-2">Local cache (S3-backed)</h3>
+            <p class="text-body-2 text-medium-emphasis mb-3">
+              Configure the S3 disk cache used to store pulled Docker layers for faster re-use.
+              Settings apply to the selected storage.
+            </p>
+            <v-row dense>
+              <v-col cols="12" md="6">
+                <SwitchInput
+                  id="s3-cache-enabled"
+                  v-model="s3Cache.enabled">
+                  Enable cache
+                </SwitchInput>
+              </v-col>
+              <v-col cols="12" md="6">
+                <TextInput
+                  id="s3-cache-path"
+                  v-model="s3Cache.path"
+                  :disabled="!s3Cache.enabled"
+                  placeholder="/var/lib/nitro-cache/s3">
+                  Cache directory
+                </TextInput>
+              </v-col>
+              <v-col cols="12" md="6">
+                <TextInput
+                  id="s3-cache-size"
+                  v-model="s3Cache.maxBytesValue"
+                  type="text"
+                  :disabled="!s3Cache.enabled">
+                  Max size
+                </TextInput>
+              </v-col>
+              <v-col cols="12" md="6">
+                <DropDown
+                  id="s3-cache-unit"
+                  v-model="s3Cache.maxBytesUnit"
+                  :disabled="!s3Cache.enabled"
+                  :options="[
+                    { value: 'MB', label: 'MB' },
+                    { value: 'GB', label: 'GB' },
+                  ]">
+                  Unit
+                </DropDown>
+              </v-col>
+              <v-col cols="12" md="6">
+                <TextInput
+                  id="s3-cache-max-entries"
+                  v-model="s3Cache.maxEntries"
+                  type="text"
+                  :disabled="!s3Cache.enabled">
+                  Max cached entries
+                </TextInput>
+              </v-col>
+            </v-row>
+          </div>
+
           <div class="d-flex justify-end mt-6">
             <SubmitButton
               :block="false"
@@ -87,6 +145,7 @@
 import FallBackEditor from "@/components/admin/repository/configs/FallBackEditor.vue";
 import DropDown from "@/components/form/dropdown/DropDown.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
+import SwitchInput from "@/components/form/SwitchInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import type { StorageItem } from "@/components/nr/storage/storageTypes";
 import http from "@/http";
@@ -104,6 +163,10 @@ const repoTypesStore = useRepositoryStore();
 const selectedRepositoryType = ref("");
 const repositoryTypes = ref<RepositoryTypeDescription[]>([]);
 const storages = ref<StorageItem[]>([]);
+const selectedStorage = computed(() => storages.value.find((s) => s.id === input.value.storage));
+const isS3Storage = computed(
+  () => selectedStorage.value?.storage_type.toLowerCase() === "s3",
+);
 const storageItemOptions = computed(() => {
   return storages.value.map((storage) => {
     return {
@@ -179,6 +242,50 @@ const requiredConfigComponents = computed(() => {
   });
 });
 
+// S3 cache editor state
+const s3Cache = ref({
+  enabled: false,
+  path: "",
+  maxBytesValue: "512",
+  maxBytesUnit: "MB" as "MB" | "GB",
+  maxEntries: "2048",
+});
+
+function loadS3CacheFromStorage(storage?: StorageItem) {
+  if (!storage || storage.storage_type.toLowerCase() !== "s3") {
+    s3Cache.value = {
+      enabled: false,
+      path: "",
+      maxBytesValue: "512",
+      maxBytesUnit: "MB",
+      maxEntries: "2048",
+    };
+    return;
+  }
+  const settings = (storage.config as any)?.settings;
+  const cache = settings?.cache ?? {};
+  const bytes: number = typeof cache.max_bytes === "number" ? cache.max_bytes : 512 * 1024 * 1024;
+  let maxBytesNumber = bytes / (1024 * 1024);
+  let maxBytesUnit: "MB" | "GB" = "MB";
+  if (maxBytesNumber >= 1024) {
+    maxBytesNumber = parseFloat((maxBytesNumber / 1024).toFixed(2));
+    maxBytesUnit = "GB";
+  }
+  s3Cache.value = {
+    enabled: !!cache.enabled,
+    path: cache.path ?? "",
+    maxBytesValue: String(maxBytesNumber),
+    maxBytesUnit,
+    maxEntries: String(cache.max_entries ?? 2048),
+  };
+}
+
+watch(
+  () => selectedStorage.value,
+  (storage) => loadS3CacheFromStorage(storage),
+  { immediate: true },
+);
+
 async function load() {
   await repoTypesStore.getStorages(true).then((response) => {
     storages.value = response;
@@ -192,6 +299,9 @@ async function load() {
 void load();
 
 async function createRepository() {
+  if (!(await maybeUpdateStorageCache())) {
+    return;
+  }
   const request = {
     name: input.value.name,
     storage: input.value.storage,
@@ -218,6 +328,72 @@ async function createRepository() {
     alerts.error(resolved.title, resolved.message);
   } finally {
     isSubmitting.value = false;
+  }
+}
+
+function cacheSizeBytes(): number {
+  const multiplier = s3Cache.value.maxBytesUnit === "GB" ? 1024 * 1024 * 1024 : 1024 * 1024;
+  const number = parseFloat(s3Cache.value.maxBytesValue || "0");
+  if (!Number.isFinite(number) || number <= 0) {
+    return 0;
+  }
+  return Math.max(1, Math.round(number * multiplier));
+}
+
+function cachesEqual(a: any, b: any): boolean {
+  return (
+    !!a === !!b &&
+    a.enabled === b.enabled &&
+    (a.path ?? "") === (b.path ?? "") &&
+    Number(a.max_bytes ?? 0) === Number(b.max_bytes ?? 0) &&
+    Number(a.max_entries ?? 0) === Number(b.max_entries ?? 0)
+  );
+}
+
+async function maybeUpdateStorageCache(): Promise<boolean> {
+  const storage = selectedStorage.value;
+  if (!storage || storage.storage_type.toLowerCase() !== "s3") {
+    return true;
+  }
+  const settings = (storage.config as any)?.settings ?? {};
+  const currentCache = settings.cache ?? {
+    enabled: false,
+    path: "",
+    max_bytes: 512 * 1024 * 1024,
+    max_entries: 2048,
+  };
+  const updatedCache = {
+    enabled: s3Cache.value.enabled,
+    path: s3Cache.value.path || "",
+    max_bytes: cacheSizeBytes(),
+    max_entries: parseInt(s3Cache.value.maxEntries || "0", 10) || 2048,
+  };
+  if (updatedCache.max_bytes === 0) {
+    alerts.error("Invalid cache size", "Enter a positive cache size for the S3 cache.");
+    return false;
+  }
+  if (cachesEqual(currentCache, updatedCache)) {
+    return true;
+  }
+  const newConfig = {
+    type: "S3",
+    settings: {
+      ...settings,
+      cache: updatedCache,
+    },
+  };
+  try {
+    await http.put(`/api/storage/${storage.id}`, { config: newConfig });
+    // keep local copy in sync for subsequent submits without reload
+    (storage as any).config = newConfig;
+    return true;
+  } catch (error) {
+    console.error("Failed to update storage cache", error);
+    alerts.error(
+      "Failed to update cache settings",
+      "Unable to save S3 cache settings for the selected storage.",
+    );
+    return false;
   }
 }
 

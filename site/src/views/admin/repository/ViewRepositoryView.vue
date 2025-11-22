@@ -11,6 +11,7 @@
         class="repository-view__tabs"
         data-testid="repository-tabs">
         <v-tab value="main">Main</v-tab>
+        <v-tab value="storage">Storage</v-tab>
         <v-tab
           v-if="showPackagesTab"
           value="packages">
@@ -28,9 +29,16 @@
 
       <v-window
         v-model="activeTab"
-        class="py-4">
+          class="py-4">
         <v-window-item value="main">
           <BasicRepositoryInfo :repository="repository" />
+        </v-window-item>
+
+        <v-window-item value="storage">
+          <RepositoryStorageCard
+            v-if="repository"
+            :storage-id="repository.storage_id"
+            :storage-name="repository.storage_name" />
         </v-window-item>
 
         <v-window-item
@@ -59,6 +67,7 @@
 <script setup lang="ts">
 import BasicRepositoryInfo from "@/components/admin/repository/BasicRepositoryInfo.vue";
 import FallBackEditor from "@/components/admin/repository/configs/FallBackEditor.vue";
+import RepositoryStorageCard from "@/components/admin/repository/RepositoryStorageCard.vue";
 import RepositoryPackagesTab from "@/components/admin/repository/RepositoryPackagesTab.vue";
 import http from "@/http";
 import router from "@/router";
@@ -126,6 +135,7 @@ const configComponents = computed(() => {
 
 const availableTabs = computed(() => {
   const tabs = ["main"];
+  tabs.push("storage");
   if (showPackagesTab.value) {
     tabs.push("packages");
   }
@@ -155,9 +165,22 @@ async function getRepository() {
     .then((response) => {
       repository.value = response.data;
     });
-  await http.get(`/api/repository/${repositoryId}/configs`).then((response) => {
+  try {
+    const response = await http.get(`/api/repository/${repositoryId}/configs`);
     configTypes.value = response.data;
-  });
+  } catch (error) {
+    console.error("Failed to load repository config list", error);
+    let repoType = repositoryTypesStore.repositoryTypes.find(
+      (type) => type.type_name === repository.value?.repository_type,
+    );
+    if (!repoType) {
+      const types = await repositoryTypesStore.getRepositoryTypes();
+      repoType = types.find((type) => type.type_name === repository.value?.repository_type);
+    }
+    if (repoType) {
+      configTypes.value = [...repoType.required_configs];
+    }
+  }
   await loadRepositoryKind();
 }
 

@@ -3,12 +3,19 @@
 //! The proxy repository is read-only and forwards GET/HEAD requests to an
 //! upstream Docker registry, caching responses locally.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+    time::Duration,
 };
 
 use axum::body::Body;
+use dashmap::DashMap;
+use futures::StreamExt;
 use http::{
     HeaderMap, StatusCode,
     header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE},
@@ -17,17 +24,22 @@ use nr_core::{
     repository::Visibility, repository::config::RepositoryConfigType, storage::StoragePath,
     utils::base64_utils,
 };
-use nr_storage::{DynStorage, FileType, Storage, StorageFile};
+use nr_storage::{DynStorage, FileContent, FileType, Storage, StorageFileReader};
 use parking_lot::RwLock;
 use reqwest::{Client, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use tracing::instrument;
+use std::sync::OnceLock;
+use tempfile::Builder;
+use tokio::io::{AsyncRead, AsyncWriteExt};
+use tokio::time::sleep;
+use tracing::{instrument, warn};
 use url::Url;
 use uuid::Uuid;
 
 use super::{DockerError, types::MediaType};
+use crate::repository::docker::DockerRegistryConfigType;
 use crate::{
     app::NitroRepo,
     repository::{
@@ -72,7 +84,10 @@ pub struct ProxyUpstream {
 impl ProxyUpstream {
     pub(crate) fn new(config: &DockerProxyConfig) -> Result<Self, DockerError> {
         let base = Url::parse(&config.upstream_url)?;
-        let client = Client::new();
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
+            .build()?;
         Ok(Self {
             base,
             client,
@@ -97,16 +112,18 @@ impl ProxyUpstream {
         accept: Option<&str>,
         bearer: Option<String>,
     ) -> Result<Response, DockerError> {
+        const MAX_ATTEMPTS: usize = 3;
+
         let mut current_bearer = bearer;
         for _ in 0..2 {
-            let mut request = self.client.get(url.clone());
-            if let Some(value) = accept {
-                request = request.header(ACCEPT, value);
-            }
-            if let Some(token) = current_bearer.as_deref() {
-                request = request.header(http::header::AUTHORIZATION, format!("Bearer {token}"));
-            }
-            let response = request.send().await?;
+            let response = Self::send_with_retries(
+                &self.client,
+                url.clone(),
+                accept,
+                current_bearer.as_deref(),
+                MAX_ATTEMPTS,
+            )
+            .await?;
 
             if response.status() != StatusCode::UNAUTHORIZED {
                 return Ok(response);
@@ -134,14 +151,66 @@ impl ProxyUpstream {
         }
 
         // last attempt if loop exits unexpectedly
-        let mut request = self.client.get(url);
-        if let Some(value) = accept {
-            request = request.header(ACCEPT, value);
+        Self::send_with_retries(
+            &self.client,
+            url,
+            accept,
+            current_bearer.as_deref(),
+            MAX_ATTEMPTS,
+        )
+        .await
+    }
+
+    async fn send_with_retries(
+        client: &Client,
+        url: Url,
+        accept: Option<&str>,
+        bearer: Option<&str>,
+        max_attempts: usize,
+    ) -> Result<Response, DockerError> {
+        for attempt in 0..max_attempts {
+            let mut request = client.get(url.clone());
+            if let Some(value) = accept {
+                request = request.header(ACCEPT, value);
+            }
+            if let Some(token) = bearer {
+                request = request.header(http::header::AUTHORIZATION, format!("Bearer {token}"));
+            }
+
+            match request.send().await {
+                Ok(resp) => {
+                    if resp.status().is_server_error() && attempt + 1 < max_attempts {
+                        let backoff = 200 * (attempt as u64 + 1);
+                        sleep(Duration::from_millis(backoff)).await;
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+                Err(err)
+                    if err.is_timeout() || err.is_connect() || err.is_body() || err.is_decode() =>
+                {
+                    if attempt + 1 < max_attempts {
+                        let backoff = 200 * (attempt as u64 + 1);
+                        sleep(Duration::from_millis(backoff)).await;
+                        continue;
+                    }
+                    return Err(DockerError::InvalidManifest(format!(
+                        "Upstream fetch error after {} attempts: {}",
+                        max_attempts, err
+                    )));
+                }
+                Err(err) => {
+                    return Err(DockerError::InvalidManifest(format!(
+                        "Upstream fetch error: {}",
+                        err
+                    )));
+                }
+            }
         }
-        if let Some(token) = current_bearer.as_deref() {
-            request = request.header(http::header::AUTHORIZATION, format!("Bearer {token}"));
-        }
-        Ok(request.send().await?)
+
+        Err(DockerError::InvalidManifest(
+            "Exhausted upstream retries".to_string(),
+        ))
     }
 
     async fn obtain_token(&self, challenge: &BearerChallenge) -> Result<String, DockerError> {
@@ -209,19 +278,6 @@ fn parse_bearer_challenge(header: &str) -> Option<BearerChallenge> {
     })
 }
 
-async fn read_storage_file_bytes(file: StorageFile) -> Result<Vec<u8>, DockerError> {
-    match file {
-        StorageFile::File { mut content, .. } => {
-            let mut buffer = Vec::new();
-            tokio::io::AsyncReadExt::read_to_end(&mut content, &mut buffer).await?;
-            Ok(buffer)
-        }
-        StorageFile::Directory { .. } => Err(DockerError::InvalidManifest(
-            "Expected file, got directory".to_string(),
-        )),
-    }
-}
-
 fn manifest_media_type(bytes: &[u8], headers: Option<&HeaderMap>) -> String {
     if let Some(headers) = headers {
         if let Some(value) = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
@@ -232,6 +288,14 @@ fn manifest_media_type(bytes: &[u8], headers: Option<&HeaderMap>) -> String {
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
         if let Some(media_type) = value.get("mediaType").and_then(|v| v.as_str()) {
             return media_type.to_string();
+        }
+        if value
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v == 1)
+            .unwrap_or(false)
+        {
+            return "application/vnd.docker.distribution.manifest.v1+json".to_string();
         }
     }
 
@@ -265,6 +329,75 @@ fn digest_from_hash(hash: &str) -> Option<String> {
         }
     }
     None
+}
+
+struct StreamedDownload {
+    path: tempfile::TempPath,
+    size: u64,
+    digest: String,
+}
+
+fn fetch_lock_map() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+async fn with_fetch_lock<F, T>(key: &str, f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let lock = fetch_lock_map()
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = lock.lock().await;
+    f.await
+}
+
+async fn stream_response_to_tempfile(response: Response) -> Result<StreamedDownload, DockerError> {
+    let named = Builder::new().prefix("docker-proxy-").tempfile()?;
+    let (std_file, path) = named.into_parts();
+    let mut file = tokio::fs::File::from_std(std_file);
+    let mut hasher = sha2::Sha256::new();
+    let mut total = 0u64;
+
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        total += chunk.len() as u64;
+        hasher.update(&chunk);
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    file.sync_all().await?;
+
+    let digest = format!("sha256:{:x}", hasher.finalize());
+    Ok(StreamedDownload {
+        path,
+        size: total,
+        digest,
+    })
+}
+
+struct TempFileReader {
+    file: tokio::fs::File,
+    _path: tempfile::TempPath,
+}
+
+impl TempFileReader {
+    fn new(file: tokio::fs::File, path: tempfile::TempPath) -> Self {
+        Self { file, _path: path }
+    }
+}
+
+impl AsyncRead for TempFileReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.file).poll_read(cx, buf)
+    }
 }
 
 fn upstream_image_name(repository_name: &str, upstream: &ProxyUpstream) -> String {
@@ -370,7 +503,7 @@ impl DockerProxy {
         .await?;
 
         Ok(if head_only {
-            blob_head_response(&blob.digest, blob.bytes.len() as u64)
+            blob_head_response(&blob.digest, blob.length)
         } else {
             blob_get_response(blob)
         })
@@ -426,41 +559,112 @@ impl DockerProxy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CachedManifest {
-    pub bytes: Vec<u8>,
+    pub reader: StorageFileReader,
     pub digest: String,
     pub content_type: String,
+    pub length: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CachedBlob {
-    pub bytes: Vec<u8>,
+    pub reader: StorageFileReader,
     pub digest: String,
+    pub length: u64,
 }
 
-pub(crate) async fn fetch_and_cache_manifest(
+async fn load_cached_manifest(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    manifest_path: &StoragePath,
+    reference: &str,
+) -> Result<Option<CachedManifest>, DockerError> {
+    let Some(file) = storage.open_file(repository_id, manifest_path).await? else {
+        return Ok(None);
+    };
+
+    let (reader, meta) = file
+        .file()
+        .ok_or_else(|| DockerError::InvalidManifest("Expected file, got directory".into()))?;
+    let length = meta.file_type.file_size;
+    let digest_from_meta = meta
+        .file_type
+        .file_hash
+        .sha2_256
+        .as_deref()
+        .and_then(digest_from_hash);
+    let content_type_from_meta = meta
+        .file_type
+        .mime_type
+        .as_ref()
+        .map(|v| v.to_string())
+        .and_then(|value| {
+            // application/octet-stream is a placeholder for unknown types; treat it as missing
+            if value == "application/octet-stream" {
+                None
+            } else {
+                Some(value)
+            }
+        });
+
+    if let (Some(digest), Some(content_type)) =
+        (digest_from_meta.clone(), content_type_from_meta.clone())
+    {
+        if reference.starts_with("sha256:") && reference != digest {
+            return Err(DockerError::DigestMismatch {
+                expected: reference.to_string(),
+                actual: digest,
+            });
+        }
+        return Ok(Some(CachedManifest {
+            reader,
+            digest,
+            content_type,
+            length,
+        }));
+    }
+
+    let length_usize: usize = length
+        .try_into()
+        .map_err(|_| DockerError::InvalidManifest("manifest size overflow".to_string()))?;
+    let bytes = reader.read_to_vec(length_usize).await?;
+    let computed_digest = digest_from_meta.unwrap_or_else(|| compute_sha256_hex(&bytes));
+    if reference.starts_with("sha256:") && reference != computed_digest {
+        return Err(DockerError::DigestMismatch {
+            expected: reference.to_string(),
+            actual: computed_digest,
+        });
+    }
+    // S3 sets content-type to application/octet-stream; prefer detecting from content
+    let content_type = content_type_from_meta
+        .clone()
+        .unwrap_or_else(|| manifest_media_type(&bytes, None));
+    let reopened = storage
+        .open_file(repository_id, manifest_path)
+        .await?
+        .ok_or_else(|| DockerError::ManifestNotFound(reference.to_string()))?;
+    let (reader, _) = reopened
+        .file()
+        .ok_or_else(|| DockerError::InvalidManifest("Expected file, got directory".into()))?;
+
+    Ok(Some(CachedManifest {
+        reader,
+        digest: computed_digest,
+        content_type,
+        length,
+    }))
+}
+
+async fn download_manifest_from_upstream(
     upstream: &ProxyUpstream,
     storage: &DynStorage,
     repository_id: Uuid,
     repository_name: &str,
     reference: &str,
     accept: Option<&str>,
+    manifest_path: &StoragePath,
 ) -> Result<CachedManifest, DockerError> {
-    let manifest_path =
-        StoragePath::from(format!("v2/{}/manifests/{}", repository_name, reference));
-
-    if let Some(file) = storage.open_file(repository_id, &manifest_path).await? {
-        let bytes = read_storage_file_bytes(file).await?;
-        let digest = compute_sha256_hex(&bytes);
-        let content_type = manifest_media_type(&bytes, None);
-        return Ok(CachedManifest {
-            bytes,
-            digest,
-            content_type,
-        });
-    }
-
     let upstream_repo = upstream_image_name(repository_name, upstream);
     let path = format!("/v2/{}/manifests/{}", upstream_repo, reference);
     let response = upstream.fetch(&path, accept).await?;
@@ -475,9 +679,10 @@ pub(crate) async fn fetch_and_cache_manifest(
         )));
     }
     let headers = response.headers().clone();
-    let body = response.bytes().await?.to_vec();
-    let content_type = manifest_media_type(&body, Some(&headers));
-    let computed_digest = compute_sha256_hex(&body);
+    let streamed = stream_response_to_tempfile(response).await?;
+    let manifest_bytes = tokio::fs::read(streamed.path.to_path_buf()).await?;
+    let content_type = manifest_media_type(&manifest_bytes, Some(&headers));
+    let computed_digest = streamed.digest.clone();
 
     if let Some(expected) = digest_from_header(&headers) {
         if expected != computed_digest {
@@ -496,51 +701,198 @@ pub(crate) async fn fetch_and_cache_manifest(
     }
 
     if upstream.cache_enabled {
-        storage
-            .save_file(repository_id, body.clone().into(), &manifest_path)
-            .await?;
+        if let Err(err) = storage
+            .save_file(
+                repository_id,
+                FileContent::Path(streamed.path.to_path_buf()),
+                manifest_path,
+            )
+            .await
+        {
+            if matches!(err, nr_storage::StorageError::PathCollision(_)) {
+                warn!(
+                    ?manifest_path,
+                    "Manifest cache write hit path collision; another request likely wrote it first"
+                );
+            } else {
+                return Err(err.into());
+            }
+        }
 
         if !reference.starts_with("sha256:") {
             let digest_path = StoragePath::from(format!(
                 "v2/{}/manifests/{}",
                 repository_name, &computed_digest
             ));
-            let _ = storage
-                .save_file(repository_id, body.clone().into(), &digest_path)
-                .await?;
+            if let Err(err) = storage
+                .save_file(
+                    repository_id,
+                    FileContent::Path(streamed.path.to_path_buf()),
+                    &digest_path,
+                )
+                .await
+            {
+                if matches!(err, nr_storage::StorageError::PathCollision(_)) {
+                    warn!(
+                        ?digest_path,
+                        "Digest manifest cache write hit path collision; another request likely wrote it first"
+                    );
+                } else {
+                    return Err(err.into());
+                }
+            }
         }
     }
 
     Ok(CachedManifest {
-        bytes: body,
+        reader: StorageFileReader::AsyncReader(Box::pin(TempFileReader::new(
+            tokio::fs::File::open(streamed.path.to_path_buf()).await?,
+            streamed.path,
+        ))),
         digest: computed_digest,
         content_type,
+        length: streamed.size,
     })
 }
 
-pub(crate) async fn fetch_and_cache_blob(
+pub(crate) async fn fetch_and_cache_manifest(
+    upstream: &ProxyUpstream,
+    storage: &DynStorage,
+    repository_id: Uuid,
+    repository_name: &str,
+    reference: &str,
+    accept: Option<&str>,
+) -> Result<CachedManifest, DockerError> {
+    let manifest_path =
+        StoragePath::from(format!("v2/{}/manifests/{}", repository_name, reference));
+    let lock_key = format!(
+        "manifest:{}:{}:{}",
+        repository_id, repository_name, reference
+    );
+
+    with_fetch_lock(&lock_key, async {
+        if let Some(cached) =
+            load_cached_manifest(storage, repository_id, &manifest_path, reference).await?
+        {
+            if accept_allows_media_type(accept, &cached.content_type) {
+                return Ok(cached);
+            }
+            // Client requested a different media type than we cached (e.g., prefer schema2/OCI over schema1).
+            // Re-download with the client's Accept header to honor content negotiation and refresh cache.
+        }
+
+        download_manifest_from_upstream(
+            upstream,
+            storage,
+            repository_id,
+            repository_name,
+            reference,
+            accept,
+            &manifest_path,
+        )
+        .await
+    })
+    .await
+}
+
+fn accept_allows_media_type(accept: Option<&str>, media_type: &str) -> bool {
+    let Some(accept) = accept else {
+        return true;
+    };
+    // Simple, conservative parser: split on commas, strip parameters, handle wildcards and exact matches.
+    accept
+        .split(',')
+        .map(|part| part.trim())
+        .any(|part| match part.split_once(';') {
+            Some((kind, _)) => accept_token_matches(kind.trim(), media_type),
+            None => accept_token_matches(part, media_type),
+        })
+}
+
+fn accept_token_matches(token: &str, media_type: &str) -> bool {
+    if token == "*/*" {
+        return true;
+    }
+    if let Some((token_type, token_sub)) = token.split_once('/') {
+        if token_sub == "*" {
+            if let Some((media_type_type, _)) = media_type.split_once('/') {
+                return token_type.eq_ignore_ascii_case(media_type_type);
+            }
+        } else {
+            return token.eq_ignore_ascii_case(media_type);
+        }
+    }
+    false
+}
+
+async fn load_cached_blob(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    blob_path: &StoragePath,
+    digest: &str,
+) -> Result<Option<CachedBlob>, DockerError> {
+    let Some(existing) = storage.open_file(repository_id, blob_path).await? else {
+        return Ok(None);
+    };
+    let (reader, meta) = existing
+        .file()
+        .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
+    let length = meta.file_type.file_size;
+    let digest_from_meta = meta
+        .file_type
+        .file_hash
+        .sha2_256
+        .as_deref()
+        .and_then(digest_from_hash);
+
+    if let Some(found) = digest_from_meta.clone() {
+        if digest.starts_with("sha256:") && digest != found {
+            return Err(DockerError::DigestMismatch {
+                expected: digest.to_string(),
+                actual: found,
+            });
+        }
+        return Ok(Some(CachedBlob {
+            reader,
+            digest: found,
+            length,
+        }));
+    }
+
+    let length_usize: usize = length
+        .try_into()
+        .map_err(|_| DockerError::InvalidManifest("blob size overflow".to_string()))?;
+    let bytes = reader.read_to_vec(length_usize).await?;
+    let computed_digest = compute_sha256_hex(&bytes);
+    if digest.starts_with("sha256:") && digest != computed_digest {
+        return Err(DockerError::DigestMismatch {
+            expected: digest.to_string(),
+            actual: computed_digest,
+        });
+    }
+    let reopened = storage
+        .open_file(repository_id, blob_path)
+        .await?
+        .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
+    let (reader, meta) = reopened
+        .file()
+        .ok_or_else(|| DockerError::BlobNotFound(digest.to_string()))?;
+
+    Ok(Some(CachedBlob {
+        reader,
+        digest: computed_digest,
+        length: meta.file_type.file_size,
+    }))
+}
+
+async fn download_blob_from_upstream(
     upstream: &ProxyUpstream,
     storage: &DynStorage,
     repository_id: Uuid,
     repository_name: &str,
     digest: &str,
+    blob_path: &StoragePath,
 ) -> Result<CachedBlob, DockerError> {
-    let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
-    if let Some(existing) = storage.open_file(repository_id, &blob_path).await? {
-        let bytes = read_storage_file_bytes(existing).await?;
-        let computed_digest = compute_sha256_hex(&bytes);
-        if digest.starts_with("sha256:") && digest != computed_digest {
-            return Err(DockerError::DigestMismatch {
-                expected: digest.to_string(),
-                actual: computed_digest,
-            });
-        }
-        return Ok(CachedBlob {
-            bytes,
-            digest: computed_digest,
-        });
-    }
-
     let upstream_repo = upstream_image_name(repository_name, upstream);
     let path = format!("/v2/{}/blobs/{}", upstream_repo, digest);
     let response = upstream.fetch(&path, None).await?;
@@ -555,8 +907,8 @@ pub(crate) async fn fetch_and_cache_blob(
         )));
     }
     let headers = response.headers().clone();
-    let body = response.bytes().await?.to_vec();
-    let computed_digest = compute_sha256_hex(&body);
+    let streamed = stream_response_to_tempfile(response).await?;
+    let computed_digest = streamed.digest.clone();
 
     if let Some(expected) = digest_from_header(&headers) {
         if expected != computed_digest {
@@ -574,27 +926,73 @@ pub(crate) async fn fetch_and_cache_blob(
     }
 
     if upstream.cache_enabled {
-        storage
-            .save_file(repository_id, body.clone().into(), &blob_path)
-            .await?;
+        if let Err(err) = storage
+            .save_file(
+                repository_id,
+                FileContent::Path(streamed.path.to_path_buf()),
+                blob_path,
+            )
+            .await
+        {
+            if matches!(err, nr_storage::StorageError::PathCollision(_)) {
+                warn!(
+                    ?blob_path,
+                    "Blob cache write hit path collision; another request likely wrote it first"
+                );
+            } else {
+                return Err(err.into());
+            }
+        }
     }
 
     Ok(CachedBlob {
-        bytes: body,
+        reader: StorageFileReader::AsyncReader(Box::pin(TempFileReader::new(
+            tokio::fs::File::open(streamed.path.to_path_buf()).await?,
+            streamed.path,
+        ))),
         digest: computed_digest,
+        length: streamed.size,
     })
 }
 
+pub(crate) async fn fetch_and_cache_blob(
+    upstream: &ProxyUpstream,
+    storage: &DynStorage,
+    repository_id: Uuid,
+    repository_name: &str,
+    digest: &str,
+) -> Result<CachedBlob, DockerError> {
+    let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
+    let lock_key = format!("blob:{}:{}:{}", repository_id, repository_name, digest);
+
+    with_fetch_lock(&lock_key, async {
+        if let Some(cached) = load_cached_blob(storage, repository_id, &blob_path, digest).await? {
+            return Ok(cached);
+        }
+
+        download_blob_from_upstream(
+            upstream,
+            storage,
+            repository_id,
+            repository_name,
+            digest,
+            &blob_path,
+        )
+        .await
+    })
+    .await
+}
+
 fn manifest_get_response(manifest: CachedManifest) -> RepoResponse {
-    let length = manifest.bytes.len().to_string();
-    RepoResponse::Other(
-        ResponseBuilder::ok()
-            .header("Docker-Distribution-API-Version", "registry/2.0")
-            .header("Docker-Content-Digest", manifest.digest.clone())
-            .header(CONTENT_TYPE, manifest.content_type)
-            .header(CONTENT_LENGTH, length)
-            .body(Body::from(manifest.bytes)),
-    )
+    let builder = ResponseBuilder::ok()
+        .header("Docker-Distribution-API-Version", "registry/2.0")
+        .header("Docker-Content-Digest", manifest.digest.clone())
+        .header(CONTENT_TYPE, manifest.content_type)
+        .header(CONTENT_LENGTH, manifest.length.to_string());
+    let length_usize: usize = manifest.length.try_into().unwrap_or(usize::MAX); // length already validated earlier; usize::MAX only on overflow
+    let body = Body::new(manifest.reader.into_body(length_usize));
+
+    RepoResponse::Other(builder.body(body))
 }
 
 fn manifest_head_response(manifest: &CachedManifest) -> RepoResponse {
@@ -603,20 +1001,21 @@ fn manifest_head_response(manifest: &CachedManifest) -> RepoResponse {
             .header("Docker-Distribution-API-Version", "registry/2.0")
             .header("Docker-Content-Digest", manifest.digest.clone())
             .header(CONTENT_TYPE, manifest.content_type.clone())
-            .header(CONTENT_LENGTH, manifest.bytes.len().to_string())
+            .header(CONTENT_LENGTH, manifest.length.to_string())
             .body(Body::empty()),
     )
 }
 
 fn blob_get_response(blob: CachedBlob) -> RepoResponse {
-    RepoResponse::Other(
-        ResponseBuilder::ok()
-            .header("Docker-Distribution-API-Version", "registry/2.0")
-            .header("Docker-Content-Digest", blob.digest.clone())
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .header(CONTENT_LENGTH, blob.bytes.len().to_string())
-            .body(Body::from(blob.bytes)),
-    )
+    let builder = ResponseBuilder::ok()
+        .header("Docker-Distribution-API-Version", "registry/2.0")
+        .header("Docker-Content-Digest", blob.digest.clone())
+        .header(CONTENT_TYPE, "application/octet-stream")
+        .header(CONTENT_LENGTH, blob.length.to_string());
+    let length_usize: usize = blob.length.try_into().unwrap_or(usize::MAX);
+    let body = Body::new(blob.reader.into_body(length_usize));
+
+    RepoResponse::Other(builder.body(body))
 }
 
 fn blob_head_response(digest: &str, length: u64) -> RepoResponse {
@@ -685,7 +1084,10 @@ impl Repository for DockerProxy {
     }
 
     fn config_types(&self) -> Vec<&str> {
-        vec![RepositoryAuthConfigType::get_type_static()]
+        vec![
+            DockerRegistryConfigType::get_type_static(),
+            RepositoryAuthConfigType::get_type_static(),
+        ]
     }
 
     fn name(&self) -> String {
@@ -816,12 +1218,23 @@ impl Repository for DockerProxy {
 mod tests {
     use super::*;
     use crate::repository::test_helpers::test_storage;
-    use axum::{Router, routing::get};
+    use axum::{Router, body::Body as AxumBody, routing::get};
+    use bytes::Bytes;
+    use futures::stream;
     use http::{HeaderValue, StatusCode};
     use nr_core::storage::StoragePath;
     use sha2::Digest;
+    use std::convert::Infallible;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+
+    async fn reader_bytes(
+        reader: nr_storage::StorageFileReader,
+        len: u64,
+    ) -> anyhow::Result<Vec<u8>> {
+        let len: usize = len.try_into().expect("length fits in usize for tests");
+        Ok(reader.read_to_vec(len).await?)
+    }
 
     async fn start_upstream_server(
         manifest_body: &'static [u8],
@@ -877,6 +1290,70 @@ mod tests {
         Ok((format!("http://{}", addr), server))
     }
 
+    async fn start_negotiating_upstream_server(
+        v1_manifest: &'static [u8],
+        v2_manifest: &'static [u8],
+    ) -> anyhow::Result<(String, JoinHandle<()>)> {
+        let v1_digest = format!("sha256:{:x}", sha2::Sha256::digest(v1_manifest));
+        let v2_digest = format!("sha256:{:x}", sha2::Sha256::digest(v2_manifest));
+        let v1_ct =
+            HeaderValue::from_static("application/vnd.docker.distribution.manifest.v1+json");
+        let v2_ct =
+            HeaderValue::from_static("application/vnd.docker.distribution.manifest.v2+json");
+
+        let app = Router::new().route(
+            "/v2/library/alpine/manifests/latest",
+            get(move |headers: HeaderMap| {
+                let v1_ct = v1_ct.clone();
+                let v2_ct = v2_ct.clone();
+                let v1_manifest = v1_manifest;
+                let v2_manifest = v2_manifest;
+                let v1_digest = v1_digest.clone();
+                let v2_digest = v2_digest.clone();
+                async move {
+                    let accept = headers
+                        .get(http::header::ACCEPT)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    if accept.contains("application/vnd.docker.distribution.manifest.v2+json") {
+                        (
+                            StatusCode::OK,
+                            [
+                                (
+                                    "Docker-Content-Digest",
+                                    HeaderValue::from_str(&v2_digest).unwrap(),
+                                ),
+                                ("Content-Type", v2_ct),
+                            ],
+                            v2_manifest,
+                        )
+                    } else {
+                        (
+                            StatusCode::OK,
+                            [
+                                (
+                                    "Docker-Content-Digest",
+                                    HeaderValue::from_str(&v1_digest).unwrap(),
+                                ),
+                                ("Content-Type", v1_ct),
+                            ],
+                            v1_manifest,
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app).await {
+                eprintln!("upstream server error: {err}");
+            }
+        });
+        Ok((format!("http://{}", addr), server))
+    }
+
     #[tokio::test]
     async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
         let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":7023,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"layers":[]}"#;
@@ -901,17 +1378,23 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(cached.bytes, manifest);
+        let CachedManifest {
+            reader,
+            digest,
+            content_type,
+            length,
+        } = cached;
+        let cached_bytes = reader_bytes(reader, manifest.len() as u64).await?;
+        assert_eq!(cached_bytes, manifest);
+        assert_eq!(length, manifest.len() as u64);
         assert_eq!(
-            cached.content_type,
+            content_type,
             "application/vnd.docker.distribution.manifest.v2+json"
         );
 
         // Verify digest path saved
-        let digest_path = StoragePath::from(format!(
-            "v2/{}/manifests/{}",
-            "library/alpine", cached.digest
-        ));
+        let digest_path =
+            StoragePath::from(format!("v2/{}/manifests/{}", "library/alpine", digest));
         let stored = storage
             .open_file(repository_id, &digest_path)
             .await?
@@ -955,7 +1438,15 @@ mod tests {
             &digest,
         )
         .await?;
-        assert_eq!(first.bytes, blob);
+        let CachedBlob {
+            reader,
+            digest: first_digest,
+            length,
+        } = first;
+        let first_body = reader_bytes(reader, blob.len() as u64).await?;
+        assert_eq!(first_body, blob);
+        assert_eq!(length, blob.len() as u64);
+        assert_eq!(first_digest, digest);
 
         // Stop upstream to ensure second call reads cache
         server.abort();
@@ -968,8 +1459,107 @@ mod tests {
             &digest,
         )
         .await?;
-        assert_eq!(second.bytes, blob);
+        let CachedBlob { reader, .. } = second;
+        let second_body = reader_bytes(reader, blob.len() as u64).await?;
+        assert_eq!(second_body, blob);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cached_manifest_uses_manifest_media_type() -> anyhow::Result<()> {
+        let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}"#;
+        let blob = b"blob-data";
+        let (base, server) = start_upstream_server(manifest, blob).await?;
+
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let upstream = ProxyUpstream::new(&DockerProxyConfig {
+            upstream_url: base,
+            upstream_auth: None,
+            cache_enabled: true,
+        })?;
+
+        // Prime the cache using the upstream manifest
+        fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            None,
+        )
+        .await?;
+
+        // Kill upstream to ensure the second call reads from cache only
+        server.abort();
+
+        let cached = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            None,
+        )
+        .await?;
+
+        assert_eq!(
+            cached.content_type,
+            "application/vnd.docker.distribution.manifest.v2+json"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accept_mismatch_triggers_refetch_with_preferred_media_type() -> anyhow::Result<()> {
+        // Upstream returns schema1 by default, schema2 when explicitly requested via Accept
+        let v1_manifest = br#"{"schemaVersion":1,"name":"library/alpine","fsLayers":[]}"#;
+        let v2_manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}"#;
+        let (base, server) = start_negotiating_upstream_server(v1_manifest, v2_manifest).await?;
+
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let upstream = ProxyUpstream::new(&DockerProxyConfig {
+            upstream_url: base,
+            upstream_auth: None,
+            cache_enabled: true,
+        })?;
+
+        // Cache initial (schema1) manifest without Accept header
+        let cached_v1 = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            None,
+        )
+        .await?;
+        assert_eq!(
+            cached_v1.content_type,
+            "application/vnd.docker.distribution.manifest.v1+json"
+        );
+
+        // Request again, this time with an Accept that prefers schema2
+        let accept_header = "application/vnd.docker.distribution.manifest.v2+json";
+        let refreshed = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            Some(accept_header),
+        )
+        .await?;
+
+        assert_eq!(
+            refreshed.content_type,
+            "application/vnd.docker.distribution.manifest.v2+json"
+        );
+
+        server.abort();
         Ok(())
     }
 
@@ -1026,7 +1616,9 @@ mod tests {
             None,
         )
         .await?;
-        assert_eq!(refreshed.bytes, manifest);
+        let CachedManifest { reader, .. } = refreshed;
+        let refreshed_bytes = reader_bytes(reader, manifest.len() as u64).await?;
+        assert_eq!(refreshed_bytes, manifest);
         assert!(
             storage.file_exists(repository_id, &manifest_path).await?,
             "manifest should be cached again after re-download"
@@ -1038,8 +1630,6 @@ mod tests {
 
     #[tokio::test]
     async fn blob_digest_mismatch_is_reported() -> anyhow::Result<()> {
-        use axum::routing::get;
-
         let blob = b"blob-body-for-cache";
         let correct_digest = format!("sha256:{:x}", sha2::Sha256::digest(blob));
         let wrong_header =
@@ -1047,12 +1637,16 @@ mod tests {
 
         let app = Router::new().route(
             &format!("/v2/library/alpine/blobs/{correct_digest}"),
-            get(move || async move {
-                (
-                    StatusCode::OK,
-                    [("Docker-Content-Digest", wrong_header)],
-                    blob,
-                )
+            get(move || {
+                let chunk = Bytes::from_static(blob);
+                let stream = stream::iter(vec![Ok::<_, Infallible>(chunk)]);
+                async move {
+                    (
+                        StatusCode::OK,
+                        [("Docker-Content-Digest", wrong_header)],
+                        AxumBody::from_stream(stream),
+                    )
+                }
             }),
         );
 
@@ -1092,6 +1686,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn large_blob_is_streamed_without_buffering() -> anyhow::Result<()> {
+        let chunk = Bytes::from(vec![b'x'; 1_024 * 1_024]); // 1MiB chunk
+        let chunks = 6;
+        let mut full = Vec::with_capacity(chunk.len() * chunks);
+        for _ in 0..chunks {
+            full.extend_from_slice(&chunk);
+        }
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&full));
+
+        let app = Router::new().route(
+            &format!("/v2/library/alpine/blobs/{digest}"),
+            get({
+                let chunk = chunk.clone();
+                let digest_header =
+                    HeaderValue::from_str(&digest).expect("valid digest header value");
+                let content_type = HeaderValue::from_static("application/octet-stream");
+                move || {
+                    let digest_header = digest_header.clone();
+                    let content_type = content_type.clone();
+                    let stream = stream::iter((0..chunks).map({
+                        let chunk = chunk.clone();
+                        move |_| Ok::<_, Infallible>(chunk.clone())
+                    }));
+                    async move {
+                        (
+                            StatusCode::OK,
+                            [
+                                ("Docker-Content-Digest", digest_header),
+                                ("Content-Type", content_type),
+                            ],
+                            AxumBody::from_stream(stream),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let upstream = ProxyUpstream::new(&DockerProxyConfig {
+            upstream_url: format!("http://{addr}"),
+            upstream_auth: None,
+            cache_enabled: true,
+        })?;
+
+        let blob = fetch_and_cache_blob(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            &digest,
+        )
+        .await?;
+
+        assert!(
+            !matches!(&blob.reader, nr_storage::StorageFileReader::Bytes(_)),
+            "streaming should not return in-memory reader"
+        );
+        let CachedBlob {
+            reader,
+            digest: found_digest,
+            length,
+        } = blob;
+
+        assert_eq!(found_digest, digest);
+        assert_eq!(length, full.len() as u64);
+
+        let content = reader_bytes(reader, full.len() as u64).await?;
+        assert_eq!(content.len(), full.len());
+        assert_eq!(content, full);
+
+        let blob_path = StoragePath::from(format!("v2/library/alpine/blobs/{digest}"));
+        assert!(
+            storage.file_exists(repository_id, &blob_path).await?,
+            "blob should be cached on disk"
+        );
+
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn bearer_challenge_is_followed_for_public_token() -> anyhow::Result<()> {
         // Token service
         let token_app = Router::new().route(
@@ -1105,8 +1787,8 @@ mod tests {
         });
 
         // Upstream that challenges then succeeds
-        let manifest = br#"{"schemaVersion":2}"#;
-        let manifest_digest = format!("sha256:{:x}", sha2::Sha256::digest(manifest));
+        let manifest_body = br#"{"schemaVersion":2}"#;
+        let manifest_digest = format!("sha256:{:x}", sha2::Sha256::digest(manifest_body));
         let manifest_digest_expected = manifest_digest.clone();
         let guarded_path = "/v2/library/alpine/manifests/latest";
         let app = Router::new().route(
@@ -1135,9 +1817,9 @@ mod tests {
                                 );
                             builder = builder.header(
                                 CONTENT_LENGTH,
-                                manifest.len().to_string(),
+                                manifest_body.len().to_string(),
                             );
-                            builder.body(manifest as &[u8])
+                            builder.body(manifest_body as &[u8])
                         } else {
                             ResponseBuilder::unauthorized()
                                 .header("WWW-Authenticate", challenge.clone())
@@ -1173,7 +1855,16 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(manifest.digest, manifest_digest_expected);
+        let CachedManifest {
+            reader,
+            digest,
+            length,
+            ..
+        } = manifest;
+
+        assert_eq!(digest, manifest_digest_expected);
+        let manifest_bytes = reader_bytes(reader, length).await?;
+        assert_eq!(manifest_bytes, manifest_body);
 
         upstream_server.abort();
         token_server.abort();

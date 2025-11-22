@@ -23,6 +23,7 @@ use super::{
 };
 use crate::{
     app::NitroRepo,
+    repository::docker::DockerRegistryConfigType,
     repository::{Repository, RepositoryAuthConfigType, RepositoryFactoryError},
 };
 
@@ -141,6 +142,7 @@ impl Repository for DockerHosted {
 
     fn config_types(&self) -> Vec<&str> {
         vec![
+            DockerRegistryConfigType::get_type_static(),
             DockerPushRulesConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]

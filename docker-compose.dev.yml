@@ -1,7 +1,7 @@
 services:
   nitro_repo:
-    volumes:
-      - ./target/debug/nitro_repo:/app/nitro_repo:ro
+    # volumes:
+    #   - ./target/debug/nitro_repo:/app/nitro_repo:ro
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=nitro-repo

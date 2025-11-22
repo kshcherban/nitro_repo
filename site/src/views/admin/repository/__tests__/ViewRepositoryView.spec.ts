@@ -1,0 +1,172 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { defineComponent } from "vue";
+import { createPinia, setActivePinia, type Pinia } from "pinia";
+
+vi.mock("@/router", () => ({
+  currentRoute: {
+    value: {
+      params: { id: "repo-123" },
+    },
+  },
+  push: vi.fn(),
+}));
+
+vi.mock("@/http", () => ({
+  default: {
+    get: vi.fn(),
+  },
+}));
+
+const BasicRepositoryInfoStub = defineComponent({
+  props: ["repository"],
+  template: `<div data-testid="basic-repo-info">{{ repository?.name }}</div>`,
+});
+
+const RepositoryPackagesTabStub = defineComponent({
+  props: ["repositoryId", "repositoryType", "repositoryKind"],
+  template: `<div data-testid="packages-tab"></div>`,
+});
+
+const DynamicConfigStub = defineComponent({
+  props: ["repository"],
+  template: `<div data-testid="config-stub">config for {{ repository }}</div>`,
+});
+
+const VContainerStub = defineComponent({
+  template: `<div class="v-container"><slot /></div>`,
+});
+const VCardStub = defineComponent({
+  template: `<div class="v-card"><slot /></div>`,
+});
+const VTabsStub = defineComponent({
+  props: { modelValue: String },
+  emits: ["update:modelValue"],
+  template: `<div class="v-tabs"><slot /></div>`,
+});
+const VTabStub = defineComponent({
+  props: { value: String },
+  emits: ["click"],
+  template: `<button class="v-tab" :data-value="value" @click="$emit('click')"><slot /></button>`,
+});
+const VDividerStub = defineComponent({
+  template: `<div class="v-divider"></div>`,
+});
+const VWindowStub = defineComponent({
+  props: { modelValue: String },
+  emits: ["update:modelValue"],
+  template: `<div class="v-window"><slot /></div>`,
+});
+const VWindowItemStub = defineComponent({
+  props: { value: String },
+  template: `<div class="v-window-item"><slot /></div>`,
+});
+
+const http = (await import("@/http")).default as { get: vi.Mock };
+
+const repositoryResponse = {
+  id: "repo-123",
+  storage_name: "s3-store",
+  storage_id: "storage-123",
+  name: "docker-proxy",
+  repository_type: "docker",
+  repository_kind: "proxy",
+  active: true,
+  visibility: "Private",
+  updated_at: "2025-11-20T10:00:00Z",
+  created_at: "2025-11-19T10:00:00Z",
+  auth_enabled: true,
+  storage_usage_bytes: null,
+  storage_usage_updated_at: null,
+};
+
+const s3StorageResponse = {
+  id: "storage-123",
+  name: "s3-store",
+  storage_type: "s3",
+  active: true,
+  created_at: "2025-11-18T12:00:00Z",
+  config: {
+    type: "S3",
+    settings: {
+      bucket_name: "cache-bucket",
+      region: "us-east-1",
+      path_style: true,
+      credentials: {
+        access_key: "access",
+        secret_key: "secret",
+      },
+      cache: {
+        enabled: true,
+        path: "/var/cache/nitro",
+        max_bytes: 1048576,
+        max_entries: 32,
+      },
+    },
+  },
+};
+
+function mockHttpSequence() {
+  http.get.mockImplementation((url: string) => {
+    if (url === "/api/repository/repo-123") {
+      return Promise.resolve({ data: repositoryResponse });
+    }
+    if (url === "/api/repository/repo-123/configs") {
+      return Promise.resolve({ data: ["docker"] });
+    }
+    if (url === "/api/repository/repo-123/config/docker") {
+      return Promise.resolve({ data: { type: "Proxy", config: { upstream_url: "https://registry-1.docker.io", cache_enabled: true } } });
+    }
+    if (url === "/api/storage/storage-123") {
+      return Promise.resolve({ data: s3StorageResponse });
+    }
+    return Promise.reject(new Error(`Unhandled URL ${url}`));
+  });
+}
+
+describe("ViewRepositoryView", () => {
+  let pinia: Pinia;
+
+  beforeEach(() => {
+    pinia = createPinia();
+    setActivePinia(pinia);
+    http.get.mockReset();
+  });
+
+  it("shows S3 cache settings for the repository storage", async () => {
+    mockHttpSequence();
+    const ViewRepositoryView = (await import("@/views/admin/repository/ViewRepositoryView.vue")).default;
+
+    const wrapper = mount(ViewRepositoryView, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          BasicRepositoryInfo: BasicRepositoryInfoStub,
+          RepositoryPackagesTab: RepositoryPackagesTabStub,
+          FallBackEditor: DynamicConfigStub,
+          DockerConfig: DynamicConfigStub,
+          "v-container": VContainerStub,
+          "v-card": VCardStub,
+          "v-tabs": VTabsStub,
+          "v-tab": VTabStub,
+          "v-divider": VDividerStub,
+          "v-window": VWindowStub,
+          "v-window-item": VWindowItemStub,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    // Storage tab should be present
+    const tabs = wrapper.findAll(".v-tab");
+    const storageTab = tabs.find((tab) => tab.attributes("data-value") === "storage");
+    expect(storageTab, "Storage tab missing").toBeDefined();
+
+    // Cache details rendered
+    const cacheText = wrapper.text();
+    expect(cacheText).toContain("/var/cache/nitro");
+    expect(cacheText).toContain("1.00 MB");
+    expect(cacheText).toContain("32 entries");
+  });
+});
