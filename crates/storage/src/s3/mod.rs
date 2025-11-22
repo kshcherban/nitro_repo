@@ -981,7 +981,7 @@ impl Storage for S3Storage {
         let body = serde_json::to_vec(&value)
             .map(ByteStream::from)
             .map_err(|err| {
-                S3StorageError::IOError(std::io::Error::new(std::io::ErrorKind::Other, err))
+                S3StorageError::IOError(std::io::Error::other(err))
             })?;
 
         self.aws_client()
@@ -1197,11 +1197,9 @@ impl Storage for S3Storage {
         if content_type
             .as_deref()
             .is_some_and(|ct| ct == "application/x-directory")
-        {
-            if let Some(meta) = self.get_directory_meta(&path).await? {
+            && let Some(meta) = self.get_directory_meta(&path).await? {
                 return Ok(Some(meta));
             }
-        }
 
         let file_size: u64 = head
             .content_length()
