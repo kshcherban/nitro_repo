@@ -20,7 +20,7 @@ use futures::future::BoxFuture;
 use hex::encode;
 use lru::LruCache;
 use mime::Mime;
-use nr_core::storage::{FileHashes, SerdeMime, StoragePath};
+use nr_core::storage::{FileHashes, FileTypeCheck, SerdeMime, StoragePath};
 use regions::{CustomRegion, S3StorageRegion};
 use sha2::{Digest, Sha256};
 use tokio::{fs, io::BufReader, sync::Mutex, task};
@@ -65,8 +65,10 @@ use crate::{
     BorrowedStorageConfig, BorrowedStorageTypeConfig, DirectoryFileType, DynStorage, FileContent,
     FileContentBytes, FileFileType, FileType, InvalidConfigType, PathCollisionError,
     StaticStorageFactory, Storage, StorageConfig, StorageConfigInner, StorageError, StorageFactory,
-    StorageFile, StorageFileMeta, StorageTypeConfig, StorageTypeConfigTrait, meta::RepositoryMeta,
-    streaming::VecDirectoryListStream, utils::new_type_arc_type,
+    StorageFile, StorageFileMeta, StorageTypeConfig, StorageTypeConfigTrait,
+    meta::RepositoryMeta,
+    streaming::{DirectoryListStream, VecDirectoryListStream, collect_directory_stream},
+    utils::new_type_arc_type,
 };
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema, Default)]
 pub struct S3Credentials {
@@ -624,84 +626,6 @@ impl S3StorageInner {
         Ok(self.is_directory_from_result(&list, path).0)
     }
 
-    /// Returns None if the path is not a directory
-    #[instrument]
-    async fn index_directory(&self, path: &str) -> Result<Option<StorageFile>, S3StorageError> {
-        let path = if !path.ends_with("/") {
-            format!("{}/", path)
-        } else {
-            path.to_owned()
-        };
-
-        let first = self
-            .aws_client()
-            .list_objects_v2()
-            .bucket(self.bucket())
-            .prefix(path.clone())
-            .delimiter("/")
-            .send()
-            .await
-            .map_err(S3StorageError::from_sdk_error)?;
-
-        let mut files = Vec::new();
-        for file in first.contents() {
-            if let Some(key) = file.key() {
-                if S3StorageInner::is_hidden_file(key) {
-                    continue;
-                }
-                if let Some(meta) = self.get_meta(key).await? {
-                    files.push(meta);
-                }
-            }
-        }
-        for sub_directory in first
-            .common_prefixes()
-            .iter()
-            .filter_map(CommonPrefix::prefix)
-        {
-            if S3StorageInner::is_hidden_file(sub_directory) {
-                continue;
-            }
-            if let Some(meta) = self.get_directory_meta(sub_directory).await? {
-                files.push(meta);
-            }
-        }
-
-        Ok(Some(StorageFile::Directory {
-            meta: StorageFileMeta {
-                name: path
-                    .split_once('/')
-                    .map(|(_, rest)| rest.to_string())
-                    .unwrap_or_else(|| path.clone()),
-                file_type: DirectoryFileType {
-                    file_count: files.len() as u64,
-                },
-                modified: Local::now().fixed_offset(),
-                created: Local::now().fixed_offset(),
-            },
-            files,
-        }))
-    }
-    async fn get_meta(
-        &self,
-        path: &str,
-    ) -> Result<Option<StorageFileMeta<FileType>>, S3StorageError> {
-        let file_file = FileType::File(FileFileType {
-            file_size: 0,
-            mime_type: None,
-            file_hash: FileHashes::default(),
-        });
-
-        let name = path.split_once('/').map(|(_, rest)| rest).unwrap_or(path);
-        let meta = StorageFileMeta {
-            name: name.to_owned(),
-            file_type: file_file,
-            modified: Local::now().fixed_offset(),
-            created: Local::now().fixed_offset(),
-        };
-
-        Ok(Some(meta))
-    }
     async fn get_directory_meta(
         &self,
         path: &str,
@@ -1312,7 +1236,9 @@ impl Storage for S3Storage {
             .await
         {
             Ok(resp) => resp,
-            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => return Ok(None),
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
+                return self.collect_directory(repository, location).await;
+            }
             Err(err) => return Err(S3StorageError::from_sdk_error(err)),
         };
 
@@ -1322,7 +1248,7 @@ impl Storage for S3Storage {
             .map(|ct| ct == "application/x-directory")
             .unwrap_or(false)
         {
-            return self.index_directory(&path).await;
+            return self.collect_directory(repository, location).await;
         }
         let response_length_opt = response
             .content_length()
@@ -1384,6 +1310,7 @@ impl Storage for S3Storage {
 
         Ok(Some(result))
     }
+
     #[instrument(name = "Storage::validate_config_change", fields(storage_type = "s3"))]
     async fn validate_config_change(
         &self,
@@ -1410,11 +1337,14 @@ impl Storage for S3Storage {
         repository: Uuid,
         location: &StoragePath,
     ) -> Result<Option<Self::DirectoryStream>, Self::Error> {
-        // If the caller asks for a file, return a single-element stream for that file.
-        if !location.is_directory() {
-            let Some(meta) = self.get_file_information(repository, location).await? else {
-                return Ok(None);
-            };
+        // Determine whether the path represents a directory, even when S3 lacks a placeholder
+        // object. We need real metadata to avoid treating directories as files when the caller
+        // doesn't include a trailing slash (common for Docker paths like `v2`).
+        let Some(meta) = self.get_file_information(repository, location).await? else {
+            return Ok(None);
+        };
+
+        if meta.is_file() && !location.is_directory() {
             let dir_meta = StorageFileMeta::<DirectoryFileType> {
                 name: location.to_string(),
                 file_type: DirectoryFileType { file_count: 1 },
@@ -1429,6 +1359,13 @@ impl Storage for S3Storage {
             prefix.push('/');
         }
 
+        let base_prefix = S3StorageInner::strip_repository_prefix(&repository, &prefix);
+        let base_prefix = if base_prefix.ends_with('/') {
+            base_prefix.to_string()
+        } else {
+            format!("{base_prefix}/")
+        };
+
         let list = self
             .aws_client()
             .list_objects_v2()
@@ -1439,7 +1376,8 @@ impl Storage for S3Storage {
             .await
             .map_err(S3StorageError::from_sdk_error)?;
 
-        // Convert objects to StorageFileMeta entries.
+        // Convert objects to StorageFileMeta entries using names relative to the requested
+        // directory (not repository root) so callers can safely append child segments.
         let mut entries: Vec<StorageFileMeta<FileType>> = Vec::new();
 
         for obj in list.contents() {
@@ -1451,10 +1389,17 @@ impl Storage for S3Storage {
             if S3StorageInner::is_hidden_file(key) {
                 continue;
             }
-            let name = S3StorageInner::strip_repository_prefix(&repository, key).to_string();
+            let full_name = S3StorageInner::strip_repository_prefix(&repository, key);
+            let Some(relative_name) = full_name.strip_prefix(&base_prefix) else {
+                continue;
+            };
+            if relative_name.is_empty() {
+                continue;
+            }
+
             let size: u64 = obj.size().unwrap_or(0i64).max(0) as u64;
             let meta = StorageFileMeta::<FileType> {
-                name,
+                name: relative_name.to_string(),
                 file_type: FileType::File(FileFileType {
                     file_size: size,
                     mime_type: None,
@@ -1471,18 +1416,21 @@ impl Storage for S3Storage {
             .iter()
             .filter_map(CommonPrefix::prefix)
         {
-            let name =
-                S3StorageInner::strip_repository_prefix(&repository, prefix_entry).to_string();
-            if S3StorageInner::is_hidden_file(&name) {
+            let full_name = S3StorageInner::strip_repository_prefix(&repository, prefix_entry);
+            let Some(relative_name) = full_name.strip_prefix(&base_prefix) else {
+                continue;
+            };
+            let cleaned = relative_name.trim_end_matches('/');
+            if cleaned.is_empty() {
                 continue;
             }
-            let dir_name = if name.ends_with('/') {
-                name
-            } else {
-                format!("{name}/")
-            };
+
+            if S3StorageInner::is_hidden_file(cleaned) {
+                continue;
+            }
+
             let meta = StorageFileMeta::<FileType> {
-                name: dir_name,
+                name: cleaned.to_string(),
                 file_type: FileType::Directory(DirectoryFileType { file_count: 0 }),
                 modified: Local::now().fixed_offset(),
                 created: Local::now().fixed_offset(),
@@ -1498,8 +1446,8 @@ impl Storage for S3Storage {
             file_type: DirectoryFileType {
                 file_count: entries.len() as u64,
             },
-            modified: Local::now().fixed_offset(),
-            created: Local::now().fixed_offset(),
+            modified: meta.modified,
+            created: meta.created,
         };
 
         Ok(Some(VecDirectoryListStream::new(entries, dir_meta)))
@@ -1507,6 +1455,32 @@ impl Storage for S3Storage {
 }
 
 impl S3Storage {
+    async fn collect_directory(
+        &self,
+        repository: Uuid,
+        location: &StoragePath,
+    ) -> Result<Option<StorageFile>, S3StorageError> {
+        let Some(stream) = self.stream_directory(repository, location).await? else {
+            return Ok(None);
+        };
+
+        let file_count = stream.number_of_files();
+        let files = collect_directory_stream(stream)
+            .await
+            .map_err(|err| S3StorageError::AwsSdkError(err.to_string()))?;
+
+        let meta = StorageFileMeta::<DirectoryFileType> {
+            name: location.to_string(),
+            file_type: DirectoryFileType {
+                file_count: file_count.max(files.len() as u64),
+            },
+            modified: Local::now().fixed_offset(),
+            created: Local::now().fixed_offset(),
+        };
+
+        Ok(Some(StorageFile::Directory { meta, files }))
+    }
+
     /// Calculate total object size for a repository using paginated ListObjectsV2 calls.
     /// Skips internal Nitro Repo metadata objects.
     pub async fn repository_size_bytes(&self, repository: Uuid) -> Result<u64, S3StorageError> {
@@ -1637,7 +1611,7 @@ mod tests {
         S3Credentials, S3StorageRegion,
     };
     use crate::{
-        FileType, StaticStorageFactory, Storage, s3::S3StorageFactory,
+        FileType, StaticStorageFactory, Storage, StorageFile, s3::S3StorageFactory,
         testing::storage::TestingStorage,
     };
     use nr_core::storage::StoragePath;
@@ -1771,6 +1745,51 @@ mod tests {
             Some("application/octet-stream")
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_file_lists_prefix_directories() -> anyhow::Result<()> {
+        let Some(config) = crate::testing::start_storage_test("s3")? else {
+            warn!("S3 Storage Test Skipped");
+            return Ok(());
+        };
+
+        let storage =
+            match <S3StorageFactory as StaticStorageFactory>::create_storage_from_config(config)
+                .await
+            {
+                Ok(storage) => storage,
+                Err(err) => {
+                    warn!(?err, "S3 Storage Test Skipped: unable to connect");
+                    return Ok(());
+                }
+            };
+
+        let repository = uuid::Uuid::new_v4();
+        let manifest_path = StoragePath::from("v2/library/alpine/manifests/latest");
+        storage
+            .save_file(repository, b"{}".to_vec().into(), &manifest_path)
+            .await?;
+
+        let root = StoragePath::from("v2");
+        let Some(entry) = storage.open_file(repository, &root).await? else {
+            anyhow::bail!("expected directory listing for prefix without placeholder object");
+        };
+
+        let StorageFile::Directory { files, .. } = entry else {
+            anyhow::bail!("expected directory result, got file");
+        };
+
+        let child_names: Vec<_> = files.into_iter().map(|meta| meta.name).collect();
+        assert!(
+            child_names
+                .iter()
+                .any(|name| name == "library/" || name == "library"),
+            "directory listing should expose immediate child entries, got {child_names:?}"
+        );
+
+        storage.unload().await?;
         Ok(())
     }
 

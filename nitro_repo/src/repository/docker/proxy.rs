@@ -338,6 +338,12 @@ application/vnd.oci.image.index.v1+json, \
 application/vnd.oci.image.manifest.v1+json, \
 application/vnd.docker.distribution.manifest.v1+json";
 
+const MODERN_UPSTREAM_ACCEPT: &str = "\
+application/vnd.docker.distribution.manifest.list.v2+json, \
+application/vnd.oci.image.index.v1+json, \
+application/vnd.docker.distribution.manifest.v2+json, \
+application/vnd.oci.image.manifest.v1+json";
+
 fn reorder_accept_header(raw: Option<&str>) -> Option<String> {
     let cleaned = raw.and_then(|value| {
         let trimmed = value.trim();
@@ -400,6 +406,51 @@ struct StreamedDownload {
     path: tempfile::TempPath,
     size: u64,
     digest: String,
+}
+
+async fn ensure_manifest_cached(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    manifest_path: &StoragePath,
+    repository_name: &str,
+    reference: &str,
+    streamed: &StreamedDownload,
+    computed_digest: &str,
+) -> Result<(), DockerError> {
+    match storage
+        .save_file(
+            repository_id,
+            FileContent::Path(streamed.path.to_path_buf()),
+            manifest_path,
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(nr_storage::StorageError::PathCollision(_)) => {
+            // Existing cached entry differs? Replace it with freshly fetched manifest.
+            let cached =
+                load_cached_manifest(storage, repository_id, manifest_path, reference).await?;
+
+            if let Some(cached) = cached {
+                if cached.digest == computed_digest {
+                    return Ok(());
+                }
+            }
+
+            // Best effort overwrite for tag collisions.
+            let _ = storage.delete_file(repository_id, manifest_path).await;
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::Path(streamed.path.to_path_buf()),
+                    manifest_path,
+                )
+                .await
+                .map(|_| ())
+                .map_err(DockerError::from)
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn fetch_lock_map() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
@@ -747,8 +798,42 @@ async fn download_manifest_from_upstream(
     let headers = response.headers().clone();
     let streamed = stream_response_to_tempfile(response).await?;
     let manifest_bytes = tokio::fs::read(streamed.path.to_path_buf()).await?;
-    let content_type = manifest_media_type(&manifest_bytes, Some(&headers));
-    let computed_digest = streamed.digest.clone();
+    let mut content_type = manifest_media_type(&manifest_bytes, Some(&headers));
+    let mut streamed_download = streamed;
+
+    // Reject schema1 in favor of modern manifests; re-fetch with modern-only Accept.
+    if is_schema1_manifest(&content_type) {
+        let modern_accept = Some(MODERN_UPSTREAM_ACCEPT);
+        let modern_response = upstream.fetch(&path, modern_accept).await?;
+        let modern_status = modern_response.status();
+        if modern_status.is_success() {
+            let modern_headers = modern_response.headers().clone();
+            let modern_streamed = stream_response_to_tempfile(modern_response).await?;
+            let modern_bytes = tokio::fs::read(modern_streamed.path.to_path_buf()).await?;
+            let modern_content_type = manifest_media_type(&modern_bytes, Some(&modern_headers));
+            let modern_digest = modern_streamed.digest.clone();
+
+            if let Some(expected) = digest_from_header(&modern_headers) {
+                if expected != modern_digest {
+                    return Err(DockerError::DigestMismatch {
+                        expected,
+                        actual: modern_digest,
+                    });
+                }
+            }
+
+            content_type = modern_content_type;
+            streamed_download = modern_streamed;
+        } else {
+            warn!(
+                %reference,
+                repository = repository_name,
+                status = %modern_status,
+                "Upstream returned schema1; modern re-fetch failed"
+            );
+        }
+    }
+    let computed_digest = streamed_download.digest.clone();
 
     if let Some(expected) = digest_from_header(&headers) {
         if expected != computed_digest {
@@ -767,57 +852,43 @@ async fn download_manifest_from_upstream(
     }
 
     if upstream.cache_enabled {
-        if let Err(err) = storage
-            .save_file(
-                repository_id,
-                FileContent::Path(streamed.path.to_path_buf()),
-                manifest_path,
-            )
-            .await
-        {
-            if matches!(err, nr_storage::StorageError::PathCollision(_)) {
-                warn!(
-                    ?manifest_path,
-                    "Manifest cache write hit path collision; another request likely wrote it first"
-                );
-            } else {
-                return Err(err.into());
-            }
-        }
+        ensure_manifest_cached(
+            storage,
+            repository_id,
+            manifest_path,
+            repository_name,
+            reference,
+            &streamed_download,
+            &computed_digest,
+        )
+        .await?;
 
         if !reference.starts_with("sha256:") {
             let digest_path = StoragePath::from(format!(
                 "v2/{}/manifests/{}",
                 repository_name, &computed_digest
             ));
-            if let Err(err) = storage
-                .save_file(
-                    repository_id,
-                    FileContent::Path(streamed.path.to_path_buf()),
-                    &digest_path,
-                )
-                .await
-            {
-                if matches!(err, nr_storage::StorageError::PathCollision(_)) {
-                    warn!(
-                        ?digest_path,
-                        "Digest manifest cache write hit path collision; another request likely wrote it first"
-                    );
-                } else {
-                    return Err(err.into());
-                }
-            }
+            ensure_manifest_cached(
+                storage,
+                repository_id,
+                &digest_path,
+                repository_name,
+                &computed_digest,
+                &streamed_download,
+                &computed_digest,
+            )
+            .await?;
         }
     }
 
     Ok(CachedManifest {
         reader: StorageFileReader::AsyncReader(Box::pin(TempFileReader::new(
-            tokio::fs::File::open(streamed.path.to_path_buf()).await?,
-            streamed.path,
+            tokio::fs::File::open(streamed_download.path.to_path_buf()).await?,
+            streamed_download.path,
         ))),
         digest: computed_digest,
         content_type,
-        length: streamed.size,
+        length: streamed_download.size,
     })
 }
 
@@ -840,18 +911,39 @@ pub(crate) async fn fetch_and_cache_manifest(
         if let Some(cached) =
             load_cached_manifest(storage, repository_id, &manifest_path, reference).await?
         {
-            if accept_allows_media_type(accept, &cached.content_type) {
+            let prefer_modern = client_prefers_modern_manifest(accept);
+            let cached_is_schema1 = is_schema1_manifest(&cached.content_type);
+
+            if cached_is_schema1 {
+                // Purge schema1 cache to force a modern re-fetch. For digest requests, fail fast so
+                // the client retries the tag and learns the modern digest.
+                let _ = storage.delete_file(repository_id, &manifest_path).await;
+                if !reference.starts_with("sha256:") {
+                    let digest_path = StoragePath::from(format!(
+                        "v2/{}/manifests/{}",
+                        repository_name, cached.digest
+                    ));
+                    let _ = storage.delete_file(repository_id, &digest_path).await;
+                } else {
+                    return Err(DockerError::ManifestNotFound(reference.to_string()));
+                }
+            } else if accept_allows_media_type(accept, &cached.content_type) {
                 return Ok(cached);
             }
-            // Client requested a different media type than we cached (e.g., prefer schema2/OCI over schema1).
-            // Re-download with the client's Accept header to honor content negotiation and refresh cache.
+
+            // Re-download with the client's Accept header (or modern-only) to honor content negotiation.
+            let override_accept = if prefer_modern {
+                Some(MODERN_UPSTREAM_ACCEPT)
+            } else {
+                accept
+            };
             match download_manifest_from_upstream(
                 upstream,
                 storage,
                 repository_id,
                 repository_name,
                 reference,
-                accept,
+                override_accept,
                 &manifest_path,
             )
             .await
@@ -862,9 +954,8 @@ pub(crate) async fn fetch_and_cache_manifest(
                         %reference,
                         repository = repository_name,
                         %err,
-                        "Failed to refresh manifest for requested Accept header; serving cached variant"
+                        "Failed to refresh manifest; cache miss path will retry"
                     );
-                    return Ok(cached);
                 }
             }
         }
@@ -875,12 +966,36 @@ pub(crate) async fn fetch_and_cache_manifest(
             repository_id,
             repository_name,
             reference,
-            accept,
+            Some(MODERN_UPSTREAM_ACCEPT),
             &manifest_path,
         )
         .await
     })
     .await
+}
+
+fn is_schema1_manifest(media_type: &str) -> bool {
+    media_type.to_ascii_lowercase().contains("manifest.v1+json")
+}
+
+fn client_prefers_modern_manifest(accept: Option<&str>) -> bool {
+    let Some(accept) = accept else {
+        return true;
+    };
+    accept.split(',').any(|token| {
+        let kind = token
+            .split(';')
+            .next()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        matches!(
+            kind.as_str(),
+            "application/vnd.docker.distribution.manifest.list.v2+json"
+                | "application/vnd.docker.distribution.manifest.v2+json"
+                | "application/vnd.oci.image.index.v1+json"
+                | "application/vnd.oci.image.manifest.v1+json"
+        )
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
