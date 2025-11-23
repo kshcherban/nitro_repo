@@ -14,6 +14,7 @@ use std::{
 };
 
 use axum::body::Body;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::StreamExt;
 use http::{
@@ -24,7 +25,7 @@ use nr_core::{
     repository::Visibility, repository::config::RepositoryConfigType, storage::StoragePath,
     utils::base64_utils,
 };
-use nr_storage::{DynStorage, FileContent, FileType, Storage, StorageFileReader};
+use nr_storage::{DynStorage, FileContent, FileType, Storage, StorageFile, StorageFileReader};
 use parking_lot::RwLock;
 use reqwest::{Client, Response};
 use schemars::JsonSchema;
@@ -62,10 +63,23 @@ pub struct DockerProxyConfig {
     /// Enable caching of pulled images
     #[serde(default = "default_cache_enabled")]
     pub cache_enabled: bool,
+
+    /// How often to revalidate mutable tag manifests against upstream (seconds).
+    /// Set to 0 to always revalidate; large values reduce HEAD traffic.
+    #[serde(default = "default_revalidation_ttl")]
+    pub revalidation_ttl_seconds: u64,
+
+    /// Disable tag revalidation (not recommended; for air-gapped deployments only).
+    #[serde(default)]
+    pub skip_tag_revalidation: bool,
 }
 
 fn default_cache_enabled() -> bool {
     true
+}
+
+fn default_revalidation_ttl() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -79,6 +93,8 @@ pub struct ProxyUpstream {
     base: Url,
     client: Client,
     cache_enabled: bool,
+    revalidation_ttl: u64,
+    skip_tag_revalidation: bool,
 }
 
 impl ProxyUpstream {
@@ -92,6 +108,8 @@ impl ProxyUpstream {
             base,
             client,
             cache_enabled: config.cache_enabled,
+            revalidation_ttl: config.revalidation_ttl_seconds,
+            skip_tag_revalidation: config.skip_tag_revalidation,
         })
     }
 
@@ -331,6 +349,49 @@ fn digest_from_hash(hash: &str) -> Option<String> {
     None
 }
 
+fn manifest_meta_path(manifest_path: &StoragePath) -> StoragePath {
+    let mut as_string = manifest_path.to_string();
+    as_string.push_str(".nr-docker-tagmeta");
+    StoragePath::from(as_string)
+}
+
+async fn load_manifest_meta(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    manifest_path: &StoragePath,
+) -> Result<Option<ManifestMeta>, DockerError> {
+    let meta_path = manifest_meta_path(manifest_path);
+    let Some(StorageFile::File { content, .. }) =
+        storage.open_file(repository_id, &meta_path).await?
+    else {
+        return Ok(None);
+    };
+
+    let bytes = content.read_to_vec(4096).await?;
+    let meta: ManifestMeta = serde_json::from_slice(&bytes).map_err(|err| {
+        DockerError::InvalidManifest(format!("Invalid manifest meta json: {err}"))
+    })?;
+    Ok(Some(meta))
+}
+
+async fn save_manifest_meta(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    manifest_path: &StoragePath,
+    digest: &str,
+) -> Result<(), DockerError> {
+    let meta = ManifestMeta {
+        digest: digest.to_string(),
+        last_checked: Utc::now(),
+    };
+    let bytes = serde_json::to_vec(&meta)?;
+    let meta_path = manifest_meta_path(manifest_path);
+    storage
+        .save_file(repository_id, FileContent::Bytes(bytes.into()), &meta_path)
+        .await?;
+    Ok(())
+}
+
 const DEFAULT_UPSTREAM_ACCEPT: &str = "\
 application/vnd.docker.distribution.manifest.list.v2+json, \
 application/vnd.docker.distribution.manifest.v2+json, \
@@ -406,6 +467,12 @@ struct StreamedDownload {
     path: tempfile::TempPath,
     size: u64,
     digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManifestMeta {
+    digest: String,
+    last_checked: DateTime<Utc>,
 }
 
 async fn ensure_manifest_cached(
@@ -881,6 +948,10 @@ async fn download_manifest_from_upstream(
         }
     }
 
+    if !reference.starts_with("sha256:") {
+        save_manifest_meta(storage, repository_id, manifest_path, &computed_digest).await?;
+    }
+
     Ok(CachedManifest {
         reader: StorageFileReader::AsyncReader(Box::pin(TempFileReader::new(
             tokio::fs::File::open(streamed_download.path.to_path_buf()).await?,
@@ -890,6 +961,69 @@ async fn download_manifest_from_upstream(
         content_type,
         length: streamed_download.size,
     })
+}
+
+enum RevalidationOutcome {
+    Unchanged(CachedManifest),
+    Refetched(CachedManifest),
+}
+
+async fn revalidate_manifest_tag(
+    upstream: &ProxyUpstream,
+    storage: &DynStorage,
+    repository_id: Uuid,
+    repository_name: &str,
+    reference: &str,
+    manifest_path: &StoragePath,
+    cached: CachedManifest,
+) -> Result<RevalidationOutcome, DockerError> {
+    if upstream.skip_tag_revalidation || reference.starts_with("sha256:") {
+        return Ok(RevalidationOutcome::Unchanged(cached));
+    }
+
+    if let Some(meta) = load_manifest_meta(storage, repository_id, manifest_path).await? {
+        let age = Utc::now().signed_duration_since(meta.last_checked);
+        if age.num_seconds() >= 0 && (age.num_seconds() as u64) < upstream.revalidation_ttl {
+            if meta.digest == cached.digest {
+                return Ok(RevalidationOutcome::Unchanged(cached));
+            }
+        }
+    }
+
+    let upstream_repo = upstream_image_name(repository_name, upstream);
+    let path = format!("/v2/{}/manifests/{}", upstream_repo, reference);
+    let head = upstream.fetch(&path, Some(MODERN_UPSTREAM_ACCEPT)).await?;
+    if head.status() == StatusCode::NOT_FOUND {
+        // Upstream tag disappeared; drop cache so next request triggers 404.
+        let _ = storage.delete_file(repository_id, manifest_path).await;
+        return Err(DockerError::ManifestNotFound(reference.to_string()));
+    }
+    if !head.status().is_success() {
+        return Ok(RevalidationOutcome::Unchanged(cached));
+    }
+
+    let maybe_digest = digest_from_header(head.headers());
+    if let Some(digest) = maybe_digest {
+        if digest == cached.digest {
+            save_manifest_meta(storage, repository_id, manifest_path, &digest).await?;
+            return Ok(RevalidationOutcome::Unchanged(cached));
+        }
+    }
+
+    // Upstream moved; fetch the new manifest and cache it.
+    let refreshed = download_manifest_from_upstream(
+        upstream,
+        storage,
+        repository_id,
+        repository_name,
+        reference,
+        Some(MODERN_UPSTREAM_ACCEPT),
+        manifest_path,
+    )
+    .await?;
+
+    save_manifest_meta(storage, repository_id, manifest_path, &refreshed.digest).await?;
+    Ok(RevalidationOutcome::Refetched(refreshed))
 }
 
 pub(crate) async fn fetch_and_cache_manifest(
@@ -927,8 +1061,25 @@ pub(crate) async fn fetch_and_cache_manifest(
                 } else {
                     return Err(DockerError::ManifestNotFound(reference.to_string()));
                 }
-            } else if accept_allows_media_type(accept, &cached.content_type) {
-                return Ok(cached);
+            } else {
+                match revalidate_manifest_tag(
+                    upstream,
+                    storage,
+                    repository_id,
+                    repository_name,
+                    reference,
+                    &manifest_path,
+                    cached,
+                )
+                .await?
+                {
+                    RevalidationOutcome::Unchanged(cached) => {
+                        if accept_allows_media_type(accept, &cached.content_type) {
+                            return Ok(cached);
+                        }
+                    }
+                    RevalidationOutcome::Refetched(new_manifest) => return Ok(new_manifest),
+                }
             }
 
             // Re-download with the client's Accept header (or modern-only) to honor content negotiation.
@@ -1647,6 +1798,77 @@ mod tests {
         Ok((format!("http://{}", addr), server))
     }
 
+    async fn start_revalidating_upstream_server(
+        manifest_bytes: Vec<u8>,
+    ) -> anyhow::Result<(String, Arc<RwLock<Vec<u8>>>, JoinHandle<()>)> {
+        let state = Arc::new(RwLock::new(manifest_bytes));
+        let state_clone = state.clone();
+        let state_for_return = state.clone();
+
+        let app = Router::new().route(
+            "/v2/library/test/manifests/latest",
+            get({
+                move || {
+                    let state = state_clone.clone();
+                    async move {
+                        let bytes = state.read().clone();
+                        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+                        (
+                            StatusCode::OK,
+                            [
+                                (
+                                    "Docker-Content-Digest",
+                                    HeaderValue::from_str(&digest).unwrap(),
+                                ),
+                                    (
+                                        "Content-Type",
+                                        HeaderValue::from_static(
+                                            "application/vnd.docker.distribution.manifest.v2+json",
+                                        ),
+                                    ),
+                            ],
+                            bytes,
+                        )
+                    }
+                }
+            })
+            .head({
+                move || {
+                    let state = state.clone();
+                    async move {
+                        let bytes = state.read().clone();
+                        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+                        (
+                            StatusCode::OK,
+                            [
+                                (
+                                    "Docker-Content-Digest",
+                                    HeaderValue::from_str(&digest).unwrap(),
+                                ),
+                                    (
+                                        "Content-Type",
+                                        HeaderValue::from_static(
+                                            "application/vnd.docker.distribution.manifest.v2+json",
+                                        ),
+                                    ),
+                            ],
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app).await {
+                eprintln!("upstream server error: {err}");
+            }
+        });
+
+        Ok((format!("http://{}", addr), state_for_return, server))
+    }
+
     #[tokio::test]
     async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
         let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":7023,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"layers":[]}"#;
@@ -1659,6 +1881,8 @@ mod tests {
             upstream_url: base,
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         let cached = fetch_and_cache_manifest(
@@ -1720,6 +1944,8 @@ mod tests {
             upstream_url: base,
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         // First fetch - hit upstream
@@ -1788,6 +2014,8 @@ mod tests {
             upstream_url: base,
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         // Prime cache with Accept that the upstream honors.
@@ -1835,6 +2063,8 @@ mod tests {
             upstream_url: base,
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         // Prime the cache using the upstream manifest
@@ -1870,6 +2100,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tag_revalidation_fetches_moved_digest() -> anyhow::Result<()> {
+        let repo_id = Uuid::new_v4();
+        let storage = test_storage().await;
+
+        let manifest_v1 = br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"mediaType":"application/vnd.docker.container.image.v1+json","size":2,"digest":"sha256:aaaa"},"layers":[]}"#;
+        let manifest_v2 = br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"mediaType":"application/vnd.docker.container.image.v1+json","size":2,"digest":"sha256:bbbb"},"layers":[]}"#;
+
+        let (upstream_url, state, server) =
+            start_revalidating_upstream_server(manifest_v1.to_vec()).await?;
+
+        let upstream = ProxyUpstream::new(&DockerProxyConfig {
+            upstream_url,
+            upstream_auth: None,
+            cache_enabled: true,
+            revalidation_ttl_seconds: 0,
+            skip_tag_revalidation: false,
+        })?;
+
+        let first = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repo_id,
+            "library/test",
+            "latest",
+            Some(MODERN_UPSTREAM_ACCEPT),
+        )
+        .await?;
+
+        let first_digest = first.digest.clone();
+        assert!(first_digest.starts_with("sha256:"));
+
+        // Change upstream manifest and trigger revalidation
+        *state.write() = manifest_v2.to_vec();
+
+        let refreshed = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repo_id,
+            "library/test",
+            "latest",
+            Some(MODERN_UPSTREAM_ACCEPT),
+        )
+        .await?;
+
+        assert_ne!(refreshed.digest, first_digest);
+
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn accept_mismatch_triggers_refetch_with_preferred_media_type() -> anyhow::Result<()> {
         // Upstream returns schema1 by default, schema2 when explicitly requested via Accept
         let v1_manifest = br#"{"schemaVersion":1,"name":"library/alpine","fsLayers":[]}"#;
@@ -1882,6 +2163,8 @@ mod tests {
             upstream_url: base,
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         // Cache initial (schema1) manifest without Accept header
@@ -1934,6 +2217,8 @@ mod tests {
             upstream_url: base,
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         // Cache manifest once
@@ -2019,6 +2304,8 @@ mod tests {
             upstream_url: format!("http://{addr}"),
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         let err = fetch_and_cache_blob(
@@ -2092,6 +2379,8 @@ mod tests {
             upstream_url: format!("http://{addr}"),
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         let blob = fetch_and_cache_blob(
@@ -2200,6 +2489,8 @@ mod tests {
             upstream_url: format!("http://{addr}"),
             upstream_auth: None,
             cache_enabled: true,
+            revalidation_ttl_seconds: default_revalidation_ttl(),
+            skip_tag_revalidation: false,
         })?;
 
         let manifest = fetch_and_cache_manifest(
