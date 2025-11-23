@@ -15,7 +15,7 @@ services:
       timeout: 5s
       retries: 10
 
-  nitro_repo:
+  nitro:
     build: .
     restart: unless-stopped
     network_mode: "bridge"
@@ -24,7 +24,7 @@ services:
         condition: service_healthy
     links:
       - postgres
-    command: ["start", "--config", "/data/nitro_repo.toml"]
+    command: ["start", "--config", "/data/config.toml"]
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.nitro.loadbalancer.server.port=6742"
@@ -32,11 +32,11 @@ services:
       - "traefik.http.routers.nitro.entrypoints=https"
       - "traefik.http.routers.nitro.tls.certresolver=letsencrypt"
     volumes:
-      - nitro_repo_data:/data
-      - ./docker/config.toml:/data/nitro_repo.toml:ro
+      - nitro_data:/data
+      - ./docker/config.toml:/data/config.toml:ro
 
 volumes:
-  nitro_repo_data:
+  nitro_data:
   postgres_data:
 
 networks:

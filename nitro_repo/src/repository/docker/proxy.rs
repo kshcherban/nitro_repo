@@ -331,6 +331,71 @@ fn digest_from_hash(hash: &str) -> Option<String> {
     None
 }
 
+const DEFAULT_UPSTREAM_ACCEPT: &str = "\
+application/vnd.docker.distribution.manifest.list.v2+json, \
+application/vnd.docker.distribution.manifest.v2+json, \
+application/vnd.oci.image.index.v1+json, \
+application/vnd.oci.image.manifest.v1+json, \
+application/vnd.docker.distribution.manifest.v1+json";
+
+fn reorder_accept_header(raw: Option<&str>) -> Option<String> {
+    let cleaned = raw.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    let header = match cleaned {
+        Some(value) => value,
+        None => return Some(DEFAULT_UPSTREAM_ACCEPT.to_string()),
+    };
+
+    let mut entries: Vec<(usize, &str, u8)> = header
+        .split(',')
+        .enumerate()
+        .filter_map(|(idx, token)| {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((idx, trimmed, accept_priority(trimmed)))
+            }
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return Some(DEFAULT_UPSTREAM_ACCEPT.to_string());
+    }
+
+    entries.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
+    let reordered = entries
+        .into_iter()
+        .map(|(_, token, _)| token)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(reordered)
+}
+
+fn accept_priority(token: &str) -> u8 {
+    let media_type = token
+        .split(';')
+        .next()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    match media_type.as_str() {
+        "application/vnd.docker.distribution.manifest.list.v2+json" => 0,
+        "application/vnd.docker.distribution.manifest.v2+json" => 1,
+        "application/vnd.oci.image.index.v1+json" => 2,
+        "application/vnd.oci.image.manifest.v1+json" => 3,
+        "application/vnd.docker.distribution.manifest.v1+json" => 4,
+        "*/*" => 5,
+        _ => 10,
+    }
+}
+
 struct StreamedDownload {
     path: tempfile::TempPath,
     size: u64,
@@ -667,7 +732,8 @@ async fn download_manifest_from_upstream(
 ) -> Result<CachedManifest, DockerError> {
     let upstream_repo = upstream_image_name(repository_name, upstream);
     let path = format!("/v2/{}/manifests/{}", upstream_repo, reference);
-    let response = upstream.fetch(&path, accept).await?;
+    let upstream_accept = reorder_accept_header(accept);
+    let response = upstream.fetch(&path, upstream_accept.as_deref()).await?;
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
         return Err(DockerError::ManifestNotFound(reference.to_string()));
@@ -779,6 +845,28 @@ pub(crate) async fn fetch_and_cache_manifest(
             }
             // Client requested a different media type than we cached (e.g., prefer schema2/OCI over schema1).
             // Re-download with the client's Accept header to honor content negotiation and refresh cache.
+            match download_manifest_from_upstream(
+                upstream,
+                storage,
+                repository_id,
+                repository_name,
+                reference,
+                accept,
+                &manifest_path,
+            )
+            .await
+            {
+                Ok(manifest) => return Ok(manifest),
+                Err(err) => {
+                    warn!(
+                        %reference,
+                        repository = repository_name,
+                        %err,
+                        "Failed to refresh manifest for requested Accept header; serving cached variant"
+                    );
+                    return Ok(cached);
+                }
+            }
         }
 
         download_manifest_from_upstream(
@@ -793,6 +881,34 @@ pub(crate) async fn fetch_and_cache_manifest(
         .await
     })
     .await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MediaTypeFamily {
+    ManifestV2,
+    ManifestListV2,
+    Other(String),
+}
+
+impl MediaTypeFamily {
+    fn from_str(value: &str) -> Self {
+        match value {
+            "application/vnd.docker.distribution.manifest.v2+json"
+            | "application/vnd.oci.image.manifest.v1+json" => MediaTypeFamily::ManifestV2,
+            "application/vnd.docker.distribution.manifest.list.v2+json"
+            | "application/vnd.oci.image.index.v1+json" => MediaTypeFamily::ManifestListV2,
+            _ => MediaTypeFamily::Other(value.to_string()),
+        }
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (MediaTypeFamily::ManifestV2, MediaTypeFamily::ManifestV2) => true,
+            (MediaTypeFamily::ManifestListV2, MediaTypeFamily::ManifestListV2) => true,
+            (MediaTypeFamily::Other(a), MediaTypeFamily::Other(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 fn accept_allows_media_type(accept: Option<&str>, media_type: &str) -> bool {
@@ -810,19 +926,27 @@ fn accept_allows_media_type(accept: Option<&str>, media_type: &str) -> bool {
 }
 
 fn accept_token_matches(token: &str, media_type: &str) -> bool {
+    let token = token.trim();
     if token == "*/*" {
         return true;
     }
-    if let Some((token_type, token_sub)) = token.split_once('/') {
+    let media_type = media_type.trim();
+    let token_lower = token.to_ascii_lowercase();
+    let media_lower = media_type.to_ascii_lowercase();
+    if token_lower == "*/*" {
+        return true;
+    }
+    if let Some((token_type, token_sub)) = token_lower.split_once('/') {
         if token_sub == "*" {
-            if let Some((media_type_type, _)) = media_type.split_once('/') {
-                return token_type.eq_ignore_ascii_case(media_type_type);
+            if let Some((media_type_type, _)) = media_lower.split_once('/') {
+                return token_type == media_type_type;
             }
-        } else {
-            return token.eq_ignore_ascii_case(media_type);
+            return false;
         }
     }
-    false
+    let token_family = MediaTypeFamily::from_str(&token_lower);
+    let media_family = MediaTypeFamily::from_str(&media_lower);
+    token_family.matches(&media_family)
 }
 
 async fn load_cached_blob(
@@ -1354,6 +1478,60 @@ mod tests {
         Ok((format!("http://{}", addr), server))
     }
 
+    async fn start_accept_filtered_upstream_server(
+        manifest_list: &'static [u8],
+    ) -> anyhow::Result<(String, JoinHandle<()>)> {
+        let list_digest = format!("sha256:{:x}", sha2::Sha256::digest(manifest_list));
+        let content_length = HeaderValue::from_str(&manifest_list.len().to_string())?;
+        let digest_header = HeaderValue::from_str(&list_digest)?;
+        let app = Router::new().route(
+            "/v2/library/alpine/manifests/latest",
+            get(move |headers: HeaderMap| {
+                let manifest_list = manifest_list;
+                let digest_header = digest_header.clone();
+                let content_length = content_length.clone();
+                async move {
+                    let accept = headers
+                        .get(ACCEPT)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default();
+                    if accept.contains("application/vnd.docker.distribution.manifest.v2+json")
+                        && !accept
+                            .contains("application/vnd.docker.distribution.manifest.list.v2+json")
+                    {
+                        axum::response::Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(AxumBody::from(
+                                r#"{"errors":[{"code":"MANIFEST_UNKNOWN","message":"filtered"}]}"#,
+                            ))
+                            .unwrap()
+                    } else {
+                        axum::response::Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Docker-Content-Digest", digest_header.clone())
+                            .header(
+                                CONTENT_TYPE,
+                                "application/vnd.docker.distribution.manifest.list.v2+json",
+                            )
+                            .header(CONTENT_LENGTH, content_length.clone())
+                            .body(AxumBody::from(manifest_list))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app).await {
+                eprintln!("upstream server error: {err}");
+            }
+        });
+        Ok((format!("http://{}", addr), server))
+    }
+
     #[tokio::test]
     async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
         let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":7023,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"layers":[]}"#;
@@ -1463,6 +1641,70 @@ mod tests {
         let second_body = reader_bytes(reader, blob.len() as u64).await?;
         assert_eq!(second_body, blob);
 
+        Ok(())
+    }
+
+    #[test]
+    fn accept_allows_media_type_handles_oci_aliases() {
+        assert!(
+            accept_allows_media_type(
+                Some("application/vnd.oci.image.manifest.v1+json"),
+                "application/vnd.docker.distribution.manifest.v2+json"
+            ),
+            "OCI image manifest should satisfy Docker schema2 requests"
+        );
+        assert!(
+            accept_allows_media_type(
+                Some("application/vnd.oci.image.index.v1+json"),
+                "application/vnd.docker.distribution.manifest.list.v2+json"
+            ),
+            "OCI index should satisfy Docker manifest list requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn manifest_accept_mismatch_falls_back_to_cache() -> anyhow::Result<()> {
+        let manifest_list = br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.list.v2+json","manifests":[]}"#;
+        let (base, server) = start_accept_filtered_upstream_server(manifest_list).await?;
+
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let upstream = ProxyUpstream::new(&DockerProxyConfig {
+            upstream_url: base,
+            upstream_auth: None,
+            cache_enabled: true,
+        })?;
+
+        // Prime cache with Accept that the upstream honors.
+        fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            Some("application/vnd.docker.distribution.manifest.list.v2+json"),
+        )
+        .await?;
+
+        // Request a manifest with a media type the upstream refuses; should fall back to cache.
+        let cached = fetch_and_cache_manifest(
+            &upstream,
+            &storage,
+            repository_id,
+            "library/alpine",
+            "latest",
+            Some("application/vnd.docker.distribution.manifest.v2+json"),
+        )
+        .await?;
+
+        assert_eq!(
+            cached.content_type,
+            "application/vnd.docker.distribution.manifest.list.v2+json"
+        );
+        let bytes = reader_bytes(cached.reader, manifest_list.len() as u64).await?;
+        assert_eq!(bytes, manifest_list);
+
+        server.abort();
         Ok(())
     }
 

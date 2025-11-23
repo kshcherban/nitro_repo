@@ -1,10 +1,10 @@
 services:
-  nitro_repo:
-    # volumes:
-    #   - ./target/debug/nitro_repo:/app/nitro_repo:ro
+  nitro:
+    volumes:
+      - ./target/debug/nitro_repo:/app/nitro_repo:ro
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-      - OTEL_SERVICE_NAME=nitro-repo
+      - OTEL_SERVICE_NAME=nitro
       - NITRO_TRACING_ENABLED=true
     ports:
       - "127.0.0.1:8000:6742"
