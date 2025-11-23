@@ -78,6 +78,7 @@ jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 casbin = { version = "2.15", default-features = false, features = ["runtime-tokio"] }
 # Caching
 moka = { version = "0.12", features = ["future"] }
+lru = "0.16"
 # Rust Internal
 strum.workspace = true
 thiserror.workspace = true

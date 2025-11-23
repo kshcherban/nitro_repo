@@ -3068,6 +3068,7 @@ dependencies = [
  "inquire",
  "jsonwebtoken",
  "lettre",
+ "lru 0.16.2",
  "maven-rs",
  "md-5",
  "mime",

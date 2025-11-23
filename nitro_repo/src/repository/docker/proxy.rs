@@ -4,6 +4,7 @@
 //! upstream Docker registry, caching responses locally.
 
 use std::{
+    num::NonZeroUsize,
     pin::Pin,
     sync::{
         Arc,
@@ -15,12 +16,12 @@ use std::{
 
 use axum::body::Body;
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
 use futures::StreamExt;
 use http::{
     HeaderMap, StatusCode,
     header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE},
 };
+use lru::LruCache;
 use nr_core::{
     repository::Visibility, repository::config::RepositoryConfigType, storage::StoragePath,
     utils::base64_utils,
@@ -484,55 +485,161 @@ async fn ensure_manifest_cached(
     streamed: &StreamedDownload,
     computed_digest: &str,
 ) -> Result<(), DockerError> {
+    let digest_path = if reference.starts_with("sha256:") {
+        None
+    } else {
+        Some(StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            repository_name, computed_digest
+        )))
+    };
+
+    save_manifest_atomically(
+        storage,
+        repository_id,
+        manifest_path,
+        digest_path.as_ref(),
+        streamed,
+        reference,
+        computed_digest,
+    )
+    .await
+}
+
+async fn save_manifest_atomically(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    tag_path: &StoragePath,
+    digest_path: Option<&StoragePath>,
+    streamed: &StreamedDownload,
+    reference: &str,
+    computed_digest: &str,
+) -> Result<(), DockerError> {
+    write_manifest_file(
+        storage,
+        repository_id,
+        tag_path,
+        reference,
+        computed_digest,
+        streamed,
+    )
+    .await?;
+
+    if let Some(digest_path) = digest_path {
+        if let Err(err) = write_manifest_file(
+            storage,
+            repository_id,
+            digest_path,
+            computed_digest,
+            computed_digest,
+            streamed,
+        )
+        .await
+        {
+            let _ = storage.delete_file(repository_id, tag_path).await;
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
+
+async fn verify_cached_digest(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    path: &StoragePath,
+    reference: &str,
+    expected_digest: &str,
+) -> Result<(), DockerError> {
+    let cached = load_cached_manifest(storage, repository_id, path, reference).await?;
+    if let Some(cached) = cached {
+        if cached.digest == expected_digest {
+            return Ok(());
+        }
+    }
+    Err(DockerError::DigestMismatch {
+        expected: expected_digest.to_string(),
+        actual: cached_digest_string(storage, repository_id, path, reference).await,
+    })
+}
+
+async fn write_manifest_file(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    path: &StoragePath,
+    reference: &str,
+    expected_digest: &str,
+    streamed: &StreamedDownload,
+) -> Result<(), DockerError> {
+    if storage.file_exists(repository_id, path).await? {
+        match load_cached_manifest(storage, repository_id, path, reference).await? {
+            Some(existing) if existing.digest == expected_digest => return Ok(()),
+            _ => {
+                let _ = storage.delete_file(repository_id, path).await;
+            }
+        }
+    }
+
     match storage
         .save_file(
             repository_id,
             FileContent::Path(streamed.path.to_path_buf()),
-            manifest_path,
+            path,
         )
         .await
     {
         Ok(_) => Ok(()),
-        Err(nr_storage::StorageError::PathCollision(_)) => {
-            // Existing cached entry differs? Replace it with freshly fetched manifest.
-            let cached =
-                load_cached_manifest(storage, repository_id, manifest_path, reference).await?;
-
-            if let Some(cached) = cached {
-                if cached.digest == computed_digest {
-                    return Ok(());
-                }
-            }
-
-            // Best effort overwrite for tag collisions.
-            let _ = storage.delete_file(repository_id, manifest_path).await;
-            storage
-                .save_file(
-                    repository_id,
-                    FileContent::Path(streamed.path.to_path_buf()),
-                    manifest_path,
-                )
-                .await
-                .map(|_| ())
-                .map_err(DockerError::from)
-        }
+        Err(nr_storage::StorageError::PathCollision(_)) => verify_cached_digest(
+            storage,
+            repository_id,
+            path,
+            reference,
+            expected_digest,
+        )
+        .await,
         Err(err) => Err(err.into()),
     }
 }
 
-fn fetch_lock_map() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
-    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
-    LOCKS.get_or_init(DashMap::new)
+async fn cached_digest_string(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    path: &StoragePath,
+    reference: &str,
+) -> String {
+    match load_cached_manifest(storage, repository_id, path, reference).await {
+        Ok(Some(cached)) => cached.digest,
+        _ => "unknown".to_string(),
+    }
+}
+
+const LOCK_CACHE_CAPACITY: usize = 100_000;
+
+fn fetch_lock_map() -> &'static tokio::sync::Mutex<LruCache<String, Arc<tokio::sync::Mutex<()>>>> {
+    static LOCKS: OnceLock<tokio::sync::Mutex<LruCache<String, Arc<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
+    LOCKS.get_or_init(|| tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(LOCK_CACHE_CAPACITY).unwrap())))
+}
+
+#[cfg(test)]
+fn fetch_lock_len() -> usize {
+    futures::executor::block_on(async { fetch_lock_map().lock().await.len() })
 }
 
 async fn with_fetch_lock<F, T>(key: &str, f: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    let lock = fetch_lock_map()
-        .entry(key.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
+    let lock = {
+        let mut map = fetch_lock_map().lock().await;
+        if let Some(existing) = map.get(key) {
+            existing.clone()
+        } else {
+            let arc = Arc::new(tokio::sync::Mutex::new(()));
+            map.put(key.to_string(), arc.clone());
+            arc
+        }
+    };
     let _guard = lock.lock().await;
     f.await
 }
@@ -2167,7 +2274,7 @@ mod tests {
             skip_tag_revalidation: false,
         })?;
 
-        // Cache initial (schema1) manifest without Accept header
+        // Cache initial manifest; proxy now prefers modern media types so it should store schema2
         let cached_v1 = fetch_and_cache_manifest(
             &upstream,
             &storage,
@@ -2179,7 +2286,7 @@ mod tests {
         .await?;
         assert_eq!(
             cached_v1.content_type,
-            "application/vnd.docker.distribution.manifest.v1+json"
+            "application/vnd.docker.distribution.manifest.v2+json"
         );
 
         // Request again, this time with an Accept that prefers schema2
@@ -2416,6 +2523,83 @@ mod tests {
         );
 
         server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_lock_map_is_bounded() {
+        // Create many unique keys to force evictions
+        for i in 0..(LOCK_CACHE_CAPACITY + 500) {
+            let key = format!("manifest:test:{i}");
+            with_fetch_lock(&key, async {}).await;
+        }
+
+        assert!(
+            fetch_lock_len() <= LOCK_CACHE_CAPACITY,
+            "lock cache should be bounded"
+        );
+    }
+
+    fn streamed_from_bytes(bytes: &[u8]) -> anyhow::Result<StreamedDownload> {
+        use std::io::Write;
+        let mut file = tempfile::Builder::new().prefix("manifest-test-").tempfile()?;
+        file.write_all(bytes)?;
+        let path = file.into_temp_path();
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(bytes));
+        Ok(StreamedDownload {
+            path,
+            size: bytes.len() as u64,
+            digest,
+        })
+    }
+
+    #[tokio::test]
+    async fn manifest_collision_with_different_digest_errors() -> anyhow::Result<()> {
+        let storage = test_storage().await;
+        let repository_id = Uuid::new_v4();
+        let tag_path = StoragePath::from("v2/library/test/manifests/latest");
+
+        let manifest1 = br#"{"schemaVersion":2,"config":{"digest":"sha256:aaaa"},"layers":[]}"#;
+        let streamed1 = streamed_from_bytes(manifest1)?;
+        let digest_path1 = StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            "library/test", streamed1.digest
+        ));
+
+        save_manifest_atomically(
+            &storage,
+            repository_id,
+            &tag_path,
+            Some(&digest_path1),
+            &streamed1,
+            "latest",
+            &streamed1.digest,
+        )
+        .await?;
+
+        let manifest2 = br#"{"schemaVersion":2,"config":{"digest":"sha256:bbbb"},"layers":[]}"#;
+        let streamed2 = streamed_from_bytes(manifest2)?;
+        let digest_path2 = StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            "library/test", streamed2.digest
+        ));
+
+        save_manifest_atomically(
+            &storage,
+            repository_id,
+            &tag_path,
+            Some(&digest_path2),
+            &streamed2,
+            "latest",
+            &streamed2.digest,
+        )
+        .await?;
+
+        let cached = load_cached_manifest(&storage, repository_id, &tag_path, "latest")
+            .await?
+            .expect("tag should be cached");
+        assert_eq!(cached.digest, streamed2.digest);
+
         Ok(())
     }
 
