@@ -1,8 +1,9 @@
-use std::{fmt::Debug, path::PathBuf, sync::Arc};
+use std::{fmt::Debug, path::PathBuf, sync::Arc, time::Duration};
 
 use ahash::{HashMap, HashMapExt, RandomState};
 use anyhow::{Context, anyhow};
 use authentication::{
+    jwks::{JwksManager, ReqwestJwksFetcher},
     oauth::{OAuth2Rbac, OAuth2Service},
     session::{SessionManager, SessionManagerConfig},
 };
@@ -440,6 +441,7 @@ pub struct NitroRepo {
             ),
         >,
     >,
+    pub jwks: Arc<JwksManager<ReqwestJwksFetcher>>,
 }
 static X_FORWARDED_FOR_HEADER: HeaderName = HeaderName::from_static("x-forwarded-for");
 
@@ -585,6 +587,10 @@ impl NitroRepo {
                 .build(),
         );
 
+        let jwks_fetcher = ReqwestJwksFetcher::new()
+            .map_err(|err| anyhow!("Failed to initialize JWKS fetcher: {err}"))?;
+        let jwks = Arc::new(JwksManager::new(jwks_fetcher, Duration::from_secs(3600)));
+
         let nitro_repo = NitroRepo {
             inner: Arc::new(nitro_repo),
             session_manager,
@@ -593,6 +599,7 @@ impl NitroRepo {
             metrics: AppMetrics::default(),
             repository_metrics: RepositoryMetricsMeter::default(),
             auth_token_cache,
+            jwks,
         };
         nitro_repo.load_storages().await?;
         nitro_repo.load_repositories().await?;

@@ -10,12 +10,13 @@ use crate::{
         authentication::oauth::normalize_scopes,
         config::{
             OAuth2CasbinConfig, OAuth2GoogleConfig, OAuth2GroupRoleMapping, OAuth2MicrosoftConfig,
-            OAuth2Settings, SsoSettings,
+            OAuth2Settings, OidcProviderConfig, SsoSettings, TokenSource,
         },
     },
     error::InternalError,
     utils::ResponseBuilder,
 };
+use http::HeaderName;
 
 use serde::{Deserialize, Serialize};
 
@@ -298,6 +299,89 @@ fn merge_oauth2_settings(
     })
 }
 
+fn sanitize_header_name(header: &str) -> Result<String, String> {
+    let trimmed = header.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    HeaderName::from_bytes(trimmed.as_bytes())
+        .map(|_| trimmed.to_string())
+        .map_err(|_| format!("Invalid header name: {trimmed}"))
+}
+
+fn sanitize_provider(mut provider: OidcProviderConfig) -> Result<OidcProviderConfig, String> {
+    provider.name = provider.name.trim().to_string();
+    provider.issuer = provider.issuer.trim().trim_end_matches('/').to_string();
+    provider.audience = provider.audience.trim().to_string();
+    provider.jwks_url = sanitize_optional(provider.jwks_url.take());
+    provider.subject_claim = sanitize_optional(provider.subject_claim.take());
+    provider.email_claim = sanitize_optional(provider.email_claim.take());
+    provider.display_name_claim = sanitize_optional(provider.display_name_claim.take());
+    provider.role_claims = provider
+        .role_claims
+        .into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+
+    provider.token_source = match provider.token_source {
+        TokenSource::Header { name, prefix } => TokenSource::Header {
+            name: sanitize_header_name(&name)?,
+            prefix: prefix.and_then(|value| sanitize_optional(Some(value))),
+        },
+        TokenSource::Cookie { name } => {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Err("Cookie name cannot be empty".into());
+            }
+            TokenSource::Cookie {
+                name: trimmed.to_string(),
+            }
+        }
+    };
+
+    if provider.issuer.is_empty() {
+        return Err("Provider issuer is required".into());
+    }
+    if provider.audience.is_empty() {
+        return Err("Provider audience is required".into());
+    }
+    if provider.name.is_empty() {
+        return Err("Provider name is required".into());
+    }
+
+    Ok(provider)
+}
+
+fn sanitize_sso_settings(mut settings: SsoSettings) -> Result<SsoSettings, String> {
+    settings.login_path = sanitize_relative_path(&settings.login_path, "/api/user/sso/login");
+    settings.login_button_text = {
+        let trimmed = settings.login_button_text.trim();
+        if trimmed.is_empty() {
+            "Sign in with SSO".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+
+    settings.provider_login_url = sanitize_optional(settings.provider_login_url.take());
+    settings.provider_redirect_param = sanitize_optional(settings.provider_redirect_param.take());
+
+    let mut providers = Vec::new();
+    for provider in settings.providers.into_iter() {
+        let sanitized = sanitize_provider(provider)?;
+        providers.push(sanitized);
+    }
+    settings.providers = providers;
+    settings.role_claims = settings
+        .role_claims
+        .into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    Ok(settings)
+}
+
 fn merge_google_settings(
     current: Option<&OAuth2GoogleConfig>,
     request: Option<OAuth2ProviderSettingsRequest>,
@@ -406,7 +490,12 @@ pub async fn update_sso_settings(
         return Ok(ResponseBuilder::forbidden().body("Administrator permissions required"));
     }
 
-    if let Err(err) = site.update_sso_settings(Some(settings)).await {
+    let sanitized = match sanitize_sso_settings(settings) {
+        Ok(settings) => settings,
+        Err(message) => return Ok(ResponseBuilder::bad_request().body(message)),
+    };
+
+    if let Err(err) = site.update_sso_settings(Some(sanitized)).await {
         error!(%err, "Failed to update SSO configuration");
         return Ok(
             ResponseBuilder::internal_server_error().body("Failed to update SSO configuration")
@@ -531,6 +620,82 @@ mod tests {
             merged.google.as_ref().map(|cfg| cfg.scopes.clone()),
             Some(vec!["OpenID".into(), "email".into()])
         );
+    }
+
+    #[test]
+    fn sanitize_sso_settings_trims_and_validates_providers() {
+        let settings = SsoSettings {
+            enabled: true,
+            login_path: "sso/login".into(),
+            login_button_text: "   ".into(),
+            provider_login_url: Some(" https://login.example.com ".into()),
+            provider_redirect_param: Some(" redirect ".into()),
+            auto_create_users: true,
+            providers: vec![OidcProviderConfig {
+                name: " cloudflare ".into(),
+                issuer: " https://issuer.example.com/ ".into(),
+                audience: " nitro ".into(),
+                jwks_url: Some(" https://issuer.example.com/certs ".into()),
+                token_source: TokenSource::Header {
+                    name: " Cf-Access-Jwt-Assertion ".into(),
+                    prefix: Some("Bearer ".into()),
+                },
+                subject_claim: Some(" preferred_username ".into()),
+                email_claim: None,
+                display_name_claim: Some(" name ".into()),
+                role_claims: vec![" roles ".into()],
+            }],
+            role_claims: vec![" roles ".into(), "".into()],
+        };
+
+        let sanitized = sanitize_sso_settings(settings).expect("valid config");
+        assert_eq!(sanitized.login_path, "/sso/login");
+        assert_eq!(sanitized.login_button_text, "Sign in with SSO");
+        assert_eq!(
+            sanitized.provider_login_url.as_deref(),
+            Some("https://login.example.com")
+        );
+        assert_eq!(
+            sanitized.provider_redirect_param.as_deref(),
+            Some("redirect")
+        );
+        assert_eq!(sanitized.providers.len(), 1);
+        let provider = &sanitized.providers[0];
+        assert_eq!(provider.name, "cloudflare");
+        assert_eq!(provider.issuer, "https://issuer.example.com");
+        assert_eq!(provider.audience, "nitro");
+        assert_eq!(
+            provider.jwks_url.as_deref(),
+            Some("https://issuer.example.com/certs")
+        );
+        assert_eq!(sanitized.role_claims, vec!["roles"]);
+    }
+
+    #[test]
+    fn sanitize_sso_settings_rejects_invalid_provider() {
+        let settings = SsoSettings {
+            enabled: true,
+            login_path: "/api/user/sso/login".into(),
+            login_button_text: "SSO".into(),
+            provider_login_url: None,
+            provider_redirect_param: None,
+            auto_create_users: false,
+            providers: vec![OidcProviderConfig {
+                name: "".into(),
+                issuer: "".into(),
+                audience: "".into(),
+                jwks_url: None,
+                token_source: TokenSource::Cookie { name: "".into() },
+                subject_claim: None,
+                email_claim: None,
+                display_name_claim: None,
+                role_claims: vec![],
+            }],
+            role_claims: vec![],
+        };
+
+        let result = sanitize_sso_settings(settings);
+        assert!(result.is_err());
     }
 }
 

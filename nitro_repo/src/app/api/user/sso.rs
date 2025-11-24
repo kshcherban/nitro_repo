@@ -4,7 +4,7 @@ use axum::{
     extract::{ConnectInfo, Query, State},
     http::{
         HeaderMap, HeaderName, StatusCode,
-        header::{COOKIE, LOCATION, SET_COOKIE},
+        header::{LOCATION, SET_COOKIE},
     },
     response::{IntoResponse, Response},
 };
@@ -16,7 +16,6 @@ use axum_extra::{
     },
     headers::UserAgent,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Duration;
 use http::HeaderValue;
 use nr_core::{
@@ -30,7 +29,11 @@ use utoipa::IntoParams;
 use uuid::Uuid;
 
 use crate::{
-    app::{NitroRepo, config::SsoSettings},
+    app::{
+        NitroRepo,
+        authentication::jwks::{JwksError, JwksFetcher, JwksManager, JwksResolver},
+        config::{OidcProviderConfig, SsoSettings, TokenSource},
+    },
     error::InternalError,
     utils::{ResponseBuilder, api_error_response::APIErrorResponse},
 };
@@ -45,14 +48,7 @@ pub(super) struct SsoPrincipal {
     pub(super) username: String,
     pub(super) email: Option<String>,
     pub(super) display_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CfAccessJwtClaims {
-    email: Option<String>,
-    name: Option<String>,
-    common_name: Option<String>,
-    sub: Option<String>,
+    pub(super) roles: Vec<String>,
 }
 
 pub type SsoLoginResponse = Result<Response, InternalError>;
@@ -86,7 +82,7 @@ pub async fn login(
         return Ok(ResponseBuilder::not_found().body("SSO login is not enabled"));
     };
 
-    let principal = match extract_principal(&config, &headers) {
+    let principal = match extract_principal(&site.jwks, &config, &headers).await {
         Ok(principal) => principal,
         Err(response) => return Ok(response),
     };
@@ -137,149 +133,36 @@ pub async fn login(
         .header(LOCATION, redirect_target)
         .empty();
 
+    if !principal.roles.is_empty() {
+        if let Err(err) = site
+            .apply_oauth_roles(&user.username, &principal.roles)
+            .await
+        {
+            error!(%err, "Failed to apply SSO roles to user");
+        }
+    }
+
     Ok(response)
 }
 
-fn extract_principal(config: &SsoSettings, headers: &HeaderMap) -> Result<SsoPrincipal, Response> {
-    if let Some(principal) = extract_principal_from_headers(config, headers)? {
-        return Ok(principal);
-    }
-
-    if let Some(principal) = extract_principal_from_cf_jwt(headers)? {
+async fn extract_principal<F>(
+    jwks: &JwksManager<F>,
+    config: &SsoSettings,
+    headers: &HeaderMap,
+) -> Result<SsoPrincipal, Response>
+where
+    F: JwksFetcher + JwksResolver + Clone,
+{
+    if let Some(principal) = extract_principal_from_providers(jwks, config, headers).await? {
         return Ok(principal);
     }
 
     let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
-        message: "SSO username header missing".into(),
+        message: "No valid SSO provider token found".into(),
         details: None,
         error: None,
     };
     Err(ResponseBuilder::unauthorized().json(&api_error))
-}
-
-fn extract_principal_from_headers(
-    config: &SsoSettings,
-    headers: &HeaderMap,
-) -> Result<Option<SsoPrincipal>, Response> {
-    let Some(username_raw) = header_value(headers, &config.username_header)? else {
-        return Ok(None);
-    };
-
-    let email = match config.email_header.as_ref() {
-        Some(header) => header_value(headers, header)?,
-        None => None,
-    };
-    let display_name = match config.display_name_header.as_ref() {
-        Some(header) => header_value(headers, header)?,
-        None => None,
-    }
-    .filter(|value| !value.is_empty())
-    .unwrap_or_else(|| username_raw.clone());
-
-    let username = normalize_username(&username_raw);
-
-    Ok(Some(SsoPrincipal {
-        username,
-        email,
-        display_name,
-    }))
-}
-
-fn extract_principal_from_cf_jwt(headers: &HeaderMap) -> Result<Option<SsoPrincipal>, Response> {
-    let Some(token) = extract_cf_access_token(headers) else {
-        trace!("CF Access JWT missing from headers and cookies");
-        return Ok(None);
-    };
-
-    let claims = match decode_cf_access_jwt(&token) {
-        Ok(Some(claims)) => claims,
-        Ok(None) => {
-            trace!("CF Access JWT missing payload");
-            return Ok(None);
-        }
-        Err(response) => return Err(response),
-    };
-
-    let Some(identifier) = claims
-        .email
-        .clone()
-        .or(claims.sub.clone())
-        .filter(|value| !value.is_empty())
-    else {
-        trace!("CF Access JWT missing identifier claims");
-        return Ok(None);
-    };
-
-    let display_name = claims
-        .name
-        .or(claims.common_name)
-        .unwrap_or_else(|| identifier.clone());
-
-    let username = normalize_username(&identifier);
-
-    Ok(Some(SsoPrincipal {
-        username,
-        email: claims.email,
-        display_name,
-    }))
-}
-
-fn decode_cf_access_jwt(token: &str) -> Result<Option<CfAccessJwtClaims>, Response> {
-    let mut segments = token.split('.');
-    let _header = segments.next();
-    let payload = segments.next();
-
-    let Some(payload) = payload else {
-        return Ok(None);
-    };
-
-    let decoded = URL_SAFE_NO_PAD.decode(payload).map_err(|error| {
-        error!(%error, "Unable to base64 decode CF Access JWT payload");
-        ResponseBuilder::internal_server_error().body("Failed to decode Cloudflare Access token")
-    })?;
-
-    let claims: CfAccessJwtClaims = serde_json::from_slice(&decoded).map_err(|error| {
-        error!(%error, "Unable to parse CF Access JWT payload");
-        ResponseBuilder::internal_server_error().body("Failed to parse Cloudflare Access token")
-    })?;
-
-    Ok(Some(claims))
-}
-
-fn extract_cf_access_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(token) = headers
-        .get("Cf-Access-Jwt-Assertion")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Some(token.to_owned());
-    }
-
-    let jar = CookieJar::from_headers(headers);
-    if let Some(cookie) = jar
-        .get("CF_Authorization")
-        .map(|cookie| cookie.value().trim())
-        .filter(|value| !value.is_empty())
-    {
-        return Some(cookie.to_owned());
-    }
-
-    for value in headers.get_all(COOKIE).iter() {
-        if let Ok(cookie_header) = value.to_str() {
-            for pair in cookie_header.split(';') {
-                let trimmed = pair.trim();
-                if let Some(rest) = trimmed.strip_prefix("CF_Authorization=") {
-                    let token = rest.trim();
-                    if !token.is_empty() {
-                        return Some(token.to_owned());
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 fn header_value(headers: &HeaderMap, name: &str) -> Result<Option<String>, Response> {
@@ -514,7 +397,21 @@ pub(super) fn sanitize_redirect(target: Option<&str>) -> HeaderValue {
 
 #[cfg(test)]
 mod tests {
-    use super::build_user_email;
+    use super::{
+        SsoSettings, build_user_email, extract_principal, normalize_username, sanitize_redirect,
+    };
+    use crate::app::authentication::jwks::{
+        JwkDocument, JwkKey, JwksError, JwksFetcher, JwksManager, JwksResolver,
+    };
+    use crate::app::config::{OidcProviderConfig, TokenSource};
+    use async_trait::async_trait;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use http::{HeaderMap, HeaderValue};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use rsa::{
+        RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, rand_core::OsRng, traits::PublicKeyParts,
+    };
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn build_user_email_uses_raw_value_when_valid() {
@@ -528,4 +425,298 @@ mod tests {
         assert!(email.to_string().starts_with("abusr"));
         assert!(email.to_string().ends_with("@sso.local"));
     }
+
+    #[tokio::test]
+    async fn oidc_provider_principal_is_used_when_token_present() -> anyhow::Result<()> {
+        let kid = "kid-1";
+        let issuer = "https://issuer.example";
+        let audience = "nitro";
+        let (encoding_key, jwks) = generate_rsa_material(kid)?;
+        let token = sign_test_token(kid, &encoding_key, issuer, audience)?;
+
+        let fetcher = StaticFetcher::new(jwks);
+        let manager = JwksManager::new(fetcher, Duration::from_secs(3600));
+
+        let settings = SsoSettings {
+            enabled: true,
+            providers: vec![OidcProviderConfig {
+                name: "example".into(),
+                issuer: issuer.into(),
+                audience: audience.into(),
+                jwks_url: Some("https://issuer.example/keys".into()),
+                token_source: TokenSource::Header {
+                    name: "Authorization".into(),
+                    prefix: Some("Bearer ".into()),
+                },
+                subject_claim: None,
+                email_claim: None,
+                display_name_claim: None,
+                role_claims: vec!["roles".into()],
+            }],
+            ..SsoSettings::default()
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}"))?,
+        );
+
+        let principal = extract_principal(&manager, &settings, &headers)
+            .await
+            .expect("principal");
+
+        assert_eq!(principal.username, normalize_username("user-123"));
+        assert_eq!(principal.email.as_deref(), Some("user@example.com"));
+        assert_eq!(principal.display_name, "Test User");
+        assert!(principal.roles.contains(&"admin".to_string()));
+        Ok(())
+    }
+    #[tokio::test]
+    async fn sanitize_redirect_rejects_external_urls() {
+        let external = sanitize_redirect(Some("https://example.com"));
+        assert_eq!(external, HeaderValue::from_static("/"));
+    }
+
+    #[derive(Clone)]
+    struct StaticFetcher {
+        doc: JwkDocument,
+    }
+
+    impl StaticFetcher {
+        fn new(doc: JwkDocument) -> Self {
+            Self { doc }
+        }
+    }
+
+    #[async_trait]
+    impl JwksFetcher for StaticFetcher {
+        async fn fetch(&self, _url: &str) -> Result<JwkDocument, JwksError> {
+            Ok(self.doc.clone())
+        }
+    }
+
+    #[async_trait]
+    impl JwksResolver for StaticFetcher {
+        async fn discover_jwks_url(&self, _issuer: &str) -> Result<String, JwksError> {
+            Err(JwksError::MissingJwksUrl)
+        }
+    }
+
+    fn generate_rsa_material(kid: &str) -> anyhow::Result<(EncodingKey, JwkDocument)> {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
+        let n = URL_SAFE_NO_PAD.encode(private_key.n().to_bytes_be());
+        let e = URL_SAFE_NO_PAD.encode(private_key.e().to_bytes_be());
+        let jwk = JwkKey {
+            kid: kid.to_string(),
+            kty: Some("RSA".to_string()),
+            n: Some(n),
+            e: Some(e),
+            x: None,
+            y: None,
+            crv: None,
+        };
+        let der = private_key.to_pkcs1_der()?;
+        let encoding_key = EncodingKey::from_rsa_der(der.as_bytes());
+        Ok((encoding_key, JwkDocument { keys: vec![jwk] }))
+    }
+
+    fn sign_test_token(
+        kid: &str,
+        encoding_key: &EncodingKey,
+        issuer: &str,
+        audience: &str,
+    ) -> anyhow::Result<String> {
+        #[derive(serde::Serialize)]
+        struct Claims {
+            sub: String,
+            email: String,
+            iss: String,
+            aud: String,
+            exp: usize,
+            name: String,
+            roles: Vec<String>,
+        }
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.to_string());
+        let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 900;
+        let claims = Claims {
+            sub: "user-123".into(),
+            email: "user@example.com".into(),
+            iss: issuer.into(),
+            aud: audience.into(),
+            exp: exp as usize,
+            name: "Test User".into(),
+            roles: vec!["admin".into(), "editor".into()],
+        };
+        let token = encode(&header, &claims, encoding_key)?;
+        Ok(token)
+    }
+}
+async fn extract_principal_from_providers<F>(
+    jwks: &JwksManager<F>,
+    config: &SsoSettings,
+    headers: &HeaderMap,
+) -> Result<Option<SsoPrincipal>, Response>
+where
+    F: JwksFetcher + JwksResolver + Clone,
+{
+    if config.providers.is_empty() {
+        return Ok(None);
+    }
+
+    for provider in &config.providers {
+        let token = match extract_token_from_source(headers, &provider.token_source)? {
+            Some(token) => token,
+            None => continue,
+        };
+
+        match jwks.verify(&token, provider).await {
+            Ok(claims) => {
+                let principal = map_claims_to_principal(provider, &config.role_claims, &claims)?;
+                return Ok(Some(principal));
+            }
+            Err(JwksError::MissingJwksUrl) => {
+                error!(provider = %provider.name, "JWKS URL missing for provider");
+                let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
+                    message: "SSO provider JWKS URL not configured".into(),
+                    details: None,
+                    error: None,
+                };
+                return Err(ResponseBuilder::internal_server_error().json(&api_error));
+            }
+            Err(error) => {
+                warn!(provider = %provider.name, %error, "OIDC token verification failed");
+                continue;
+            }
+        }
+    }
+
+    Ok(None)
+}
+fn extract_token_from_source(
+    headers: &HeaderMap,
+    source: &TokenSource,
+) -> Result<Option<String>, Response> {
+    match source {
+        TokenSource::Header { name, prefix } => {
+            let value = header_value(headers, name)?;
+            Ok(value.map(|raw| strip_prefix(raw, prefix)))
+        }
+        TokenSource::Cookie { name } => {
+            let jar = CookieJar::from_headers(headers);
+            let token = jar
+                .get(name)
+                .map(|cookie| cookie.value().trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+            Ok(token)
+        }
+    }
+}
+
+fn strip_prefix(raw: String, prefix: &Option<String>) -> String {
+    if let Some(prefix) = prefix {
+        raw.strip_prefix(prefix)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(raw.trim().to_string())
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+fn claim_value<'a>(
+    claims: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a str> {
+    claims
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn map_claims_to_principal(
+    provider: &OidcProviderConfig,
+    global_role_claims: &[String],
+    claims: &serde_json::Map<String, serde_json::Value>,
+) -> Result<SsoPrincipal, Response> {
+    let username_claim = provider
+        .subject_claim
+        .as_deref()
+        .and_then(|name| claim_value(claims, name))
+        .or_else(|| claim_value(claims, "preferred_username"))
+        .or_else(|| claim_value(claims, "cognito:username"))
+        .or_else(|| claim_value(claims, "sub"));
+
+    let Some(raw_username) = username_claim else {
+        let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
+            message: "Token missing username claim".into(),
+            details: None,
+            error: None,
+        };
+        return Err(ResponseBuilder::forbidden().json(&api_error));
+    };
+
+    let email = provider
+        .email_claim
+        .as_deref()
+        .and_then(|name| claim_value(claims, name))
+        .or_else(|| claim_value(claims, "email"))
+        .map(str::to_string);
+
+    let display_name = provider
+        .display_name_claim
+        .as_deref()
+        .and_then(|name| claim_value(claims, name))
+        .or_else(|| claim_value(claims, "name"))
+        .or_else(|| claim_value(claims, "common_name"))
+        .unwrap_or(raw_username);
+
+    let mut roles = extract_roles(claims, &provider.role_claims);
+    let mut global = extract_roles(claims, global_role_claims);
+    roles.append(&mut global);
+    roles.sort();
+    roles.dedup();
+
+    Ok(SsoPrincipal {
+        username: normalize_username(raw_username),
+        email,
+        display_name: display_name.to_string(),
+        roles,
+    })
+}
+
+fn extract_roles(
+    claims: &serde_json::Map<String, serde_json::Value>,
+    role_claims: &[String],
+) -> Vec<String> {
+    let mut roles = Vec::new();
+    for key in role_claims {
+        if let Some(value) = claims.get(key) {
+            match value {
+                serde_json::Value::String(s) => {
+                    if !s.trim().is_empty() {
+                        roles.push(s.trim().to_string());
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        if let Some(s) = item.as_str() {
+                            if !s.trim().is_empty() {
+                                roles.push(s.trim().to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    roles.sort();
+    roles.dedup();
+    roles
 }

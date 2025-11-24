@@ -37,14 +37,14 @@ pub struct SsoSettings {
     pub provider_login_url: Option<String>,
     /// Optional query parameter on the provider login URL that indicates where to redirect after authentication.
     pub provider_redirect_param: Option<String>,
-    /// Header that contains the external principal/username value.
-    pub username_header: String,
-    /// Optional header containing an email address for the principal.
-    pub email_header: Option<String>,
-    /// Optional header containing a display name for the principal.
-    pub display_name_header: Option<String>,
     /// Automatically create a Nitro Repo account when the principal does not exist.
     pub auto_create_users: bool,
+    /// Optional list of OIDC/JWT providers validated via JWKS.
+    #[serde(default)]
+    pub providers: Vec<OidcProviderConfig>,
+    /// Optional list of JWT claim keys that contain role values to apply to Casbin.
+    #[serde(default)]
+    pub role_claims: Vec<String>,
 }
 
 impl Default for SsoSettings {
@@ -55,10 +55,9 @@ impl Default for SsoSettings {
             login_button_text: default_login_button_text(),
             provider_login_url: None,
             provider_redirect_param: None,
-            username_header: default_username_header(),
-            email_header: Some(default_email_header()),
-            display_name_header: Some(default_display_name_header()),
             auto_create_users: false,
+            providers: Vec::new(),
+            role_claims: Vec::new(),
         }
     }
 }
@@ -71,16 +70,69 @@ fn default_login_button_text() -> String {
     "Sign in with SSO".to_string()
 }
 
-fn default_username_header() -> String {
-    "X-Forwarded-User".to_string()
+#[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TokenSource {
+    Header {
+        /// Header name that carries the bearer token.
+        name: String,
+        /// Optional prefix to strip (e.g., "Bearer ").
+        #[serde(default)]
+        prefix: Option<String>,
+    },
+    Cookie {
+        /// Cookie name that carries the token.
+        name: String,
+    },
 }
 
-fn default_email_header() -> String {
-    "X-Forwarded-Email".to_string()
+impl Default for TokenSource {
+    fn default() -> Self {
+        TokenSource::Header {
+            name: "Authorization".to_string(),
+            prefix: Some("Bearer ".to_string()),
+        }
+    }
 }
 
-fn default_display_name_header() -> String {
-    "X-Forwarded-Name".to_string()
+#[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
+#[serde(default)]
+pub struct OidcProviderConfig {
+    /// Friendly identifier for the provider (e.g., "cloudflare", "okta").
+    pub name: String,
+    /// Expected issuer claim.
+    pub issuer: String,
+    /// Expected audience/client ID.
+    pub audience: String,
+    /// Optional explicit JWKS endpoint; when omitted discovery will be used.
+    pub jwks_url: Option<String>,
+    /// Where to read the token from.
+    pub token_source: TokenSource,
+    /// Optional claim to use for username; defaults to preferred_username/sub.
+    pub subject_claim: Option<String>,
+    /// Optional claim to use for email; defaults to `email`.
+    pub email_claim: Option<String>,
+    /// Optional claim to use for display name; defaults to `name`.
+    pub display_name_claim: Option<String>,
+    /// Claims that contain role values applied to Casbin.
+    #[serde(default)]
+    pub role_claims: Vec<String>,
+}
+
+impl Default for OidcProviderConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            issuer: String::new(),
+            audience: String::new(),
+            jwks_url: None,
+            token_source: TokenSource::default(),
+            subject_claim: None,
+            email_claim: None,
+            display_name_claim: None,
+            role_claims: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]

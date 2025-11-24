@@ -706,6 +706,7 @@ fn build_principal(claims: &IdTokenClaims) -> SsoPrincipal {
         username,
         email: claims.email.clone(),
         display_name,
+        roles: Vec::new(),
     }
 }
 

@@ -589,14 +589,9 @@ async fn write_manifest_file(
         .await
     {
         Ok(_) => Ok(()),
-        Err(nr_storage::StorageError::PathCollision(_)) => verify_cached_digest(
-            storage,
-            repository_id,
-            path,
-            reference,
-            expected_digest,
-        )
-        .await,
+        Err(nr_storage::StorageError::PathCollision(_)) => {
+            verify_cached_digest(storage, repository_id, path, reference, expected_digest).await
+        }
         Err(err) => Err(err.into()),
     }
 }
@@ -618,7 +613,11 @@ const LOCK_CACHE_CAPACITY: usize = 100_000;
 fn fetch_lock_map() -> &'static tokio::sync::Mutex<LruCache<String, Arc<tokio::sync::Mutex<()>>>> {
     static LOCKS: OnceLock<tokio::sync::Mutex<LruCache<String, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
-    LOCKS.get_or_init(|| tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(LOCK_CACHE_CAPACITY).unwrap())))
+    LOCKS.get_or_init(|| {
+        tokio::sync::Mutex::new(LruCache::new(
+            NonZeroUsize::new(LOCK_CACHE_CAPACITY).unwrap(),
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -1927,12 +1926,12 @@ mod tests {
                                     "Docker-Content-Digest",
                                     HeaderValue::from_str(&digest).unwrap(),
                                 ),
-                                    (
-                                        "Content-Type",
-                                        HeaderValue::from_static(
-                                            "application/vnd.docker.distribution.manifest.v2+json",
-                                        ),
+                                (
+                                    "Content-Type",
+                                    HeaderValue::from_static(
+                                        "application/vnd.docker.distribution.manifest.v2+json",
                                     ),
+                                ),
                             ],
                             bytes,
                         )
@@ -1952,12 +1951,12 @@ mod tests {
                                     "Docker-Content-Digest",
                                     HeaderValue::from_str(&digest).unwrap(),
                                 ),
-                                    (
-                                        "Content-Type",
-                                        HeaderValue::from_static(
-                                            "application/vnd.docker.distribution.manifest.v2+json",
-                                        ),
+                                (
+                                    "Content-Type",
+                                    HeaderValue::from_static(
+                                        "application/vnd.docker.distribution.manifest.v2+json",
                                     ),
+                                ),
                             ],
                         )
                     }
@@ -2542,7 +2541,9 @@ mod tests {
 
     fn streamed_from_bytes(bytes: &[u8]) -> anyhow::Result<StreamedDownload> {
         use std::io::Write;
-        let mut file = tempfile::Builder::new().prefix("manifest-test-").tempfile()?;
+        let mut file = tempfile::Builder::new()
+            .prefix("manifest-test-")
+            .tempfile()?;
         file.write_all(bytes)?;
         let path = file.into_temp_path();
         let digest = format!("sha256:{:x}", sha2::Sha256::digest(bytes));

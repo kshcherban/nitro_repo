@@ -112,6 +112,15 @@ impl AuthToken {
             .await?;
         Ok(())
     }
+    /// Deletes all expired auth tokens from the database and returns the count of deleted tokens.
+    pub async fn delete_expired(database: &PgPool) -> sqlx::Result<u64> {
+        let result = sqlx::query(
+            r#"DELETE FROM user_auth_tokens WHERE expires_at IS NOT NULL AND expires_at < NOW()"#,
+        )
+        .execute(database)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewAuthToken {

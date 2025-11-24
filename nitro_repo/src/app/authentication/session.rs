@@ -21,6 +21,8 @@ use tracing::{
 };
 use utoipa::ToSchema;
 
+use nr_core::database::entities::user::auth_token::AuthToken;
+
 use crate::{
     app::{
         NitroRepo,
@@ -283,6 +285,7 @@ impl SessionManager {
                     Level::INFO,
                     "Session Cleaner",
                     sessions.removed = Empty,
+                    tokens.removed = Empty,
                     session.cleaner.error = Empty
                 );
                 let _enter = span.enter();
@@ -301,6 +304,17 @@ impl SessionManager {
                     }
                 }
             };
+            // Clean up expired auth tokens from the database
+            match AuthToken::delete_expired(&this.database).await {
+                Ok(count) => {
+                    if count > 0 {
+                        info!("Cleaned {} expired auth tokens", count);
+                    }
+                }
+                Err(err) => {
+                    error!("Failed to clean expired auth tokens: {:?}", err);
+                }
+            }
             if let Ok(number_of_sessions) = session_manager.number_of_sessions() {
                 this.metrics
                     .active_sessions

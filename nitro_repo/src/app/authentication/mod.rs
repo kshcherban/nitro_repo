@@ -28,6 +28,7 @@ use tracing::{error, instrument, warn};
 use utoipa::ToSchema;
 
 pub mod header;
+pub mod jwks;
 
 use super::NitroRepo;
 use crate::utils::{IntoErrorResponse, ResponseBuilder, api_error_response::APIErrorResponse};

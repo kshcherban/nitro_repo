@@ -76,9 +76,24 @@ export interface SsoInfo {
 
 export interface SsoConfiguration extends SsoInfo {
   enabled: boolean;
-  username_header: string;
-  email_header?: string | null;
-  display_name_header?: string | null;
+  providers: OidcProviderConfig[];
+  role_claims: string[];
+}
+
+export type TokenSource =
+  | { kind: "header"; name: string; prefix?: string | null }
+  | { kind: "cookie"; name: string };
+
+export interface OidcProviderConfig {
+  name: string;
+  issuer: string;
+  audience: string;
+  jwks_url?: string | null;
+  token_source: TokenSource;
+  subject_claim?: string | null;
+  email_claim?: string | null;
+  display_name_claim?: string | null;
+  role_claims: string[];
 }
 
 export type OAuth2ProviderKind = "google" | "microsoft";

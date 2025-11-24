@@ -24,6 +24,11 @@ export default defineConfig({
         activeMatch: "^/repositoryTypes/",
       },
       {
+        text: "SSO",
+        link: "/sso/",
+        activeMatch: "^/sso/",
+      },
+      {
         text: "Release Notes",
         link: "https://github.com/kshcherban/nitro_repo/releases",
       },
@@ -48,6 +53,7 @@ function generalInfo() {
         { text: "What is Nitro Repo?", link: "/" },
         { text: "Features", link: "/features" },
         { text: "Contributing", link: "/contributing" },
+        { text: "Single Sign-On", link: "/sso/" },
       ],
     },
   ];

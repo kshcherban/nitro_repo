@@ -12,7 +12,9 @@ import type {
   OAuth2Configuration,
   OAuth2GroupRoleMapping,
   OAuth2ProviderKind,
+  OidcProviderConfig,
   SsoConfiguration,
+  TokenSource,
 } from "@/types/base";
 import { useAlertsStore } from "@/stores/alerts";
 import { computed, onMounted, ref, watch } from "vue";
@@ -24,10 +26,28 @@ interface EditableSsoConfiguration {
   login_button_text: string;
   provider_login_url: string;
   provider_redirect_param: string;
-  username_header: string;
-  email_header: string;
-  display_name_header: string;
   auto_create_users: boolean;
+  role_claims: string;
+  providers: EditableOidcProvider[];
+}
+
+interface EditableTokenSource {
+  kind: "header" | "cookie";
+  name: string;
+  prefix?: string;
+}
+
+interface EditableOidcProvider {
+  id: string;
+  name: string;
+  issuer: string;
+  audience: string;
+  jwks_url: string;
+  token_source: EditableTokenSource;
+  subject_claim: string;
+  email_claim: string;
+  display_name_claim: string;
+  role_claims: string;
 }
 
 interface EditableOAuthProvider {
@@ -199,9 +219,33 @@ async function saveSsoSettings() {
     return;
   }
   resetError();
-  if (!ssoForm.value.username_header.trim()) {
-    showError("Missing username header", "Username header cannot be empty.");
-    return;
+
+  for (const provider of ssoForm.value.providers) {
+    if (!provider.name.trim()) {
+      showError("Provider name required", "Every OIDC provider must have a name.");
+      return;
+    }
+    if (!provider.issuer.trim()) {
+      showError(
+        "Issuer required",
+        `Provider '${provider.name || "(unnamed)"}' is missing an issuer URL.`,
+      );
+      return;
+    }
+    if (!provider.audience.trim()) {
+      showError(
+        "Audience required",
+        `Provider '${provider.name || "(unnamed)"}' is missing an audience/client ID.`,
+      );
+      return;
+    }
+    if (!provider.token_source.name.trim()) {
+      showError(
+        "Token source required",
+        `Provider '${provider.name || "(unnamed)"}' must declare a header or cookie name.`,
+      );
+      return;
+    }
   }
 
   ssoSaving.value = true;
@@ -314,10 +358,28 @@ function defaultSsoForm(): EditableSsoConfiguration {
     login_button_text: "Sign in with SSO",
     provider_login_url: "",
     provider_redirect_param: "redirect",
-    username_header: "X-Forwarded-User",
-    email_header: "X-Forwarded-Email",
-    display_name_header: "X-Forwarded-Name",
     auto_create_users: false,
+    role_claims: "",
+    providers: [],
+  };
+}
+
+function defaultOidcProvider(): EditableOidcProvider {
+  return {
+    id: generateId(),
+    name: "",
+    issuer: "",
+    audience: "",
+    jwks_url: "",
+    token_source: {
+      kind: "header",
+      name: "Authorization",
+      prefix: "Bearer ",
+    },
+    subject_claim: "",
+    email_claim: "",
+    display_name_claim: "",
+    role_claims: "roles",
   };
 }
 
@@ -416,10 +478,9 @@ function toSsoEditable(settings: SsoConfiguration): EditableSsoConfiguration {
     login_button_text: settings.login_button_text,
     provider_login_url: settings.provider_login_url ?? "",
     provider_redirect_param: settings.provider_redirect_param ?? "redirect",
-    username_header: settings.username_header,
-    email_header: settings.email_header ?? "",
-    display_name_header: settings.display_name_header ?? "",
     auto_create_users: settings.auto_create_users,
+    role_claims: (settings.role_claims ?? []).join(", "),
+    providers: (settings.providers ?? []).map((provider) => toEditableProvider(provider)),
   };
 }
 
@@ -435,10 +496,69 @@ function toSsoPayload(settings: EditableSsoConfiguration): SsoConfiguration {
     login_button_text: settings.login_button_text.trim() || "Sign in with SSO",
     provider_login_url: sanitizeOptional(settings.provider_login_url),
     provider_redirect_param: sanitizeOptional(settings.provider_redirect_param ?? "redirect"),
-    username_header: settings.username_header.trim() || "X-Forwarded-User",
-    email_header: sanitizeOptional(settings.email_header),
-    display_name_header: sanitizeOptional(settings.display_name_header),
     auto_create_users: settings.auto_create_users,
+    role_claims: settings.role_claims
+      .split(/[\s,]+/)
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0),
+    providers: settings.providers.map((provider) => toProviderPayload(provider)),
+  };
+}
+
+function toEditableProvider(provider: OidcProviderConfig): EditableOidcProvider {
+  return {
+    id: generateId(),
+    name: provider.name,
+    issuer: provider.issuer,
+    audience: provider.audience,
+    jwks_url: provider.jwks_url ?? "",
+    token_source: toEditableTokenSource(provider.token_source),
+    subject_claim: provider.subject_claim ?? "",
+    email_claim: provider.email_claim ?? "",
+    display_name_claim: provider.display_name_claim ?? "",
+    role_claims: (provider.role_claims ?? []).join(", "),
+  };
+}
+
+function toEditableTokenSource(source: TokenSource): EditableTokenSource {
+  if (source.kind === "cookie") {
+    return { kind: "cookie", name: source.name };
+  }
+  return {
+    kind: "header",
+    name: source.name,
+    prefix: source.prefix ?? "",
+  };
+}
+
+function toProviderPayload(provider: EditableOidcProvider): OidcProviderConfig {
+  const sanitizeOptional = (value: string) => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  const token_source: TokenSource =
+    provider.token_source.kind === "cookie"
+      ? { kind: "cookie", name: provider.token_source.name.trim() }
+      : {
+          kind: "header",
+          name: provider.token_source.name.trim(),
+          prefix: sanitizeOptional(provider.token_source.prefix ?? ""),
+        };
+
+  return {
+    name: provider.name.trim(),
+    issuer: provider.issuer.trim(),
+    audience: provider.audience.trim(),
+    jwks_url: sanitizeOptional(provider.jwks_url),
+    token_source,
+    subject_claim: sanitizeOptional(provider.subject_claim),
+    email_claim: sanitizeOptional(provider.email_claim),
+    display_name_claim: sanitizeOptional(provider.display_name_claim),
+    role_claims: provider.role_claims
+      .split(/[\s,]+/)
+      .map((role) => role.trim())
+      .filter((role) => role.length > 0),
   };
 }
 
@@ -571,6 +691,14 @@ function removeGroupMapping(id: string) {
     (mapping) => mapping.id !== id,
   );
 }
+
+function addOidcProvider() {
+  ssoForm.value.providers.push(defaultOidcProvider());
+}
+
+function removeOidcProvider(id: string) {
+  ssoForm.value.providers = ssoForm.value.providers.filter((provider) => provider.id !== id);
+}
 </script>
 
 <template>
@@ -637,30 +765,6 @@ function removeGroupMapping(id: string) {
             placeholder="redirect_url">
             Provider redirect parameter
           </TextInput>
-
-          <TextInput
-            id="sso-username-header"
-            v-model="ssoForm.username_header"
-            autocomplete="off"
-            required>
-            Username header
-          </TextInput>
-
-          <TextInput
-            id="sso-email-header"
-            v-model="ssoForm.email_header"
-            autocomplete="off"
-            placeholder="CF-Access-Authenticated-User-Email">
-            Email header (optional)
-          </TextInput>
-
-          <TextInput
-            id="sso-display-header"
-            v-model="ssoForm.display_name_header"
-            autocomplete="off"
-            placeholder="CF-Access-Authenticated-User-Name">
-            Display name header (optional)
-          </TextInput>
         </div>
 
         <SwitchInput
@@ -671,6 +775,159 @@ function removeGroupMapping(id: string) {
             Create new Nitro Repo accounts automatically when someone signs in for the first time.
           </template>
         </SwitchInput>
+
+        <TextInput
+          id="sso-role-claims"
+          v-model="ssoForm.role_claims"
+          autocomplete="off"
+          placeholder="roles groups">
+          Role claim keys (comma/space separated)
+        </TextInput>
+
+        <div class="providerSection">
+          <header class="providerSection__header">
+            <div class="providerSection__title">
+              <h3>OIDC / JWT Providers (JWKS)</h3>
+              <p class="hint">Tokens are validated against each provider until one succeeds.</p>
+            </div>
+            <v-btn
+              variant="outlined"
+              color="primary"
+              :disabled="!ssoForm.enabled"
+              prepend-icon="mdi-plus"
+              @click.prevent="addOidcProvider">
+              Add provider
+            </v-btn>
+          </header>
+
+          <div
+            v-if="ssoForm.providers.length === 0"
+            class="emptyState">
+            No OIDC providers configured yet.
+          </div>
+
+          <div
+            v-for="provider in ssoForm.providers"
+            :key="provider.id"
+            class="oidcProvider">
+            <div class="grid">
+              <TextInput
+                :id="`oidc-name-${provider.id}`"
+                v-model="provider.name"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                required>
+                Provider name
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-issuer-${provider.id}`"
+                v-model="provider.issuer"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="https://issuer.example.com"
+                required>
+                Issuer (iss)
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-aud-${provider.id}`"
+                v-model="provider.audience"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="client-id or aud"
+                required>
+                Audience (aud)
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-jwks-${provider.id}`"
+                v-model="provider.jwks_url"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="https://issuer/.well-known/jwks.json">
+                JWKS URL (optional)
+              </TextInput>
+
+              <label class="tokenSource">
+                Token source
+                <select
+                  v-model="provider.token_source.kind"
+                  :disabled="!ssoForm.enabled">
+                  <option value="header">Header</option>
+                  <option value="cookie">Cookie</option>
+                </select>
+              </label>
+
+              <TextInput
+                :id="`oidc-token-name-${provider.id}`"
+                v-model="provider.token_source.name"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="Authorization or Cf-Access-Jwt-Assertion"
+                required>
+                Token {{ provider.token_source.kind === "cookie" ? "cookie" : "header" }} name
+              </TextInput>
+
+              <TextInput
+                v-if="provider.token_source.kind === 'header'"
+                :id="`oidc-token-prefix-${provider.id}`"
+                v-model="provider.token_source.prefix"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="Bearer ">
+                Header prefix (optional)
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-subject-${provider.id}`"
+                v-model="provider.subject_claim"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="preferred_username">
+                Subject claim override (optional)
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-email-${provider.id}`"
+                v-model="provider.email_claim"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="email">
+                Email claim override (optional)
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-display-${provider.id}`"
+                v-model="provider.display_name_claim"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="name">
+                Display name claim override (optional)
+              </TextInput>
+
+              <TextInput
+                :id="`oidc-roles-${provider.id}`"
+                v-model="provider.role_claims"
+                :disabled="!ssoForm.enabled"
+                autocomplete="off"
+                placeholder="roles, groups">
+                Role claim keys (comma/space separated)
+              </TextInput>
+            </div>
+
+            <div class="providerActions">
+              <v-btn
+                variant="text"
+                color="error"
+                :disabled="!ssoForm.enabled"
+                prepend-icon="mdi-delete"
+                @click.prevent="removeOidcProvider(provider.id)">
+                Remove provider
+              </v-btn>
+            </div>
+          </div>
+        </div>
 
         <footer class="actions">
           <SubmitButton
@@ -1041,6 +1298,33 @@ function removeGroupMapping(id: string) {
   flex-direction: column;
   gap: 1rem;
   background-color: var(--nr-surface-variant);
+}
+
+.oidcProvider {
+  border: 1px dashed var(--nr-border-color);
+  border-radius: var(--nr-radius-md);
+  padding: 0.75rem;
+  background: var(--nr-surface);
+}
+
+.tokenSource {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.tokenSource select {
+  padding: 0.5rem;
+  border-radius: var(--nr-radius-sm);
+  border: 1px solid var(--nr-input-border);
+  background: var(--nr-input-background);
+}
+
+.providerActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
 }
 
 .providerSection__header {

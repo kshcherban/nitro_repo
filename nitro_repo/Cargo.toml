@@ -10,6 +10,7 @@ build = "build.rs"
 [dev-dependencies]
 pretty_assertions = "1.1"
 serde_urlencoded = "0.7"
+rsa = { version = "0.9" }
 [dependencies]
 # Web
 axum = { version = "0.8", features = ["macros", "tokio", "ws"] }
