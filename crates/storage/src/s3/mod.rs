@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::{
-    borrow::Cow, env, num::NonZeroUsize, ops::Deref, path::PathBuf, pin::Pin, str::FromStr,
-    sync::Arc,
+    borrow::Cow, collections::VecDeque, env, num::NonZeroUsize, ops::Deref, path::PathBuf,
+    pin::Pin, str::FromStr, sync::Arc,
 };
 
 use aws_config::BehaviorVersion;
@@ -15,7 +15,7 @@ use aws_smithy_runtime_api::client::result::SdkError;
 use aws_smithy_types::byte_stream::ByteStream;
 use aws_types::{SdkConfig, region::Region};
 use bytes::Bytes;
-use chrono::Local;
+use chrono::{FixedOffset, Local};
 use futures::future::BoxFuture;
 use hex::encode;
 use lru::LruCache;
@@ -791,6 +791,14 @@ fn byte_stream_to_reader(stream: ByteStream) -> crate::StorageFileReader {
     let reader: Pin<Box<dyn tokio::io::AsyncRead + Send>> = Box::pin(reader);
     crate::StorageFileReader::AsyncReader(reader)
 }
+
+#[derive(Debug, Clone)]
+pub struct S3ListedObject {
+    /// Key relative to the repository root (e.g. `packages/pkg/file.tgz`).
+    pub key: String,
+    pub size: u64,
+    pub last_modified: Option<chrono::DateTime<FixedOffset>>,
+}
 #[derive(Debug, Clone)]
 pub struct S3Storage(Arc<S3StorageInner>);
 new_type_arc_type!(S3Storage(S3StorageInner));
@@ -812,7 +820,11 @@ impl Storage for S3Storage {
             config: BorrowedStorageTypeConfig::S3(&self.config),
         }
     }
-    #[instrument(name = "Storage::save_file", fields(storage_type = "s3"))]
+    #[instrument(
+        name = "Storage::save_file",
+        fields(storage_type = "s3", repository = %repository, path = %location),
+        skip(file)
+    )]
     async fn save_file(
         &self,
         repository: uuid::Uuid,
@@ -991,7 +1003,10 @@ impl Storage for S3Storage {
         })?;
         Ok(Some(meta))
     }
-    #[instrument(name = "Storage::delete_file", fields(storage_type = "s3"))]
+    #[instrument(
+        name = "Storage::delete_file",
+        fields(storage_type = "s3", repository = %repository, path = %location)
+    )]
     async fn delete_file(
         &self,
         repository: uuid::Uuid,
@@ -1012,7 +1027,11 @@ impl Storage for S3Storage {
         self.cache_remove(&repository, location).await?;
         Ok(true)
     }
-    #[instrument(name = "Storage::move_file", fields(storage_type = "s3"))]
+    #[instrument(
+        name = "Storage::move_file",
+        fields(storage_type = "s3", repository = %repository, from = %from, to = %to),
+        skip(self)
+    )]
     async fn move_file(
         &self,
         repository: uuid::Uuid,
@@ -1072,7 +1091,11 @@ impl Storage for S3Storage {
 
         Ok(true)
     }
-    #[instrument(name = "Storage::get_file_information", fields(storage_type = "s3"))]
+    #[instrument(
+        name = "Storage::get_file_information",
+        fields(storage_type = "s3", repository = %repository, path = %location),
+        skip(self)
+    )]
     async fn get_file_information(
         &self,
         repository: uuid::Uuid,
@@ -1322,7 +1345,10 @@ impl Storage for S3Storage {
         info!(bucket = %s3_config.bucket_name, "Successfully connected to S3 bucket");
         Ok(())
     }
-    #[instrument(name = "Storage::file_exists", fields(storage_type = "s3"))]
+    #[instrument(
+        name = "Storage::file_exists",
+        fields(storage_type = "s3", repository = %repository, path = %location)
+    )]
     async fn file_exists(
         &self,
         repository: uuid::Uuid,
@@ -1332,6 +1358,11 @@ impl Storage for S3Storage {
         self.does_path_exist(&path).await
     }
 
+    #[instrument(
+        name = "Storage::stream_directory",
+        fields(storage_type = "s3", repository = %repository, path = %location),
+        skip(self)
+    )]
     async fn stream_directory(
         &self,
         repository: Uuid,
@@ -1455,6 +1486,251 @@ impl Storage for S3Storage {
 }
 
 impl S3Storage {
+    /// List all objects for a repository under an optional prefix, returning repository-relative
+    /// keys. Uses S3's paginator to minimize the number of API calls while avoiding per-directory
+    /// traversal.
+    #[instrument(
+        name = "S3Storage::list_repository_objects",
+        fields(storage_type = "s3", ?repository, prefix = prefix.unwrap_or("") ),
+        skip(self)
+    )]
+    pub async fn list_repository_objects(
+        &self,
+        repository: Uuid,
+        prefix: Option<&str>,
+    ) -> Result<Vec<S3ListedObject>, S3StorageError> {
+        let mut s3_prefix = repository.to_string();
+        s3_prefix.push('/');
+        if let Some(prefix) = prefix {
+            if !prefix.is_empty() {
+                s3_prefix.push_str(prefix);
+            }
+        }
+
+        let mut paginator = self
+            .aws_client()
+            .list_objects_v2()
+            .bucket(self.bucket())
+            .prefix(s3_prefix)
+            .max_keys(1000)
+            .into_paginator()
+            .send();
+
+        let mut objects = Vec::new();
+
+        while let Some(page) = paginator.next().await {
+            let page = page.map_err(S3StorageError::from_sdk_error)?;
+
+            for obj in page.contents() {
+                let Some(key) = obj.key() else { continue };
+                if S3StorageInner::is_hidden_file(key) {
+                    continue;
+                }
+
+                let repo_relative = S3StorageInner::strip_repository_prefix(&repository, key);
+
+                // Skip the directory placeholder object (equal to the prefix)
+                if repo_relative.is_empty() {
+                    continue;
+                }
+
+                let size = obj.size().unwrap_or(0i64).max(0) as u64;
+                let last_modified = None;
+
+                objects.push(S3ListedObject {
+                    key: repo_relative.to_string(),
+                    size,
+                    last_modified,
+                });
+            }
+        }
+
+        Ok(objects)
+    }
+
+    /// List only Docker manifest objects for a repository without traversing blobs.
+    /// This walks prefixes breadth-first and descends until it reaches `manifests/` directories,
+    /// skipping `blobs`, `uploads`, `_uploads` to avoid huge listings.
+    #[instrument(
+        name = "S3Storage::list_docker_manifests",
+        fields(storage_type = "s3", ?repository),
+        skip(self)
+    )]
+    pub async fn list_docker_manifests(
+        &self,
+        repository: Uuid,
+    ) -> Result<Vec<S3ListedObject>, S3StorageError> {
+        let mut manifests = Vec::new();
+
+        let mut queue = VecDeque::new();
+        queue.push_back(format!("{}/v2/", repository));
+
+        while let Some(prefix) = queue.pop_front() {
+            let mut paginator = self
+                .aws_client()
+                .list_objects_v2()
+                .bucket(self.bucket())
+                .prefix(prefix.clone())
+                .delimiter("/")
+                .max_keys(1000)
+                .into_paginator()
+                .send();
+
+            while let Some(page) = paginator.next().await {
+                let page = page.map_err(S3StorageError::from_sdk_error)?;
+
+                for p in page
+                    .common_prefixes()
+                    .iter()
+                    .filter_map(CommonPrefix::prefix)
+                {
+                    if p.ends_with("blobs/") || p.ends_with("uploads/") || p.ends_with("_uploads/")
+                    {
+                        continue;
+                    }
+
+                    if p.ends_with("manifests/") {
+                        // List only manifest objects under this prefix (no delimiter to get files).
+                        let mut manifest_pages = self
+                            .aws_client()
+                            .list_objects_v2()
+                            .bucket(self.bucket())
+                            .prefix(p)
+                            .max_keys(1000)
+                            .into_paginator()
+                            .send();
+
+                        while let Some(mpage) = manifest_pages.next().await {
+                            let mpage = mpage.map_err(S3StorageError::from_sdk_error)?;
+                            for obj in mpage.contents() {
+                                let Some(key) = obj.key() else { continue };
+                                if S3StorageInner::is_hidden_file(key) {
+                                    continue;
+                                }
+                                // Strip repository prefix
+                                let repo_relative =
+                                    S3StorageInner::strip_repository_prefix(&repository, key);
+                                if repo_relative.is_empty() {
+                                    continue;
+                                }
+                                let size = obj.size().unwrap_or(0i64).max(0) as u64;
+                                manifests.push(S3ListedObject {
+                                    key: repo_relative.to_string(),
+                                    size,
+                                    last_modified: None,
+                                });
+                            }
+                        }
+                    } else {
+                        queue.push_back(p.to_string());
+                    }
+                }
+            }
+        }
+
+        manifests.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(manifests)
+    }
+
+    /// Paginate Docker manifest objects without loading the entire repository into memory.
+    ///
+    /// Returns the requested page of manifest objects (ordered lexicographically by key)
+    /// and the total number of manifest objects for the repository.
+    #[instrument(
+        name = "S3Storage::list_docker_manifests_paginated",
+        fields(storage_type = "s3", ?repository, start, limit),
+        skip(self)
+    )]
+    pub async fn list_docker_manifests_paginated(
+        &self,
+        repository: Uuid,
+        start: usize,
+        limit: usize,
+    ) -> Result<(Vec<S3ListedObject>, usize), S3StorageError> {
+        let mut items = Vec::with_capacity(limit);
+        let mut total = 0usize;
+
+        // Breadth-first traversal that skips heavy prefixes (`blobs`, uploads) while preserving
+        // lexicographic order of manifest keys.
+        let mut queue = VecDeque::new();
+        queue.push_back(format!("{}/v2/", repository));
+
+        while let Some(prefix) = queue.pop_front() {
+            let mut paginator = self
+                .aws_client()
+                .list_objects_v2()
+                .bucket(self.bucket())
+                .prefix(prefix.clone())
+                .delimiter("/")
+                .max_keys(1000)
+                .into_paginator()
+                .send();
+
+            while let Some(page) = paginator.next().await {
+                let page = page.map_err(S3StorageError::from_sdk_error)?;
+
+                // Descend into sub-prefixes (directories)
+                for p in page
+                    .common_prefixes()
+                    .iter()
+                    .filter_map(CommonPrefix::prefix)
+                {
+                    if p.ends_with("blobs/") || p.ends_with("uploads/") || p.ends_with("_uploads/")
+                    {
+                        continue;
+                    }
+
+                    if p.ends_with("manifests/") {
+                        // List manifest objects directly under this prefix (no delimiter)
+                        let mut manifest_pages = self
+                            .aws_client()
+                            .list_objects_v2()
+                            .bucket(self.bucket())
+                            .prefix(p)
+                            .max_keys(1000)
+                            .into_paginator()
+                            .send();
+
+                        while let Some(mpage) = manifest_pages.next().await {
+                            let mpage = mpage.map_err(S3StorageError::from_sdk_error)?;
+                            for obj in mpage.contents() {
+                                let Some(key) = obj.key() else { continue };
+                                if S3StorageInner::is_hidden_file(key) {
+                                    continue;
+                                }
+
+                                total += 1;
+                                if total <= start {
+                                    continue;
+                                }
+                                if items.len() >= limit {
+                                    continue;
+                                }
+
+                                let repo_relative =
+                                    S3StorageInner::strip_repository_prefix(&repository, key);
+                                if repo_relative.is_empty() {
+                                    continue;
+                                }
+
+                                let size = obj.size().unwrap_or(0i64).max(0) as u64;
+                                items.push(S3ListedObject {
+                                    key: repo_relative.to_string(),
+                                    size,
+                                    last_modified: None,
+                                });
+                            }
+                        }
+                    } else {
+                        queue.push_back(p.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok((items, total))
+    }
+
     async fn collect_directory(
         &self,
         repository: Uuid,
@@ -1479,6 +1755,102 @@ impl S3Storage {
         };
 
         Ok(Some(StorageFile::Directory { meta, files }))
+    }
+
+    /// Delete multiple files in batch using S3's delete_objects API.
+    /// This is much more efficient than calling delete_file repeatedly.
+    /// Can delete up to 1000 objects per API call.
+    ///
+    /// Returns the number of files actually deleted.
+    #[instrument(
+        name = "S3Storage::delete_files_batch",
+        fields(storage_type = "s3", repository = %repository, count = paths.len()),
+        skip(self)
+    )]
+    pub async fn delete_files_batch(
+        &self,
+        repository: Uuid,
+        paths: &[StoragePath],
+    ) -> Result<usize, S3StorageError> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+
+        use aws_sdk_s3::types::ObjectIdentifier;
+
+        let mut deleted_count = 0;
+
+        // S3 allows max 1000 objects per delete_objects call
+        for chunk in paths.chunks(1000) {
+            let mut object_ids = Vec::with_capacity(chunk.len());
+            let mut keys_for_log = Vec::with_capacity(chunk.len());
+            for path in chunk {
+                let key = self.s3_path(&repository, path);
+                keys_for_log.push(key.clone());
+                let obj_id = ObjectIdentifier::builder()
+                    .key(key)
+                    .build()
+                    .map_err(|err| S3StorageError::AwsSdkError(err.to_string()))?;
+                object_ids.push(obj_id);
+            }
+
+            if object_ids.is_empty() {
+                continue;
+            }
+
+            let response = self
+                .aws_client()
+                .delete_objects()
+                .bucket(self.bucket())
+                .delete(
+                    aws_sdk_s3::types::Delete::builder()
+                        .set_objects(Some(object_ids))
+                        .quiet(true) // Don't return deleted objects in response
+                        .build()
+                        .map_err(|err| S3StorageError::AwsSdkError(err.to_string()))?,
+                )
+                .send()
+                .await
+                .map_err(S3StorageError::from_sdk_error)?;
+
+            // Count successful deletions (errors() returns objects that failed)
+            let failed = response.errors();
+            if !failed.is_empty() {
+                let first = failed.first().unwrap();
+                let code = first.code().unwrap_or("unknown");
+                let message = first.message().unwrap_or("unknown");
+                let key = first.key().unwrap_or("unknown");
+                warn!(
+                    repository = %repository,
+                    failed = failed.len(),
+                    total = chunk.len(),
+                    first_key = key,
+                    code,
+                    message,
+                    keys_sample = ?keys_for_log.get(0..5).map(|v| v.to_vec()),
+                    "S3 delete_objects reported errors"
+                );
+                return Err(S3StorageError::AwsSdkError(format!(
+                    "delete_objects failed for key {key}: {code} - {message}"
+                )));
+            }
+
+            deleted_count += chunk.len();
+
+            // Remove from cache
+            for path in chunk {
+                self.cache_remove(&repository, path).await?;
+            }
+        }
+
+        debug!(
+            repository = %repository,
+            deleted = deleted_count,
+            total = paths.len(),
+            "Batch deleted objects from S3"
+        );
+
+        Ok(deleted_count)
     }
 
     /// Calculate total object size for a repository using paginated ListObjectsV2 calls.
@@ -1611,7 +1983,7 @@ mod tests {
         S3Credentials, S3StorageRegion,
     };
     use crate::{
-        FileType, StaticStorageFactory, Storage, StorageFile, s3::S3StorageFactory,
+        FileContent, FileType, StaticStorageFactory, Storage, StorageFile, s3::S3StorageFactory,
         testing::storage::TestingStorage,
     };
     use nr_core::storage::StoragePath;
@@ -1817,6 +2189,117 @@ mod tests {
         let size = storage.repository_size_bytes(repository).await?;
 
         assert_eq!(size, 5 + 2048);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_files_batch_removes_multiple_objects() -> anyhow::Result<()> {
+        let Some(config) = crate::testing::start_storage_test("s3")? else {
+            warn!("S3 Storage Test Skipped");
+            return Ok(());
+        };
+
+        let storage =
+            <S3StorageFactory as StaticStorageFactory>::create_storage_from_config(config).await?;
+
+        let repository = uuid::Uuid::new_v4();
+        let paths = vec![
+            StoragePath::from("batch/file1.txt"),
+            StoragePath::from("batch/file2.txt"),
+            StoragePath::from("batch/file3.txt"),
+            StoragePath::from("batch/subdir/file4.txt"),
+        ];
+
+        // Create all files
+        for path in &paths {
+            storage
+                .save_file(repository, b"test-data".to_vec().into(), path)
+                .await?;
+        }
+
+        // Verify files exist
+        for path in &paths {
+            assert!(storage.file_exists(repository, path).await?);
+        }
+
+        // Batch delete
+        let deleted = storage.delete_files_batch(repository, &paths).await?;
+
+        assert_eq!(deleted, paths.len());
+
+        // Verify all files are gone
+        for path in &paths {
+            assert!(!storage.file_exists(repository, path).await?);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_files_batch_handles_missing_files() -> anyhow::Result<()> {
+        let Some(config) = crate::testing::start_storage_test("s3")? else {
+            warn!("S3 Storage Test Skipped");
+            return Ok(());
+        };
+
+        let storage =
+            <S3StorageFactory as StaticStorageFactory>::create_storage_from_config(config).await?;
+
+        let repository = uuid::Uuid::new_v4();
+        let existing_path = StoragePath::from("batch/exists.txt");
+        let missing_path = StoragePath::from("batch/missing.txt");
+
+        // Create only one file
+        storage
+            .save_file(repository, b"exists".to_vec().into(), &existing_path)
+            .await?;
+
+        // Try to delete both (one exists, one doesn't)
+        let paths = vec![existing_path.clone(), missing_path.clone()];
+        let deleted = storage.delete_files_batch(repository, &paths).await?;
+
+        // S3 delete is idempotent, so it should report 2 deleted (or at least 1)
+        assert!(deleted >= 1, "At least the existing file should be deleted");
+        assert!(!storage.file_exists(repository, &existing_path).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_docker_manifests_paginated_returns_page_and_total() -> anyhow::Result<()> {
+        let Some(config) = crate::testing::start_storage_test("s3")? else {
+            warn!("S3 Storage Test Skipped");
+            return Ok(());
+        };
+
+        let storage =
+            <S3StorageFactory as StaticStorageFactory>::create_storage_from_config(config).await?;
+
+        let repository = uuid::Uuid::new_v4();
+        let repo_name = "library/example";
+
+        // Create 5 manifest objects under different tags
+        for i in 0..5 {
+            let tag = format!("v2/{}/manifests/{}", repo_name, i);
+            storage
+                .save_file(
+                    repository,
+                    FileContent::from(format!("tag-{i}").into_bytes()),
+                    &StoragePath::from(tag.as_str()),
+                )
+                .await?;
+        }
+
+        // Request a page starting at index 2 with limit 2 => should return tags 2 and 3
+        let (page, total) = storage
+            .list_docker_manifests_paginated(repository, 2, 2)
+            .await?;
+
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 2);
+        assert!(page[0].key.ends_with("/manifests/2"));
+        assert!(page[1].key.ends_with("/manifests/3"));
 
         Ok(())
     }

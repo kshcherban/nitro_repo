@@ -105,9 +105,9 @@ Quality is not negotiable. Speed is achieved through discipline, not shortcuts. 
 
 ## Project operations
 - to fully rebuild project and restart docker compose services use `./dev.sh`
-- to rebuild just UI/frontend `cd site && npm run build`
-- to rebuild just backend `cargo build --features frontend`
+- to rebuild just UI/frontend `npm --prefix site run build`
+- to rebuild just backend `./dev.sh -b`
 - if needed to stop the server run docker compose down
-- logs are available with `docker compose logs nitro_repo`
+- logs are available with `docker compose logs nitro`
 - extensive debugging with traces is available in jaeger, being available at http://localhost:16686, check @docker-compose.dev.yml, you can query trace like `curl -s http://localhost:16686/api/traces/<trace-id> | jq .`
 - in case something is needed inside running service container, use `docker compose exec`

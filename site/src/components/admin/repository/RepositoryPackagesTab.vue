@@ -40,7 +40,8 @@
               prepend-icon="mdi-delete"
               :disabled="selectedCount === 0 || isDeleting"
               :loading="isDeleting"
-              @click="deleteSelected">
+              @click="deleteSelected"
+              class="ml-2">
               Delete Selected
             </v-btn>
           </div>

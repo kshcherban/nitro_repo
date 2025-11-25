@@ -9,7 +9,7 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, FixedOffset};
-use nr_storage::{DynStorage, FileType, Storage, StorageFile};
+use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile, s3::S3Storage};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
@@ -25,7 +25,7 @@ use crate::{
         authentication::Authentication,
         responses::{MissingPermission, RepositoryNotFound},
     },
-    error::InternalError,
+    error::{InternalError, OtherInternalError},
     repository::{
         DynRepository, Repository,
         docker::{
@@ -77,6 +77,119 @@ pub struct PackageListResponse {
     pub per_page: usize,
     pub total_packages: usize,
     pub items: Vec<PackageFileEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageObject {
+    /// Repository-relative object key (no bucket or repository prefix)
+    key: String,
+    size: u64,
+    modified: DateTime<FixedOffset>,
+}
+
+/// Collapse a flat list of S3 objects into the paginated package response used by the
+/// admin packages table. Objects must already be scoped to the repository and returned in
+/// lexicographic key order (S3 default). Hidden files (".nr-meta") should be filtered out
+/// by callers before invoking this helper.
+fn build_package_page_from_objects(
+    objects: impl IntoIterator<Item = PackageObject>,
+    base: Option<&str>,
+    page: usize,
+    per_page: usize,
+) -> PackageListResponse {
+    let per_page = per_page.clamp(1, 200);
+    let current_page = page.max(1);
+    let start = (current_page - 1) * per_page;
+    let end = start + per_page;
+
+    let base_prefix = base.unwrap_or("");
+
+    let mut total_packages = 0usize;
+    let mut page_items: Vec<PackageFileEntry> = Vec::new();
+
+    let mut current_package: Option<(String, Vec<PackageFileEntry>)> = None;
+
+    let finalize_current = |pkg: &mut Option<(String, Vec<PackageFileEntry>)>,
+                            total_packages: &mut usize,
+                            page_items: &mut Vec<PackageFileEntry>| {
+        if let Some((_, files)) = pkg.take() {
+            if *total_packages >= start && *total_packages < end {
+                page_items.extend(files);
+            }
+            *total_packages += 1;
+        }
+    };
+
+    for obj in objects.into_iter() {
+        let key = obj.key.trim_start_matches('/').to_string();
+
+        // Only consider objects within the requested base prefix (when provided).
+        if !base_prefix.is_empty() && !key.starts_with(base_prefix) {
+            continue;
+        }
+
+        let relative = if base_prefix.is_empty() {
+            key.as_str()
+        } else {
+            key.strip_prefix(base_prefix).unwrap_or(key.as_str())
+        };
+
+        let (package_dir, file_name) = match relative.rsplit_once('/') {
+            Some(split) => split,
+            None => continue,
+        };
+
+        if package_dir.is_empty() || should_ignore(file_name) {
+            continue;
+        }
+
+        let mut display_name = package_dir.trim_matches('/').to_string();
+
+        if let Some(prefix) = base {
+            if prefix == "go-proxy-cache/" {
+                if let Some(stripped) = display_name.strip_suffix("/@v") {
+                    display_name = stripped.to_string();
+                }
+            }
+        }
+
+        if let Some(stripped) = display_name.strip_suffix("/@v") {
+            display_name = stripped.to_string();
+        }
+
+        if display_name.is_empty() {
+            continue;
+        }
+
+        let is_new_package = match &current_package {
+            Some((name, _)) => name != &display_name,
+            None => true,
+        };
+
+        if is_new_package {
+            finalize_current(&mut current_package, &mut total_packages, &mut page_items);
+            current_package = Some((display_name.clone(), Vec::new()));
+        }
+
+        if let Some((_, files)) = current_package.as_mut() {
+            files.push(PackageFileEntry {
+                package: display_name,
+                name: file_name.to_string(),
+                cache_path: key,
+                size: obj.size,
+                modified: obj.modified,
+            });
+        }
+    }
+
+    finalize_current(&mut current_package, &mut total_packages, &mut page_items);
+
+    PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages,
+        items: page_items,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +284,19 @@ pub async fn list_cached_packages(
     }
     match package_strategy(&repository) {
         PackageStrategy::PackagesDirectory { base } => {
-            list_directory_packages(repository, query.page, query.per_page, base).await
+            let storage = repository.get_storage();
+            if let DynStorage::S3(s3_storage) = storage.clone() {
+                list_directory_packages_s3(
+                    repository.id(),
+                    s3_storage,
+                    query.page,
+                    query.per_page,
+                    base,
+                )
+                .await
+            } else {
+                list_directory_packages(repository, query.page, query.per_page, base).await
+            }
         }
         PackageStrategy::MavenHosted => {
             list_maven_hosted_packages(site, repository, query.page, query.per_page).await
@@ -180,7 +305,19 @@ pub async fn list_cached_packages(
             list_maven_proxy_packages(repository, query.page, query.per_page).await
         }
         PackageStrategy::PythonHosted => {
-            list_directory_packages(repository, query.page, query.per_page, None).await
+            let storage = repository.get_storage();
+            if let DynStorage::S3(s3_storage) = storage.clone() {
+                list_directory_packages_s3(
+                    repository.id(),
+                    s3_storage,
+                    query.page,
+                    query.per_page,
+                    None,
+                )
+                .await
+            } else {
+                list_directory_packages(repository, query.page, query.per_page, None).await
+            }
         }
         PackageStrategy::Docker => {
             list_docker_packages(repository, query.page, query.per_page).await
@@ -324,6 +461,37 @@ async fn list_directory_packages(
         total_packages,
         items,
     };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
+async fn list_directory_packages_s3(
+    repository_id: Uuid,
+    storage: S3Storage,
+    page: usize,
+    per_page_raw: usize,
+    base: Option<&str>,
+) -> Result<Response, InternalError> {
+    let objects = storage
+        .list_repository_objects(repository_id, base)
+        .await
+        .map_err(StorageError::from)?;
+
+    let mut objects: Vec<PackageObject> = objects
+        .into_iter()
+        .map(|obj| PackageObject {
+            key: obj.key,
+            size: obj.size,
+            modified: obj
+                .last_modified
+                .unwrap_or_else(|| chrono::Local::now().fixed_offset()),
+        })
+        .collect();
+
+    // Ensure deterministic ordering independent of S3 pagination
+    objects.sort_by(|a, b| a.key.cmp(&b.key));
+
+    let response = build_package_page_from_objects(objects, base, page, per_page_raw);
+
     Ok(ResponseBuilder::ok().json(&response))
 }
 
@@ -1124,6 +1292,52 @@ async fn list_docker_packages(
     per_page_raw: usize,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let start = (current_page - 1) * per_page;
+
+    if let DynStorage::S3(s3_storage) = storage.clone() {
+        let (manifests, total_packages) = s3_storage
+            .list_docker_manifests_paginated(repository.id(), start, per_page)
+            .await
+            .map_err(StorageError::from)?;
+
+        if total_packages == 0 || start >= total_packages {
+            let empty = PackageListResponse {
+                page: current_page,
+                per_page,
+                total_packages,
+                items: Vec::new(),
+            };
+            return Ok(ResponseBuilder::ok().json(&empty));
+        }
+
+        let now = chrono::Local::now().fixed_offset();
+        let items = manifests
+            .into_iter()
+            .filter_map(|obj| {
+                let repo_relative = obj.key.strip_prefix("v2/")?.to_string();
+                let (repository, reference) = repo_relative.split_once("/manifests/")?;
+                Some(PackageFileEntry {
+                    package: repository.to_string(),
+                    name: reference.to_string(),
+                    cache_path: obj.key,
+                    size: obj.size,
+                    modified: obj.last_modified.unwrap_or(now),
+                })
+            })
+            .collect();
+
+        let response = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages,
+            items,
+        };
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
+
+    // Fallback for non-S3 storage: load manifests into memory (local FS)
     let mut manifests = collect_manifest_entries(&storage, repository.id())
         .await
         .map_err(InternalError::from)?;
@@ -1134,22 +1348,9 @@ async fn list_docker_packages(
             .then(a.reference.cmp(&b.reference))
     });
 
-    let per_page = per_page_raw.clamp(1, 200);
-    let current_page = page.max(1);
     let total_packages = manifests.len();
 
-    if total_packages == 0 {
-        let empty = PackageListResponse {
-            page: current_page,
-            per_page,
-            total_packages,
-            items: Vec::new(),
-        };
-        return Ok(ResponseBuilder::ok().json(&empty));
-    }
-
-    let start = (current_page - 1) * per_page;
-    if start >= total_packages {
+    if total_packages == 0 || start >= total_packages {
         let empty = PackageListResponse {
             page: current_page,
             per_page,
@@ -1160,17 +1361,16 @@ async fn list_docker_packages(
     }
 
     let end = min(start + per_page, total_packages);
-    let mut items = Vec::with_capacity(end - start);
-
-    for entry in manifests[start..end].iter() {
-        items.push(PackageFileEntry {
+    let items = manifests[start..end]
+        .iter()
+        .map(|entry| PackageFileEntry {
             package: entry.repository.clone(),
             name: entry.reference.clone(),
             cache_path: entry.cache_path.clone(),
             size: entry.size,
             modified: entry.modified,
-        });
-    }
+        })
+        .collect();
 
     let response = PackageListResponse {
         page: current_page,
@@ -1251,26 +1451,24 @@ pub async fn delete_docker_package(
         split_manifest_cache_path(cache_path).ok_or(DockerDeletionError::InvalidManifestPath)?;
 
     let mut visited_manifests = HashSet::new();
-    let mut deleted_blobs = HashSet::new();
-    let mut total = DockerDeletionResult::default();
+    let mut paths_to_delete = HashSet::new();
     let mut stack = Vec::new();
     stack.push(cache_path.to_string());
 
+    // First pass: collect all paths to delete
     while let Some(current_path) = stack.pop() {
-        match process_manifest(
+        match collect_manifest_paths(
             storage,
             repository_id,
             &repository_name,
             &current_path,
             &mut visited_manifests,
-            &mut deleted_blobs,
+            &mut paths_to_delete,
         )
         .await
         {
-            Ok(process) => {
-                total.removed_manifests += process.delta.removed_manifests;
-                total.removed_blobs += process.delta.removed_blobs;
-                stack.extend(process.nested);
+            Ok(nested) => {
+                stack.extend(nested);
             }
             Err(DockerDeletionError::ManifestMissing) if current_path != cache_path => {
                 // Nested manifest already removed; skip silently.
@@ -1279,7 +1477,121 @@ pub async fn delete_docker_package(
         }
     }
 
-    Ok(total)
+    // Second pass: batch delete all collected paths
+    let paths_vec: Vec<nr_core::storage::StoragePath> = paths_to_delete
+        .iter()
+        .map(|p| nr_core::storage::StoragePath::from(p.as_str()))
+        .collect();
+
+    let deleted = storage
+        .delete_files_batch(repository_id, &paths_vec)
+        .await?;
+
+    // Count manifests vs blobs for the result
+    let manifest_count = paths_to_delete
+        .iter()
+        .filter(|p| p.contains("/manifests/"))
+        .count();
+    let blob_count = deleted.saturating_sub(manifest_count);
+
+    Ok(DockerDeletionResult {
+        removed_manifests: manifest_count,
+        removed_blobs: blob_count,
+    })
+}
+
+#[derive(Debug, Default)]
+struct DockerBatchDeletion {
+    paths_to_delete: HashSet<String>,
+    missing: Vec<String>,
+    rejected: Vec<String>,
+    deleted_packages: usize,
+}
+
+/// Collect deletion targets for multiple Docker manifests at once, deduplicating shared layers
+/// and manifest digests to minimize downstream S3 delete calls.
+#[instrument(
+    name = "collect_docker_deletions_batch",
+    skip(storage, paths),
+    fields(repo_id = %repository_id, path_count = paths.len())
+)]
+async fn collect_docker_deletions_batch(
+    storage: &nr_storage::DynStorage,
+    repository_id: Uuid,
+    paths: &[String],
+) -> Result<DockerBatchDeletion, DockerDeletionError> {
+    let mut visited_manifests = HashSet::new();
+    let mut batch = DockerBatchDeletion::default();
+
+    for path in paths {
+        if !is_valid_docker_manifest_path(path) {
+            batch.rejected.push(path.clone());
+            continue;
+        }
+
+        let (repository_name, _) = match split_manifest_cache_path(path) {
+            Some(parts) => parts,
+            None => {
+                batch.rejected.push(path.clone());
+                continue;
+            }
+        };
+
+        let mut stack = Vec::new();
+        stack.push(path.clone());
+        let mut found_manifest = false;
+
+        while let Some(current_path) = stack.pop() {
+            match collect_manifest_paths(
+                storage,
+                repository_id,
+                &repository_name,
+                &current_path,
+                &mut visited_manifests,
+                &mut batch.paths_to_delete,
+            )
+            .await
+            {
+                Ok(nested) => {
+                    found_manifest = true;
+                    stack.extend(nested);
+                }
+                Err(DockerDeletionError::ManifestMissing) if current_path != *path => {
+                    // Nested manifest already removed; ignore.
+                }
+                Err(DockerDeletionError::ManifestMissing) => {
+                    batch.missing.push(path.clone());
+                    found_manifest = false;
+                    break;
+                }
+                Err(DockerDeletionError::InvalidManifestPath) => {
+                    batch.rejected.push(path.clone());
+                    found_manifest = false;
+                    break;
+                }
+                Err(err) => {
+                    // Treat parse/storage errors as missing for the user but stop processing this path.
+                    warn!(?err, path, "Failed to collect docker manifest for deletion");
+                    batch.missing.push(path.clone());
+                    found_manifest = false;
+                    break;
+                }
+            }
+        }
+
+        if found_manifest {
+            batch.deleted_packages += 1;
+        }
+    }
+
+    // Always attempt to delete tag metadata sidecars for the requested paths
+    for path in paths {
+        batch
+            .paths_to_delete
+            .insert(format!("{path}.nr-docker-tagmeta"));
+    }
+
+    Ok(batch)
 }
 
 async fn delete_helm_package(
@@ -1333,40 +1645,26 @@ fn split_manifest_cache_path(path: &str) -> Option<(String, String)> {
     Some((repository.to_string(), reference.to_string()))
 }
 
-async fn delete_blob_digest(
-    storage: &nr_storage::DynStorage,
-    repository_id: Uuid,
+fn collect_blob_path(
     repository_name: &str,
     digest: &str,
-    deleted_blobs: &mut HashSet<String>,
-    result: &mut DockerDeletionResult,
-) -> Result<(), DockerDeletionError> {
-    if !deleted_blobs.insert(digest.to_string()) {
-        return Ok(());
+    collected_blobs: &mut HashSet<String>,
+    paths_to_delete: &mut HashSet<String>,
+) {
+    if collected_blobs.insert(digest.to_string()) {
+        let blob_path = format!("v2/{}/blobs/{}", repository_name, digest);
+        paths_to_delete.insert(blob_path);
     }
-    let blob_path =
-        nr_core::storage::StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
-    match storage.delete_file(repository_id, &blob_path).await {
-        Ok(true) => result.removed_blobs += 1,
-        Ok(false) => {}
-        Err(err) => return Err(DockerDeletionError::Storage(err)),
-    }
-    Ok(())
 }
 
-struct ManifestProcess {
-    delta: DockerDeletionResult,
-    nested: Vec<String>,
-}
-
-async fn process_manifest(
+async fn collect_manifest_paths(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,
     repository_name: &str,
     cache_path: &str,
     visited_manifests: &mut HashSet<String>,
-    deleted_blobs: &mut HashSet<String>,
-) -> Result<ManifestProcess, DockerDeletionError> {
+    paths_to_delete: &mut HashSet<String>,
+) -> Result<Vec<String>, DockerDeletionError> {
     let storage_path = nr_core::storage::StoragePath::from(cache_path);
     let Some(file) = storage.open_file(repository_id, &storage_path).await? else {
         return Err(DockerDeletionError::ManifestMissing);
@@ -1377,8 +1675,8 @@ async fn process_manifest(
         ));
     };
 
-    let size_hint = usize::try_from(meta.file_type.file_size).unwrap_or(0);
-    let mut bytes = Vec::with_capacity(size_hint);
+    // Read manifest content (manifests are typically small); if unexpectedly large, we still proceed
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.file_type.file_size).unwrap_or(0));
     content
         .read_to_end(&mut bytes)
         .await
@@ -1388,73 +1686,60 @@ async fn process_manifest(
     let manifest = DockerManifest::from_bytes(&bytes, MediaType::OCI_IMAGE_MANIFEST)
         .map_err(|err| DockerDeletionError::InvalidManifest(err.to_string()))?;
 
-    let mut result = DockerDeletionResult::default();
-    if storage.delete_file(repository_id, &storage_path).await? {
-        result.removed_manifests += 1;
-    }
+    let mut collected_blobs = HashSet::new();
+    debug!(cache_path, digest = %manifest_digest, "Parsed manifest for deletion");
 
-    let digest_path_str = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
-    let digest_path = nr_core::storage::StoragePath::from(digest_path_str.as_str());
-    if digest_path != storage_path {
-        if storage.delete_file(repository_id, &digest_path).await? {
-            result.removed_manifests += 1;
-        }
+    // Add manifest paths to delete (and related tag metadata if present)
+    paths_to_delete.insert(cache_path.to_string());
+    // Tag meta sidecar created by docker proxy
+    paths_to_delete.insert(format!("{cache_path}.nr-docker-tagmeta"));
+
+    let digest_path = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
+    if digest_path != cache_path {
+        paths_to_delete.insert(digest_path.clone());
+        paths_to_delete.insert(format!("{digest_path}.nr-docker-tagmeta"));
     }
 
     let first_visit = visited_manifests.insert(manifest_digest.clone());
     if !first_visit {
-        return Ok(ManifestProcess {
-            delta: result,
-            nested: Vec::new(),
-        });
+        return Ok(Vec::new());
     }
 
     let mut nested = Vec::new();
+
     match manifest {
         DockerManifest::DockerV2(manifest) => {
-            delete_blob_digest(
-                storage,
-                repository_id,
+            collect_blob_path(
                 repository_name,
                 &manifest.config.digest,
-                deleted_blobs,
-                &mut result,
-            )
-            .await?;
+                &mut collected_blobs,
+                paths_to_delete,
+            );
             for layer in manifest.layers {
-                delete_blob_digest(
-                    storage,
-                    repository_id,
+                collect_blob_path(
                     repository_name,
                     &layer.digest,
-                    deleted_blobs,
-                    &mut result,
-                )
-                .await?;
+                    &mut collected_blobs,
+                    paths_to_delete,
+                );
             }
         }
         DockerManifest::OciImage(manifest) => {
             if let Some(config) = manifest.config {
-                delete_blob_digest(
-                    storage,
-                    repository_id,
+                collect_blob_path(
                     repository_name,
                     &config.digest,
-                    deleted_blobs,
-                    &mut result,
-                )
-                .await?;
+                    &mut collected_blobs,
+                    paths_to_delete,
+                );
             }
             for layer in manifest.layers {
-                delete_blob_digest(
-                    storage,
-                    repository_id,
+                collect_blob_path(
                     repository_name,
                     &layer.digest,
-                    deleted_blobs,
-                    &mut result,
-                )
-                .await?;
+                    &mut collected_blobs,
+                    paths_to_delete,
+                );
             }
         }
         DockerManifest::OciIndex(index) => {
@@ -1469,10 +1754,7 @@ async fn process_manifest(
         }
     }
 
-    Ok(ManifestProcess {
-        delta: result,
-        nested,
-    })
+    Ok(nested)
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -1501,7 +1783,7 @@ pub struct PackageDeleteResponse {
         (status = 404, description = "Repository not found"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth, request), fields(repo_id = %repository_id, path_count = request.paths.len()))]
 pub async fn delete_cached_packages(
     State(site): State<NitroRepo>,
     auth: Authentication,
@@ -1537,84 +1819,100 @@ pub async fn delete_cached_packages(
     let mut missing = Vec::new();
     let mut rejected = Vec::new();
 
-    for path in request.paths.iter() {
-        if !is_valid_cache_path(path, strategy) {
-            rejected.push(path.clone());
-            continue;
-        }
-        if let PackageStrategy::Helm = strategy {
-            if let Some(hosted) = helm_repository.as_ref() {
-                match delete_helm_package(&site, hosted, path).await {
-                    Ok(true) => deleted += 1,
-                    Ok(false) => missing.push(path.clone()),
-                    Err(err) => {
-                        warn!(?err, path, "Failed to delete Helm chart package");
-                        missing.push(path.clone());
-                    }
-                }
-            } else {
-                warn!(
-                    path,
-                    "Helm repository missing hosted instance during deletion"
-                );
-                missing.push(path.clone());
-            }
-            continue;
-        }
-        if matches!(
-            strategy,
-            PackageStrategy::GoHosted | PackageStrategy::GoProxy
-        ) {
-            match delete_go_package(&storage, repository.id(), path).await {
-                Ok(Some(result)) => {
-                    deleted += result.removed;
-                    missing.extend(result.missing);
-                    continue;
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(?err, path, "Failed to delete Go package files");
-                    missing.push(path.clone());
-                    continue;
-                }
-            }
-        }
-        if let PackageStrategy::Docker = strategy {
-            match delete_docker_package(&storage, repository.id(), path).await {
-                Ok(result) => {
-                    if result.removed_manifests > 0 {
-                        deleted += 1;
+    if let PackageStrategy::Docker = strategy {
+        let batch = collect_docker_deletions_batch(&storage, repository.id(), &request.paths)
+            .await
+            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+
+        debug!(
+            paths = request.paths.len(),
+            to_delete = batch.paths_to_delete.len(),
+            missing = batch.missing.len(),
+            rejected = batch.rejected.len(),
+            "Docker deletion batch prepared"
+        );
+
+        let batch_missing = batch.missing;
+
+        if !batch.paths_to_delete.is_empty() {
+            let paths: Vec<_> = batch
+                .paths_to_delete
+                .iter()
+                .map(|p| nr_core::storage::StoragePath::from(p.as_str()))
+                .collect();
+
+            match storage.delete_files_batch(repository.id(), &paths).await {
+                Ok(deleted_objects) => {
+                    // Only mark packages deleted if we removed something
+                    if deleted_objects > 0 {
+                        deleted += batch.deleted_packages;
                     } else {
-                        missing.push(path.clone());
+                        // Treat as missing if nothing was removed
+                        missing.extend(request.paths.clone());
                     }
                 }
-                Err(DockerDeletionError::ManifestMissing) => {
-                    missing.push(path.clone());
+                Err(err) => {
+                    warn!(?err, "Failed to batch delete docker objects");
+                    return Err(InternalError::from(OtherInternalError::new(err)));
                 }
-                Err(DockerDeletionError::InvalidManifestPath) => {
-                    rejected.push(path.clone());
-                }
-                Err(DockerDeletionError::InvalidManifest(err)) => {
+            }
+        }
+
+        // Propagate reported missing/rejected from collection phase
+        missing.extend(batch_missing);
+        rejected.extend(batch.rejected);
+    } else {
+        for path in request.paths.iter() {
+            if !is_valid_cache_path(path, strategy) {
+                rejected.push(path.clone());
+                continue;
+            }
+            if let PackageStrategy::Helm = strategy {
+                if let Some(hosted) = helm_repository.as_ref() {
+                    match delete_helm_package(&site, hosted, path).await {
+                        Ok(true) => deleted += 1,
+                        Ok(false) => missing.push(path.clone()),
+                        Err(err) => {
+                            warn!(?err, path, "Failed to delete Helm chart package");
+                            missing.push(path.clone());
+                        }
+                    }
+                } else {
                     warn!(
-                        ?err,
-                        path, "Failed to parse Docker manifest during deletion"
+                        path,
+                        "Helm repository missing hosted instance during deletion"
                     );
                     missing.push(path.clone());
                 }
-                Err(DockerDeletionError::Storage(err)) => {
-                    warn!(?err, path, "Storage error while deleting Docker manifest");
-                    missing.push(path.clone());
+                continue;
+            }
+            if matches!(
+                strategy,
+                PackageStrategy::GoHosted | PackageStrategy::GoProxy
+            ) {
+                match delete_go_package(&storage, repository.id(), path).await {
+                    Ok(Some(result)) => {
+                        deleted += result.removed;
+                        missing.extend(result.missing);
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        warn!(?err, path, "Failed to delete Go package files");
+                        missing.push(path.clone());
+                        continue;
+                    }
                 }
             }
-            continue;
-        }
-        let storage_path = nr_core::storage::StoragePath::from(path.as_str());
-        match storage.delete_file(repository.id(), &storage_path).await {
-            Ok(true) => deleted += 1,
-            Ok(false) => missing.push(path.clone()),
-            Err(err) => {
-                warn!(?err, path, "Failed to delete cached package");
-                missing.push(path.clone());
+
+            let storage_path = nr_core::storage::StoragePath::from(path.as_str());
+            match storage.delete_file(repository.id(), &storage_path).await {
+                Ok(true) => deleted += 1,
+                Ok(false) => missing.push(path.clone()),
+                Err(err) => {
+                    warn!(?err, path, "Failed to delete cached package");
+                    missing.push(path.clone());
+                }
             }
         }
     }
@@ -2218,6 +2516,99 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn collect_docker_deletions_batch_deduplicates_shared_layers() -> Result<()> {
+        let (storage, _tempdir) = local_storage().await?;
+        let repository_id = Uuid::new_v4();
+        let repository_name = "library/shared";
+
+        let config_bytes = b"config-json";
+        let layer_bytes = b"layer-bytes";
+        let config_digest = format!("sha256:{:x}", Sha256::digest(config_bytes));
+        let layer_digest = format!("sha256:{:x}", Sha256::digest(layer_bytes));
+
+        let manifest_json = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "size": config_bytes.len(),
+                "digest": config_digest,
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
+                    "size": layer_bytes.len(),
+                    "digest": layer_digest,
+                }
+            ]
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest_json)?;
+        let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+        // Two tags pointing to the same manifest
+        let tag_paths = [
+            format!("v2/{}/manifests/latest", repository_name),
+            format!("v2/{}/manifests/v1", repository_name),
+        ];
+
+        for tag in tag_paths.iter() {
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(manifest_bytes.clone()),
+                    &nr_core::storage::StoragePath::from(tag.as_str()),
+                )
+                .await?;
+        }
+
+        // Store the digest manifest and blobs
+        let digest_path = nr_core::storage::StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            repository_name, manifest_digest
+        ));
+        storage
+            .save_file(
+                repository_id,
+                FileContent::from(manifest_bytes.clone()),
+                &digest_path,
+            )
+            .await?;
+
+        for (digest, content) in [
+            (&config_digest, config_bytes.as_slice()),
+            (&layer_digest, layer_bytes.as_slice()),
+        ] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(content.to_vec()),
+                    &blob_path,
+                )
+                .await?;
+        }
+
+        let batch = super::collect_docker_deletions_batch(
+            &storage,
+            repository_id,
+            &tag_paths.iter().cloned().collect::<Vec<_>>(),
+        )
+        .await?;
+
+        // Expect: 2 tag manifests + 1 digest manifest + 2 blobs = 5 unique paths
+        // Plus sidecar tagmeta files for each requested path and digest
+        assert_eq!(batch.paths_to_delete.len(), 7);
+        assert_eq!(batch.deleted_packages, 2);
+        assert!(batch.missing.is_empty());
+        assert!(batch.rejected.is_empty());
+
+        Ok(())
+    }
+
     #[test]
     fn ignore_hidden_and_meta() {
         assert!(should_ignore(".DS_Store"));
@@ -2319,5 +2710,70 @@ mod tests {
             "../crates/serde/1.0.0/serde-1.0.0.crate",
             PackageStrategy::Cargo
         ));
+    }
+
+    fn pkg_obj(key: &str, size: u64) -> PackageObject {
+        PackageObject {
+            key: key.to_string(),
+            size,
+            modified: chrono::Local::now().fixed_offset(),
+        }
+    }
+
+    #[test]
+    fn build_package_page_groups_by_directory_and_ignores_meta() {
+        let objects = vec![
+            pkg_obj("packages/@scope/pkg/pkg-2.3.4.tgz", 42),
+            // Hidden metadata object should be ignored
+            pkg_obj("packages/@scope/pkg/pkg-2.3.4.tgz.nr-meta", 1),
+            pkg_obj("packages/example/example-1.0.0.whl", 10),
+        ];
+
+        let response = super::build_package_page_from_objects(objects, Some("packages/"), 1, 50);
+
+        assert_eq!(response.total_packages, 2);
+        // Package ordering follows lexicographic directory order
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.items[0].package, "@scope/pkg");
+        assert_eq!(
+            response.items[0].cache_path,
+            "packages/@scope/pkg/pkg-2.3.4.tgz"
+        );
+        assert_eq!(response.items[1].package, "example");
+    }
+
+    #[test]
+    fn build_package_page_respects_pagination() {
+        let objects = vec![
+            pkg_obj("packages/alpha/a-1.tgz", 1),
+            pkg_obj("packages/bravo/b-1.tgz", 1),
+            pkg_obj("packages/charlie/c-1.tgz", 1),
+        ];
+
+        let response = super::build_package_page_from_objects(objects, Some("packages/"), 2, 1);
+
+        assert_eq!(response.total_packages, 3);
+        assert_eq!(response.items.len(), 1);
+        assert_eq!(response.items[0].package, "bravo");
+        assert_eq!(response.items[0].name, "b-1.tgz");
+    }
+
+    #[test]
+    fn build_package_page_trims_go_proxy_suffix() {
+        let objects = vec![pkg_obj(
+            "go-proxy-cache/github.com/example/module/@v/v1.0.0.zip",
+            123,
+        )];
+
+        let response =
+            super::build_package_page_from_objects(objects, Some("go-proxy-cache/"), 1, 10);
+
+        assert_eq!(response.total_packages, 1);
+        assert_eq!(response.items.len(), 1);
+        assert_eq!(response.items[0].package, "github.com/example/module");
+        assert_eq!(
+            response.items[0].cache_path,
+            "go-proxy-cache/github.com/example/module/@v/v1.0.0.zip"
+        );
     }
 }

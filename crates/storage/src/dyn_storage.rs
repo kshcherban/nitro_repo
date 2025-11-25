@@ -223,4 +223,35 @@ impl Storage for DynStorage {
     }
 }
 
+impl DynStorage {
+    /// Delete multiple files in batch if supported by the storage backend.
+    /// For S3, this uses the efficient delete_objects API.
+    /// For local storage, falls back to sequential deletion.
+    ///
+    /// Returns the number of files actually deleted.
+    #[tracing::instrument(name = "DynStorage::delete_files_batch", skip(self, paths), fields(count = paths.len()))]
+    pub async fn delete_files_batch(
+        &self,
+        repository: Uuid,
+        paths: &[StoragePath],
+    ) -> Result<usize, StorageError> {
+        match self {
+            DynStorage::Local(_storage) => {
+                // Local storage doesn't have batch delete, fall back to sequential
+                let mut deleted = 0;
+                for path in paths {
+                    if self.delete_file(repository, path).await? {
+                        deleted += 1;
+                    }
+                }
+                Ok(deleted)
+            }
+            DynStorage::S3(storage) => storage
+                .delete_files_batch(repository, paths)
+                .await
+                .map_err(Into::into),
+        }
+    }
+}
+
 pub static STORAGE_FACTORIES: &[&dyn StorageFactory] = &[&LocalStorageFactory, &S3StorageFactory];
