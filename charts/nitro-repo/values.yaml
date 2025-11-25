@@ -96,13 +96,104 @@ readinessProbe:
   timeoutSeconds: 3
   failureThreshold: 3
 
-# Logging configuration
-rustLog: "info"
+# =============================================================================
+# Nitro Repo Application Configuration
+# =============================================================================
 
-# Distributed tracing configuration
-tracing:
+# Site configuration
+site:
+  appUrl: ""  # Public URL, e.g., https://repo.example.com
+  name: "Nitro Repo"
+  description: "An Open Source artifact manager"
+  isHttps: true
+
+# Web server configuration
+webServer:
+  openApiRoutes: true
+  maxUpload: "100MB"
+
+# Session configuration
+sessions:
+  lifespan: 86400  # Session lifetime in seconds (24 hours)
+  cleanupInterval: 3600  # Cleanup interval in seconds (1 hour)
+  databaseLocation: "/data/sessions.redb"
+
+# Security configuration
+security:
+  allowBasicWithoutTokens: true
+  passwordRules:
+    minLength: 12
+    requireUppercase: false
+    requireLowercase: true
+    requireNumber: false
+    requireSymbol: false
+
+# SSO configuration (minimal - extend via env vars for complex setups)
+# Use env array below for provider-specific config: NITRO_SECURITY__SSO__*
+sso:
   enabled: false
-  serviceName: "nitro-repo"
+
+# OAuth2 configuration (minimal - extend via env vars for complex setups)
+# Use env array below for provider-specific config: NITRO_SECURITY__OAUTH2__*
+oauth2:
+  enabled: false
+
+# Staging configuration
+staging:
+  enabled: true
+  maxSize: "1GB"
+  cleanupInterval: 3600  # seconds
+  staleTimeout: 86400    # seconds (24 hours)
+
+# OpenTelemetry configuration
+opentelemetry:
+  enabled: false
+  protocol: "GRPC"  # Options: GRPC, HttpBinary, HttpJson
+  endpoint: "http://localhost:4317"
+  traces: true
+  logs: false
+  config:
+    serviceName: "nitro-repo"
+    serviceVersion: "3.0.0"
+    serviceEnvironment: "production"
+    serviceNamespace: "nitro"
+
+# Logging configuration
+logging:
+  defaultLevel: "Info"
+  levels:
+    nitro_repo: "Info"
+    nr_core: "Info"
+    nr_storage: "Info"
+    sqlx: "Info"
+  console:
+    pretty: false
+    includeTime: true
+    includeLevel: true
+    ansiColor: false
+
+# S3 Storage backend (optional, for stateless K8s deployments)
+s3Storage:
+  enabled: false
+  bucket: ""
+  region: "us-east-1"
+  endpoint: ""  # For S3-compatible storage (MinIO, etc.)
+  # Authentication options:
+  # Option 1: Static credentials (less secure)
+  accessKeyId: ""
+  secretAccessKey: ""
+  # Option 2: IAM Role (EKS - more secure)
+  useIamRole: false
+  roleArn: ""
+  # Option 3: Reference K8s secret for credentials
+  secretRef:
+    enabled: false
+    name: "s3-credentials"
+  # Local cache settings
+  cache:
+    enabled: true
+    maxBytes: "1GB"
+    maxEntries: 10000
 
 # Custom environment variables (supports secret references)
 env: []
@@ -138,12 +229,17 @@ postgresql:
 
 # External database configuration (when postgresql.enabled = false)
 externalDatabase:
-  url: "postgresql://user:password@host:5432/database"  # Fallback when secretRef is disabled
+  # Option 1: Individual fields (recommended)
+  host: ""
+  port: 5432
+  user: ""
+  password: ""
+  database: ""
+  # Option 2: Reference K8s secret for password (more secure)
   secretRef:
     enabled: false
     name: "database-secret"
-    key: "url"
-    optional: false
+    passwordKey: "password"
 
 # Jaeger dependency configuration
 jaeger:

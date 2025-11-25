@@ -8,3 +8,4 @@ artipie/
 .claude/
 charts/nitro-repo/charts
 *.tgz
+mise.toml

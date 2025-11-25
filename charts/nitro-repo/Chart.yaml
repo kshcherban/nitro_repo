@@ -1,3 +1,5 @@
+# ABOUTME: Helm chart metadata for Nitro Repo - Universal artifact repository.
+# ABOUTME: Defines chart version, dependencies (PostgreSQL, Jaeger), and metadata.
 apiVersion: v2
 appVersion: 3.0.0-BETA
 dependencies:
@@ -27,4 +29,4 @@ name: nitro-repo
 sources:
 - https://github.com/kshcherban/nitro_repo
 type: application
-version: 0.3.4
+version: 0.4.0
