@@ -36,11 +36,11 @@ require_symbol = false
 
 
 [log.levels]
-default = "Debug"
+default = "Info"
 [log.levels.others]
 "nitro_repo" = "Info"
-"nr_core" = "Debug"
-"nr_storage" = "Debug"
+"nr_core" = "Info"
+"nr_storage" = "Info"
 "sqlx" = "Info"
 "pg_extended_sqlx_queries" = "Info"
 "h2" = "Info"

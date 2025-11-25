@@ -19,6 +19,7 @@ services:
     build: .
     restart: unless-stopped
     network_mode: "bridge"
+    mem_limit: 2048mb
     depends_on:
       postgres:
         condition: service_healthy

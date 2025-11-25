@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, FixedOffset};
 use nr_core::storage::StoragePath;
-use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile};
+use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile, s3::S3Storage};
 use uuid::Uuid;
 
 use super::types::{Manifest, MediaType};
@@ -57,6 +57,10 @@ pub async fn collect_manifest_entries(
     storage: &DynStorage,
     repository_id: Uuid,
 ) -> Result<Vec<DockerManifestEntry>, StorageError> {
+    if let DynStorage::S3(s3) = storage {
+        return collect_manifest_entries_s3(s3, repository_id).await;
+    }
+
     let mut queue: VecDeque<(Vec<String>, StoragePath)> = VecDeque::new();
     queue.push_back((Vec::new(), StoragePath::from("v2")));
 
@@ -132,6 +136,41 @@ pub async fn collect_manifest_entries(
     }
 
     Ok(manifests)
+}
+
+/// S3-optimized manifest listing: uses ListObjectsV2 and avoids fetching manifest bodies.
+async fn collect_manifest_entries_s3(
+    storage: &S3Storage,
+    repository_id: Uuid,
+) -> Result<Vec<DockerManifestEntry>, StorageError> {
+    let objects = storage.list_docker_manifests(repository_id).await?;
+
+    let now = chrono::Local::now().fixed_offset();
+
+    let mut entries = objects
+        .into_iter()
+        .filter_map(|obj| {
+            let repo_relative = obj.key.strip_prefix("v2/").unwrap_or(&obj.key);
+            let (repository, reference) = repo_relative.split_once("/manifests/")?;
+            if repository.is_empty() || reference.is_empty() {
+                return None;
+            }
+            Some(DockerManifestEntry {
+                repository: repository.to_string(),
+                reference: reference.to_string(),
+                cache_path: obj.key,
+                size: obj.size,
+                modified: obj.last_modified.unwrap_or(now),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    entries.sort_by(|a, b| {
+        a.repository
+            .cmp(&b.repository)
+            .then(a.reference.cmp(&b.reference))
+    });
+    Ok(entries)
 }
 
 async fn read_manifest_bytes(
