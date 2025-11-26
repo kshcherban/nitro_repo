@@ -1483,16 +1483,19 @@ pub async fn delete_docker_package(
         .map(|p| nr_core::storage::StoragePath::from(p.as_str()))
         .collect();
 
-    let deleted = storage
+    let _deleted = storage
         .delete_files_batch(repository_id, &paths_vec)
         .await?;
 
     // Count manifests vs blobs for the result
     let manifest_count = paths_to_delete
         .iter()
-        .filter(|p| p.contains("/manifests/"))
+        .filter(|p| p.contains("/manifests/") && !p.ends_with(".nr-docker-tagmeta"))
         .count();
-    let blob_count = deleted.saturating_sub(manifest_count);
+    let blob_count = paths_to_delete
+        .iter()
+        .filter(|p| p.contains("/blobs/"))
+        .count();
 
     Ok(DockerDeletionResult {
         removed_manifests: manifest_count,
@@ -1500,12 +1503,81 @@ pub async fn delete_docker_package(
     })
 }
 
+const DOCKER_BATCH_DELETE_FLUSH_THRESHOLD: usize = 1_000;
+
 #[derive(Debug, Default)]
 struct DockerBatchDeletion {
-    paths_to_delete: HashSet<String>,
     missing: Vec<String>,
     rejected: Vec<String>,
     deleted_packages: usize,
+    deleted_objects: usize,
+}
+
+#[derive(Debug)]
+struct StreamingDockerBatchDeletion {
+    storage: nr_storage::DynStorage,
+    repository_id: Uuid,
+    paths_to_delete: HashSet<String>,
+    visited_manifests: HashSet<String>,
+    flush_threshold: usize,
+    missing: Vec<String>,
+    rejected: Vec<String>,
+    deleted_packages: usize,
+    deleted_objects: usize,
+}
+
+impl StreamingDockerBatchDeletion {
+    fn new(storage: &nr_storage::DynStorage, repository_id: Uuid) -> Self {
+        Self {
+            storage: storage.clone(),
+            repository_id,
+            paths_to_delete: HashSet::new(),
+            visited_manifests: HashSet::new(),
+            flush_threshold: DOCKER_BATCH_DELETE_FLUSH_THRESHOLD,
+            missing: Vec::new(),
+            rejected: Vec::new(),
+            deleted_packages: 0,
+            deleted_objects: 0,
+        }
+    }
+
+    async fn flush(&mut self) -> Result<(), DockerDeletionError> {
+        if self.paths_to_delete.is_empty() {
+            return Ok(());
+        }
+
+        let paths: Vec<_> = self
+            .paths_to_delete
+            .drain()
+            .map(|p| nr_core::storage::StoragePath::from(p.as_str()))
+            .collect();
+
+        let deleted = self
+            .storage
+            .delete_files_batch(self.repository_id, &paths)
+            .await?;
+
+        self.deleted_objects += deleted;
+        Ok(())
+    }
+
+    async fn flush_if_needed(&mut self) -> Result<(), DockerDeletionError> {
+        if self.paths_to_delete.len() >= self.flush_threshold {
+            self.flush().await?;
+        }
+        Ok(())
+    }
+}
+
+impl From<StreamingDockerBatchDeletion> for DockerBatchDeletion {
+    fn from(streaming: StreamingDockerBatchDeletion) -> Self {
+        Self {
+            missing: streaming.missing,
+            rejected: streaming.rejected,
+            deleted_packages: streaming.deleted_packages,
+            deleted_objects: streaming.deleted_objects,
+        }
+    }
 }
 
 /// Collect deletion targets for multiple Docker manifests at once, deduplicating shared layers
@@ -1520,8 +1592,7 @@ async fn collect_docker_deletions_batch(
     repository_id: Uuid,
     paths: &[String],
 ) -> Result<DockerBatchDeletion, DockerDeletionError> {
-    let mut visited_manifests = HashSet::new();
-    let mut batch = DockerBatchDeletion::default();
+    let mut batch = StreamingDockerBatchDeletion::new(storage, repository_id);
 
     for path in paths {
         if !is_valid_docker_manifest_path(path) {
@@ -1547,7 +1618,7 @@ async fn collect_docker_deletions_batch(
                 repository_id,
                 &repository_name,
                 &current_path,
-                &mut visited_manifests,
+                &mut batch.visited_manifests,
                 &mut batch.paths_to_delete,
             )
             .await
@@ -1555,6 +1626,7 @@ async fn collect_docker_deletions_batch(
                 Ok(nested) => {
                     found_manifest = true;
                     stack.extend(nested);
+                    batch.flush_if_needed().await?;
                 }
                 Err(DockerDeletionError::ManifestMissing) if current_path != *path => {
                     // Nested manifest already removed; ignore.
@@ -1589,9 +1661,12 @@ async fn collect_docker_deletions_batch(
         batch
             .paths_to_delete
             .insert(format!("{path}.nr-docker-tagmeta"));
+        batch.flush_if_needed().await?;
     }
 
-    Ok(batch)
+    batch.flush().await?;
+
+    Ok(batch.into())
 }
 
 async fn delete_helm_package(
@@ -1826,41 +1901,29 @@ pub async fn delete_cached_packages(
 
         debug!(
             paths = request.paths.len(),
-            to_delete = batch.paths_to_delete.len(),
+            deleted_packages = batch.deleted_packages,
+            deleted_objects = batch.deleted_objects,
             missing = batch.missing.len(),
             rejected = batch.rejected.len(),
-            "Docker deletion batch prepared"
+            "Docker deletion batch streamed"
         );
 
-        let batch_missing = batch.missing;
+        let DockerBatchDeletion {
+            deleted_packages: batch_deleted_packages,
+            deleted_objects,
+            missing: batch_missing,
+            rejected: batch_rejected,
+            ..
+        } = batch;
 
-        if !batch.paths_to_delete.is_empty() {
-            let paths: Vec<_> = batch
-                .paths_to_delete
-                .iter()
-                .map(|p| nr_core::storage::StoragePath::from(p.as_str()))
-                .collect();
-
-            match storage.delete_files_batch(repository.id(), &paths).await {
-                Ok(deleted_objects) => {
-                    // Only mark packages deleted if we removed something
-                    if deleted_objects > 0 {
-                        deleted += batch.deleted_packages;
-                    } else {
-                        // Treat as missing if nothing was removed
-                        missing.extend(request.paths.clone());
-                    }
-                }
-                Err(err) => {
-                    warn!(?err, "Failed to batch delete docker objects");
-                    return Err(InternalError::from(OtherInternalError::new(err)));
-                }
-            }
+        if deleted_objects > 0 {
+            deleted += batch_deleted_packages;
+        } else {
+            missing.extend(request.paths.clone());
         }
 
-        // Propagate reported missing/rejected from collection phase
         missing.extend(batch_missing);
-        rejected.extend(batch.rejected);
+        rejected.extend(batch_rejected);
     } else {
         for path in request.paths.iter() {
             if !is_valid_cache_path(path, strategy) {
@@ -2387,10 +2450,8 @@ mod tests {
             )
             .await?;
 
-        let digest_path = nr_core::storage::StoragePath::from(format!(
-            "v2/{}/manifests/{}",
-            repository_name, manifest_digest
-        ));
+        let digest_path_str = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
+        let digest_path = nr_core::storage::StoragePath::from(digest_path_str.clone());
         storage
             .save_file(
                 repository_id,
@@ -2563,10 +2624,8 @@ mod tests {
         }
 
         // Store the digest manifest and blobs
-        let digest_path = nr_core::storage::StoragePath::from(format!(
-            "v2/{}/manifests/{}",
-            repository_name, manifest_digest
-        ));
+        let digest_path_str = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
+        let digest_path = nr_core::storage::StoragePath::from(digest_path_str.clone());
         storage
             .save_file(
                 repository_id,
@@ -2599,12 +2658,141 @@ mod tests {
         )
         .await?;
 
-        // Expect: 2 tag manifests + 1 digest manifest + 2 blobs = 5 unique paths
-        // Plus sidecar tagmeta files for each requested path and digest
-        assert_eq!(batch.paths_to_delete.len(), 7);
+        assert!(batch.deleted_objects > 0);
         assert_eq!(batch.deleted_packages, 2);
         assert!(batch.missing.is_empty());
         assert!(batch.rejected.is_empty());
+
+        for tag in tag_paths.iter() {
+            let tag_storage_path = nr_core::storage::StoragePath::from(tag.as_str());
+            assert!(
+                !storage
+                    .file_exists(repository_id, &tag_storage_path)
+                    .await?
+            );
+
+            let sidecar = nr_core::storage::StoragePath::from(format!("{tag}.nr-docker-tagmeta"));
+            assert!(!storage.file_exists(repository_id, &sidecar).await?);
+        }
+
+        assert!(!storage.file_exists(repository_id, &digest_path).await?);
+        let digest_sidecar =
+            nr_core::storage::StoragePath::from(format!("{digest_path_str}.nr-docker-tagmeta"));
+        assert!(!storage.file_exists(repository_id, &digest_sidecar).await?);
+
+        for digest in [&config_digest, &layer_digest] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            assert!(!storage.file_exists(repository_id, &blob_path).await?);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collect_docker_deletions_batch_streams_large_batches() -> Result<()> {
+        const LARGE_DELETE_COUNT: usize = 1_200;
+
+        let (storage, _tempdir) = local_storage().await?;
+        let repository_id = Uuid::new_v4();
+        let repository_name = "library/huge";
+
+        let config_bytes = b"config-json";
+        let layer_bytes = b"layer-bytes";
+        let config_digest = format!("sha256:{:x}", Sha256::digest(config_bytes));
+        let layer_digest = format!("sha256:{:x}", Sha256::digest(layer_bytes));
+
+        let manifest_json = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "size": config_bytes.len(),
+                "digest": config_digest,
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
+                    "size": layer_bytes.len(),
+                    "digest": layer_digest,
+                }
+            ]
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest_json)?;
+        let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+        let digest_path_str = format!("v2/{}/manifests/{}", repository_name, manifest_digest);
+        let digest_path = nr_core::storage::StoragePath::from(digest_path_str.clone());
+        storage
+            .save_file(
+                repository_id,
+                FileContent::from(manifest_bytes.clone()),
+                &digest_path,
+            )
+            .await?;
+
+        for (digest, content) in [
+            (&config_digest, config_bytes.as_slice()),
+            (&layer_digest, layer_bytes.as_slice()),
+        ] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(content.to_vec()),
+                    &blob_path,
+                )
+                .await?;
+        }
+
+        let manifest_paths: Vec<String> = (0..LARGE_DELETE_COUNT)
+            .map(|index| format!("v2/{}/manifests/tag-{index}", repository_name))
+            .collect();
+
+        for path in manifest_paths.iter() {
+            let storage_path = nr_core::storage::StoragePath::from(path.as_str());
+            storage
+                .save_file(
+                    repository_id,
+                    FileContent::from(manifest_bytes.clone()),
+                    &storage_path,
+                )
+                .await?;
+        }
+
+        let batch =
+            super::collect_docker_deletions_batch(&storage, repository_id, &manifest_paths).await?;
+
+        assert!(batch.deleted_objects > 0);
+        assert_eq!(batch.deleted_packages, LARGE_DELETE_COUNT);
+        assert!(batch.missing.is_empty());
+        assert!(batch.rejected.is_empty());
+
+        assert!(!storage.file_exists(repository_id, &digest_path).await?);
+        let digest_sidecar =
+            nr_core::storage::StoragePath::from(format!("{digest_path_str}.nr-docker-tagmeta"));
+        assert!(!storage.file_exists(repository_id, &digest_sidecar).await?);
+
+        for path in manifest_paths.iter() {
+            let storage_path = nr_core::storage::StoragePath::from(path.as_str());
+            assert!(!storage.file_exists(repository_id, &storage_path).await?);
+
+            let sidecar = nr_core::storage::StoragePath::from(format!("{path}.nr-docker-tagmeta"));
+            assert!(!storage.file_exists(repository_id, &sidecar).await?);
+        }
+
+        for digest in [&config_digest, &layer_digest] {
+            let blob_path = nr_core::storage::StoragePath::from(format!(
+                "v2/{}/blobs/{}",
+                repository_name, digest
+            ));
+            assert!(!storage.file_exists(repository_id, &blob_path).await?);
+        }
 
         Ok(())
     }
