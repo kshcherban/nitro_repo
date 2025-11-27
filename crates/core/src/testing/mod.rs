@@ -118,17 +118,3 @@ impl TestInfoEntry {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[ignore = "Requires a database"]
-    #[tokio::test]
-    pub async fn test_test_core() {
-        let (core, entry) = super::TestCore::new(format!("{}::test_test_core", module_path!()))
-            .await
-            .unwrap();
-        let user = core.get_test_user().await.unwrap();
-        assert!(user.is_some());
-        entry.set_success(&core.db).await.unwrap();
-    }
-}

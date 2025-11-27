@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use ahash::HashSet;

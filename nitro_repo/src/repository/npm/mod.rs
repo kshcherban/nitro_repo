@@ -79,38 +79,8 @@ impl From<NPMRegistryError> for RepositoryHandlerError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::repository::{RepositoryType, test_helpers::test_storage};
-    use ahash::HashMap;
-    use serde_json::json;
-    use uuid::Uuid;
+mod tests;
 
-    #[tokio::test]
-    async fn create_new_npm_proxy_accepts_route_config() {
-        let storage = test_storage().await;
-        let mut configs = HashMap::default();
-        configs.insert(
-            NPMRegistryConfigType::get_type_static().to_string(),
-            json!({
-                "type": "Proxy",
-                "config": {
-                    "routes": [
-                        {
-                            "url": "https://registry.npmjs.org",
-                            "name": "npmjs"
-                        }
-                    ]
-                }
-            }),
-        );
-        let result = NpmRegistryType::default()
-            .create_new("npm-proxy".into(), Uuid::new_v4(), configs, storage)
-            .await;
-        let repository = result.expect("proxy repository to be created");
-        assert_eq!(repository.repository_type, "npm");
-    }
-}
 macro_rules! impl_from_error_for_other {
     ($t:ty) => {
         impl From<$t> for NPMRegistryError {

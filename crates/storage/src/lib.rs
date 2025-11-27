@@ -166,9 +166,4 @@ pub trait StaticStorageFactory: StorageFactory {
     }
 }
 #[cfg(test)]
-mod tests {
-    #[test]
-    pub fn test_build() {
-        println!("Test Build");
-    }
-}
+mod tests;

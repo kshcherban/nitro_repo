@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
+
 use nr_core::storage::StoragePath;
 use tracing::{debug, info};
 use uuid::Uuid;

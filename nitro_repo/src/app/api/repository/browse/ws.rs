@@ -79,15 +79,7 @@ fn encode_outgoing_message(message: &WebsocketOutgoingMessage) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{WebsocketOutgoingMessage, encode_outgoing_message};
-
-    #[test]
-    fn encode_outgoing_message_serializes_simple_variant() {
-        let payload = encode_outgoing_message(&WebsocketOutgoingMessage::EndOfDirectory);
-        assert!(payload.contains("EndOfDirectory"));
-    }
-}
+mod tests;
 
 pub struct BrowseWSState {
     pub repository: DynRepository,

@@ -74,7 +74,7 @@ When reviewing or writing code, check for:
 
 ## Standard Workflow
 
-1. **Understand**: Clarify requirements if ambiguous
+1. **Understand**: Clarify requirements if ambiguous, while exploring codebase ignore test files to save context
 2. **Test**: Write failing tests that define success
 3. **Implement**: Write minimal code to pass tests
 4. **Refactor**: Clean up while keeping tests green

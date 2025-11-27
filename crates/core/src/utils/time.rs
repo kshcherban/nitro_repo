@@ -26,11 +26,5 @@ pub mod iso_8601 {
     }
 
     #[cfg(test)]
-    mod tests {
-        #[test]
-        pub fn test() {
-            let from = super::from_string("2024-08-28T00:09:11.230Z").unwrap();
-            println!("{:?}", from);
-        }
-    }
+    mod tests;
 }
