@@ -37,8 +37,8 @@ to create a fast and modern experience.
 #### Quick Start
 1. Clone the repository
 2. Run `./dev.sh` to build and start the development environment
-3. Access Nitro Repo at `http://localhost:6742`
-4. Access the API documentation at `http://localhost:6742/api/docs`
+3. Access Nitro Repo at `http://localhost:8000`
+4. Access the API documentation at `http://localhost:8000/api/docs`
 
 #### Tracing & Observability
 
@@ -56,11 +56,11 @@ The development environment includes distributed tracing with Jaeger to help dia
 #### Environment Variables
 The development compose file automatically configures tracing with:
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317`
-- `OTEL_SERVICE_NAME=nitro-repo`
+- `OTEL_SERVICE_NAME=nitro`
 - `NITRO_TRACING_ENABLED=true`
 
 #### Troubleshooting
 - If Docker upload operations are blocking the async runtime, check Jaeger traces for long-running spans
-- Use `docker-compose logs nitro_repo` to view application logs
+- Use `docker-compose logs nitro` to view application logs
 - Restart services with `./dev.sh` after making configuration changes
 
