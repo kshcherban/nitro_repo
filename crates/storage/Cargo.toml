@@ -34,6 +34,7 @@ tokio-stream = { version = "0.1", features = ["fs"] }
 pin-project.workspace = true
 futures.workspace = true
 walkdir = "2"
+sysinfo = { version = "0.30", default-features = false }
 
 bytes.workspace = true
 fs2.workspace = true

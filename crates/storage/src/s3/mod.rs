@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::{
-    borrow::Cow, collections::VecDeque, env, num::NonZeroUsize, ops::Deref, path::PathBuf,
-    pin::Pin, str::FromStr, sync::Arc,
+    borrow::Cow, collections::VecDeque, env, io::ErrorKind, num::NonZeroUsize, ops::Deref,
+    path::PathBuf, pin::Pin, str::FromStr, sync::Arc,
 };
 
 use aws_config::BehaviorVersion;
@@ -23,7 +23,14 @@ use mime::Mime;
 use nr_core::storage::{FileHashes, FileTypeCheck, SerdeMime, StoragePath};
 use regions::{CustomRegion, S3StorageRegion};
 use sha2::{Digest, Sha256};
-use tokio::{fs, io::BufReader, sync::Mutex, task};
+use sysinfo::System;
+use tokio::{
+    fs,
+    io::BufReader,
+    sync::Mutex,
+    task,
+    time::{Duration, Instant},
+};
 use url::Url;
 
 pub mod regions;
@@ -159,6 +166,103 @@ pub struct S3CacheConfig {
     pub max_entries: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct AdaptiveBufferConfig {
+    #[serde(default = "default_min_buffer_bytes")]
+    pub min_buffer_bytes: u64,
+    #[serde(default = "default_max_buffer_bytes")]
+    pub max_buffer_bytes: u64,
+    #[serde(default = "default_memory_pressure_threshold")]
+    pub memory_pressure_threshold: f64,
+}
+
+impl Default for AdaptiveBufferConfig {
+    fn default() -> Self {
+        Self {
+            min_buffer_bytes: default_min_buffer_bytes(),
+            max_buffer_bytes: default_max_buffer_bytes(),
+            memory_pressure_threshold: default_memory_pressure_threshold(),
+        }
+    }
+}
+
+fn default_min_buffer_bytes() -> u64 {
+    DEFAULT_MIN_BUFFERED_OBJECT_BYTES
+}
+
+fn default_max_buffer_bytes() -> u64 {
+    DEFAULT_MAX_BUFFERED_OBJECT_BYTES
+}
+
+fn default_memory_pressure_threshold() -> f64 {
+    DEFAULT_MEMORY_PRESSURE_THRESHOLD
+}
+
+impl AdaptiveBufferConfig {
+    fn buffer_limit_bytes(&self) -> u64 {
+        if let Some(snapshot) = MemorySnapshot::capture() {
+            return self.limit_for_pressure(snapshot.pressure());
+        }
+        self.bounds().1
+    }
+
+    fn bounds(&self) -> (u64, u64) {
+        if self.min_buffer_bytes <= self.max_buffer_bytes {
+            (self.min_buffer_bytes, self.max_buffer_bytes)
+        } else {
+            (self.max_buffer_bytes, self.min_buffer_bytes)
+        }
+    }
+
+    pub(crate) fn limit_for_pressure(&self, pressure: f64) -> u64 {
+        let pressure = pressure.clamp(0.0, 1.0);
+        let (min_bytes, max_bytes) = self.bounds();
+        if min_bytes == max_bytes {
+            return min_bytes;
+        }
+        if self.memory_pressure_threshold <= 0.0 {
+            return min_bytes;
+        }
+        if pressure >= self.memory_pressure_threshold {
+            return min_bytes;
+        }
+        let span = max_bytes.saturating_sub(min_bytes) as f64;
+        let ratio = pressure / self.memory_pressure_threshold;
+        let remaining = 1.0 - ratio;
+        let interpolated = min_bytes as f64 + span * remaining.clamp(0.0, 1.0);
+        interpolated.round() as u64
+    }
+}
+
+struct MemorySnapshot {
+    total_bytes: u64,
+    available_bytes: u64,
+}
+
+impl MemorySnapshot {
+    fn capture() -> Option<Self> {
+        let mut system = System::new();
+        system.refresh_memory();
+        let total = system.total_memory();
+        if total == 0 {
+            return None;
+        }
+        let available = system.available_memory();
+        Some(Self {
+            total_bytes: total.saturating_mul(1024),
+            available_bytes: available.saturating_mul(1024),
+        })
+    }
+
+    fn pressure(&self) -> f64 {
+        if self.total_bytes == 0 {
+            return 1.0;
+        }
+        let available_ratio = self.available_bytes as f64 / self.total_bytes as f64;
+        (1.0 - available_ratio).clamp(0.0, 1.0)
+    }
+}
+
 impl Default for S3CacheConfig {
     fn default() -> Self {
         Self {
@@ -178,7 +282,7 @@ fn default_cache_entry_limit() -> usize {
     2048
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct S3Config {
     pub bucket_name: String,
     pub region: Option<S3StorageRegion>,
@@ -191,6 +295,8 @@ pub struct S3Config {
     pub path_style: bool,
     #[serde(default)]
     pub cache: S3CacheConfig,
+    #[serde(default)]
+    pub adaptive_buffer: AdaptiveBufferConfig,
 }
 
 impl std::fmt::Debug for S3Config {
@@ -204,6 +310,7 @@ impl std::fmt::Debug for S3Config {
             .field("cache_enabled", &self.cache.enabled)
             .field("cache_path", &self.cache.path)
             .field("cache_max_bytes", &self.cache.max_bytes)
+            .field("adaptive_buffer", &self.adaptive_buffer)
             .finish()
     }
 }
@@ -255,6 +362,7 @@ pub(super) struct S3DiskCache {
 struct CacheState {
     entries: LruCache<String, CacheEntry>,
     current_bytes: u64,
+    failed_deletions: VecDeque<FailedDeletion>,
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +376,64 @@ struct CacheEntry {
 struct CachedObject {
     bytes: Bytes,
     content_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FailedDeletion {
+    relative_path: PathBuf,
+    attempts: u32,
+    next_retry: Instant,
+}
+
+impl FailedDeletion {
+    fn new(relative_path: PathBuf) -> Self {
+        Self {
+            relative_path,
+            attempts: 0,
+            next_retry: Instant::now() + Duration::from_millis(FAILED_DELETION_BASE_DELAY_MS),
+        }
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        self.next_retry <= now
+    }
+
+    fn backoff(mut self) -> Self {
+        self.attempts = self.attempts.saturating_add(1);
+        let exponent = self.attempts.min(FAILED_DELETION_BACKOFF_CUTOFF);
+        let multiplier = 1u64 << exponent;
+        let delay_ms = FAILED_DELETION_BASE_DELAY_MS.saturating_mul(multiplier);
+        let capped = delay_ms.min(FAILED_DELETION_MAX_DELAY_MS);
+        self.next_retry = Instant::now() + Duration::from_millis(capped);
+        self
+    }
+}
+
+impl CacheState {
+    fn push_failed_deletion(&mut self, entry: FailedDeletion) {
+        if self.failed_deletions.len() >= FAILED_DELETION_QUEUE_LIMIT
+            && let Some(dropped) = self.failed_deletions.pop_front()
+        {
+            warn!(
+                path = %dropped.relative_path.display(),
+                "Dropping oldest failed cache deletion to stay within bounds"
+            );
+        }
+        self.failed_deletions.push_back(entry);
+    }
+
+    fn drain_due_failed_deletions(&mut self, now: Instant) -> Vec<FailedDeletion> {
+        let mut due = Vec::new();
+        while let Some(front) = self.failed_deletions.front() {
+            if !front.ready(now) || due.len() >= FAILED_DELETION_MAX_RETRIES_PER_TICK {
+                break;
+            }
+            if let Some(entry) = self.failed_deletions.pop_front() {
+                due.push(entry);
+            }
+        }
+        due
+    }
 }
 
 impl S3DiskCache {
@@ -286,6 +452,7 @@ impl S3DiskCache {
         let state = CacheState {
             entries: LruCache::new(capacity),
             current_bytes: 0,
+            failed_deletions: VecDeque::new(),
         };
         Ok(Self {
             dir,
@@ -302,6 +469,7 @@ impl S3DiskCache {
     }
 
     async fn get(&self, key: &str) -> Result<Option<CachedObject>, S3StorageError> {
+        self.retry_failed_deletions().await;
         let (relative_path, content_type) = {
             let mut state = self.state.lock().await;
             match state.entries.get(key) {
@@ -326,6 +494,7 @@ impl S3DiskCache {
         data: Bytes,
         content_type: Option<&str>,
     ) -> Result<(), S3StorageError> {
+        self.retry_failed_deletions().await;
         let relative = Self::hashed_filename(key);
         let path = self.dir.join(&relative);
         if let Some(parent) = path.parent() {
@@ -358,12 +527,13 @@ impl S3DiskCache {
             }
         }
         for rel in removed {
-            let _ = fs::remove_file(self.dir.join(rel)).await;
+            self.delete_relative_path(rel).await;
         }
         Ok(())
     }
 
     async fn remove(&self, key: &str) -> Result<(), S3StorageError> {
+        self.retry_failed_deletions().await;
         let removed = {
             let mut state = self.state.lock().await;
             state.entries.pop(key).map(|entry| {
@@ -372,9 +542,83 @@ impl S3DiskCache {
             })
         };
         if let Some(rel) = removed {
-            let _ = fs::remove_file(self.dir.join(rel)).await;
+            self.delete_relative_path(rel).await;
         }
         Ok(())
+    }
+
+    async fn delete_relative_path(&self, relative: PathBuf) {
+        let path = self.dir.join(&relative);
+        match fs::remove_file(&path).await {
+            Ok(_) => {
+                debug!(path = %relative.display(), "Removed cache entry");
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                debug!(path = %relative.display(), "Cache entry already removed");
+            }
+            Err(err) => {
+                warn!(
+                    path = %relative.display(),
+                    error = %err,
+                    "Failed to delete cache entry; scheduling retry"
+                );
+                self.enqueue_failed_deletion(relative).await;
+            }
+        }
+    }
+
+    async fn enqueue_failed_deletion(&self, relative_path: PathBuf) {
+        let mut state = self.state.lock().await;
+        state.push_failed_deletion(FailedDeletion::new(relative_path));
+    }
+
+    async fn retry_failed_deletions(&self) {
+        let due = {
+            let mut state = self.state.lock().await;
+            state.drain_due_failed_deletions(Instant::now())
+        };
+        if due.is_empty() {
+            return;
+        }
+
+        let mut still_pending = Vec::new();
+        for mut entry in due {
+            let path = self.dir.join(&entry.relative_path);
+            match fs::remove_file(&path).await {
+                Ok(_) => {
+                    debug!(
+                        path = %entry.relative_path.display(),
+                        attempts = entry.attempts,
+                        "Cache entry removed after retry"
+                    );
+                }
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    debug!(
+                        path = %entry.relative_path.display(),
+                        "Cache entry already gone during retry"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        path = %entry.relative_path.display(),
+                        attempts = entry.attempts + 1,
+                        error = %err,
+                        "Cache deletion retry failed"
+                    );
+                    entry = entry.backoff();
+                    still_pending.push(entry);
+                }
+            }
+        }
+
+        if still_pending.is_empty() {
+            return;
+        }
+
+        let mut state = self.state.lock().await;
+        for entry in still_pending {
+            state.push_failed_deletion(entry);
+        }
     }
 }
 
@@ -765,7 +1009,14 @@ async fn collect_body(stream: ByteStream) -> Result<Bytes, S3StorageError> {
     Ok(aggregated.into_bytes())
 }
 
-const MAX_BUFFERED_OBJECT_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB
+const DEFAULT_MIN_BUFFERED_OBJECT_BYTES: u64 = 1024 * 1024; // 1 MiB
+const DEFAULT_MAX_BUFFERED_OBJECT_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB
+const DEFAULT_MEMORY_PRESSURE_THRESHOLD: f64 = 0.75;
+const FAILED_DELETION_QUEUE_LIMIT: usize = 1024;
+const FAILED_DELETION_MAX_RETRIES_PER_TICK: usize = 64;
+const FAILED_DELETION_BASE_DELAY_MS: u64 = 100;
+const FAILED_DELETION_MAX_DELAY_MS: u64 = 30_000;
+const FAILED_DELETION_BACKOFF_CUTOFF: u32 = 8;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum BodyRetrievalStrategy {
@@ -774,8 +1025,12 @@ enum BodyRetrievalStrategy {
 }
 
 impl BodyRetrievalStrategy {
-    fn from_content_length(length: Option<u64>, cache_enabled: bool) -> Self {
-        if cache_enabled && length.is_some_and(|len| len <= MAX_BUFFERED_OBJECT_BYTES) {
+    fn from_content_length(
+        length: Option<u64>,
+        cache_enabled: bool,
+        buffer_limit_bytes: u64,
+    ) -> Self {
+        if cache_enabled && length.is_some_and(|len| len <= buffer_limit_bytes) {
             return BodyRetrievalStrategy::BufferAndCache;
         }
         BodyRetrievalStrategy::StreamWithoutCache
@@ -1278,8 +1533,12 @@ impl Storage for S3Storage {
             .and_then(|len| len.try_into().ok());
         let response_length = response_length_opt.unwrap_or_default();
         let cache_allowed = self.should_cache(location);
-        let strategy =
-            BodyRetrievalStrategy::from_content_length(response_length_opt, cache_allowed);
+        let buffer_limit = self.config.adaptive_buffer.buffer_limit_bytes();
+        let strategy = BodyRetrievalStrategy::from_content_length(
+            response_length_opt,
+            cache_allowed,
+            buffer_limit,
+        );
         debug!(
             repository = %repository,
             path = %path,
@@ -1293,7 +1552,7 @@ impl Storage for S3Storage {
                 repository = %repository,
                 path = %path,
                 object_size = response_length,
-                threshold = MAX_BUFFERED_OBJECT_BYTES,
+                threshold = buffer_limit,
                 "Skipping cache write for oversized S3 object"
             );
         }

@@ -1,4 +1,7 @@
-use std::{cmp::min, collections::BTreeMap};
+use std::{
+    cmp::{Ordering, Reverse, min},
+    collections::{BTreeMap, BinaryHeap},
+};
 
 use futures::{StreamExt, stream};
 
@@ -9,7 +12,9 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, FixedOffset};
-use nr_storage::{DynStorage, FileType, Storage, StorageError, StorageFile, s3::S3Storage};
+use nr_storage::{
+    DynStorage, FileType, Storage, StorageError, StorageFile, StorageFileMeta, s3::S3Storage,
+};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
@@ -190,6 +195,86 @@ fn build_package_page_from_objects(
         total_packages,
         items: page_items,
     }
+}
+
+async fn collect_directory_package_page(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    base: Option<&str>,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<PackageListResponse, nr_storage::StorageError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let start = (current_page - 1) * per_page;
+    let end = start + per_page;
+
+    let mut walker = PackageDirectoryWalker::new(storage, repository_id, base);
+    let mut total_packages = 0usize;
+    let mut items = Vec::new();
+
+    while let Some(visit) = walker.next().await? {
+        if total_packages >= start && total_packages < end {
+            items.extend(build_package_entries_from_directory(
+                &visit.entry.display_name,
+                &visit.files,
+                &visit.entry.directory_path,
+            ));
+        }
+        total_packages += 1;
+    }
+
+    let per_page_response = if total_packages == 0 {
+        per_page_raw
+    } else {
+        per_page
+    };
+
+    Ok(PackageListResponse {
+        page: current_page,
+        per_page: per_page_response,
+        total_packages,
+        items,
+    })
+}
+
+async fn collect_go_package_page(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    base: &str,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<PackageListResponse, nr_storage::StorageError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let start = (current_page - 1) * per_page;
+    let end = start + per_page;
+
+    let mut walker = PackageDirectoryWalker::new(storage, repository_id, Some(base));
+    let mut total_versions = 0usize;
+    let mut items = Vec::new();
+
+    while let Some(visit) = walker.next().await? {
+        let entries = build_go_entries_from_directory(
+            &visit.entry.display_name,
+            &visit.files,
+            &visit.entry.directory_path,
+        );
+
+        for entry in entries.into_iter() {
+            if total_versions >= start && total_versions < end {
+                items.push(entry);
+            }
+            total_versions += 1;
+        }
+    }
+
+    Ok(PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions,
+        items,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,87 +465,8 @@ async fn list_directory_packages(
     base: Option<&str>,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
-    let mut package_dirs = gather_package_dirs(&storage, repository.id(), base).await?;
-    package_dirs.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let total_packages = package_dirs.len();
-    if total_packages == 0 {
-        let empty = PackageListResponse {
-            page,
-            per_page: per_page_raw,
-            total_packages,
-            items: Vec::new(),
-        };
-        return Ok(ResponseBuilder::ok().json(&empty));
-    }
-
-    let per_page = per_page_raw.clamp(1, 200);
-    let current_page = page.max(1);
-    let start = (current_page - 1) * per_page;
-    if start >= total_packages {
-        let empty = PackageListResponse {
-            page: current_page,
-            per_page,
-            total_packages,
-            items: Vec::new(),
-        };
-        return Ok(ResponseBuilder::ok().json(&empty));
-    }
-    let end = min(start + per_page, total_packages);
-    let mut items = Vec::new();
-    for (display_name, storage_relative) in &package_dirs[start..end] {
-        let path = match base {
-            Some(prefix) => {
-                let mut combined = String::from(prefix);
-                if !storage_relative.is_empty() {
-                    combined.push_str(storage_relative);
-                    if !combined.ends_with('/') {
-                        combined.push('/');
-                    }
-                }
-                combined
-            }
-            None => {
-                let mut path = storage_relative.clone();
-                if !path.is_empty() && !path.ends_with('/') {
-                    path.push('/');
-                }
-                path
-            }
-        };
-        let storage_path = nr_core::storage::StoragePath::from(path.clone());
-        if let Some(StorageFile::Directory { files, .. }) =
-            storage.open_file(repository.id(), &storage_path).await?
-        {
-            for meta in files.iter() {
-                if should_ignore(meta.name()) {
-                    continue;
-                }
-                if let FileType::File(file_meta) = meta.file_type() {
-                    let directory_prefix = path.trim_end_matches('/');
-                    let cache_path = if directory_prefix.is_empty() {
-                        meta.name().to_string()
-                    } else {
-                        format!("{}/{}", directory_prefix, meta.name())
-                    };
-                    items.push(PackageFileEntry {
-                        package: display_name.clone(),
-                        name: meta.name().to_string(),
-                        cache_path,
-                        size: file_meta.file_size,
-                        modified: meta.modified().clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    let response = PackageListResponse {
-        page: current_page,
-        per_page,
-        total_packages,
-        items,
-    };
+    let response =
+        collect_directory_package_page(&storage, repository.id(), base, page, per_page_raw).await?;
     Ok(ResponseBuilder::ok().json(&response))
 }
 
@@ -532,77 +538,21 @@ fn should_replace_go_file(current: GoFileKind, candidate: GoFileKind) -> bool {
     candidate.priority() > current.priority()
 }
 
+#[cfg(test)]
 async fn collect_go_package_entries(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,
     base: &str,
 ) -> Result<Vec<PackageFileEntry>, nr_storage::StorageError> {
-    let mut package_dirs = gather_package_dirs(storage, repository_id, Some(base)).await?;
-    package_dirs.sort_by(|a, b| a.0.cmp(&b.0));
-
+    let mut walker = PackageDirectoryWalker::new(storage, repository_id, Some(base));
     let mut entries = Vec::new();
-    for (display_name, storage_relative) in package_dirs {
-        let mut directory_path = if base.is_empty() {
-            String::new()
-        } else {
-            let mut path = String::from(base);
-            if !path.ends_with('/') {
-                path.push('/');
-            }
-            path
-        };
-        if !storage_relative.is_empty() {
-            directory_path.push_str(&storage_relative);
-        }
-        if !directory_path.is_empty() && !directory_path.ends_with('/') {
-            directory_path.push('/');
-        }
-        let storage_path = nr_core::storage::StoragePath::from(directory_path.clone());
-        let Some(StorageFile::Directory { files, .. }) =
-            storage.open_file(repository_id, &storage_path).await?
-        else {
-            continue;
-        };
-
-        let mut versions: BTreeMap<String, (PackageFileEntry, GoFileKind)> = BTreeMap::new();
-        for entry in files.iter() {
-            if should_ignore(entry.name()) {
-                continue;
-            }
-            if let FileType::File(file_meta) = entry.file_type() {
-                if let Some((version, kind)) = parse_go_file_name(entry.name()) {
-                    let cache_path = format!("{}{}", directory_path, entry.name());
-                    let candidate = PackageFileEntry {
-                        package: display_name.clone(),
-                        name: version.clone(),
-                        cache_path,
-                        size: file_meta.file_size,
-                        modified: entry.modified().clone(),
-                    };
-                    match versions.get_mut(&version) {
-                        Some((existing, existing_kind)) => {
-                            if should_replace_go_file(*existing_kind, kind)
-                                || (existing.cache_path.is_empty()
-                                    && candidate.cache_path.is_empty())
-                            {
-                                *existing = candidate;
-                                *existing_kind = kind;
-                            } else if candidate.modified > existing.modified {
-                                existing.modified = candidate.modified;
-                                existing.size = candidate.size;
-                            }
-                        }
-                        None => {
-                            versions.insert(version, (candidate, kind));
-                        }
-                    }
-                }
-            }
-        }
-
-        entries.extend(versions.into_values().map(|(entry, _)| entry));
+    while let Some(visit) = walker.next().await? {
+        entries.extend(build_go_entries_from_directory(
+            &visit.entry.display_name,
+            &visit.files,
+            &visit.entry.directory_path,
+        ));
     }
-
     entries.sort_by(|a, b| a.package.cmp(&b.package).then(a.name.cmp(&b.name)));
     Ok(entries)
 }
@@ -673,6 +623,270 @@ async fn delete_go_package(
     Ok(Some(GoDeletionResult { removed, missing }))
 }
 
+#[derive(Debug, Clone)]
+struct PackageDirEntry {
+    display_name: String,
+    storage_relative: String,
+    directory_path: String,
+}
+
+struct PackageDirVisit {
+    entry: PackageDirEntry,
+    files: Vec<StorageFileMeta<FileType>>,
+}
+
+#[derive(Debug, Clone)]
+struct DirNode {
+    path: String,
+    relative: String,
+    sort_key: String,
+}
+
+impl DirNode {
+    fn root(path: String, base: Option<&str>) -> Self {
+        Self::new(path, String::new(), base)
+    }
+
+    fn new(path: String, relative: String, base: Option<&str>) -> Self {
+        let sort_key = if !relative.is_empty() {
+            relative.clone()
+        } else if let Some(prefix) = base {
+            path.trim_start_matches(prefix)
+                .trim_matches('/')
+                .to_string()
+        } else {
+            path.trim_matches('/').to_string()
+        };
+        Self {
+            path,
+            relative,
+            sort_key,
+        }
+    }
+
+    fn child(&self, name: &str, base: Option<&str>) -> Self {
+        let mut path = if self.path.is_empty() {
+            String::new()
+        } else {
+            self.path.clone()
+        };
+        path.push_str(name);
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        let relative = if self.relative.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", self.relative, name)
+        };
+        DirNode::new(path, relative, base)
+    }
+}
+
+impl PartialEq for DirNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.sort_key == other.sort_key && self.path == other.path
+    }
+}
+
+impl Eq for DirNode {}
+
+impl PartialOrd for DirNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DirNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.sort_key
+            .cmp(&other.sort_key)
+            .then(self.path.cmp(&other.path))
+    }
+}
+
+struct PackageDirectoryWalker<'a> {
+    storage: &'a DynStorage,
+    repository_id: Uuid,
+    base_prefix: Option<String>,
+    pending: BinaryHeap<Reverse<DirNode>>,
+}
+
+impl<'a> PackageDirectoryWalker<'a> {
+    fn new(storage: &'a DynStorage, repository_id: Uuid, base: Option<&str>) -> Self {
+        let base_prefix = base.map(|value| value.to_string());
+        let mut pending = BinaryHeap::new();
+        pending.push(Reverse(DirNode::root(
+            base_prefix.clone().unwrap_or_default(),
+            base_prefix.as_deref(),
+        )));
+        Self {
+            storage,
+            repository_id,
+            base_prefix,
+            pending,
+        }
+    }
+
+    async fn next(&mut self) -> Result<Option<PackageDirVisit>, nr_storage::StorageError> {
+        while let Some(Reverse(node)) = self.pending.pop() {
+            let storage_path = if node.path.is_empty() {
+                nr_core::storage::StoragePath::default()
+            } else {
+                nr_core::storage::StoragePath::from(node.path.clone())
+            };
+            let Some(StorageFile::Directory { files, .. }) = self
+                .storage
+                .open_file(self.repository_id, &storage_path)
+                .await?
+            else {
+                continue;
+            };
+
+            let mut has_files = false;
+            let mut child_dirs = Vec::new();
+            for entry in files.iter() {
+                if should_ignore(entry.name()) {
+                    continue;
+                }
+                match entry.file_type() {
+                    FileType::File(_) => {
+                        has_files = true;
+                    }
+                    FileType::Directory(_) => {
+                        child_dirs.push(node.child(entry.name(), self.base_prefix.as_deref()));
+                    }
+                }
+            }
+
+            for child in child_dirs {
+                self.pending.push(Reverse(child));
+            }
+
+            if has_files {
+                if let Some((display_name, storage_relative)) =
+                    compute_package_names(&node, self.base_prefix.as_deref())
+                {
+                    let entry = PackageDirEntry {
+                        display_name,
+                        storage_relative,
+                        directory_path: node.path.clone(),
+                    };
+                    return Ok(Some(PackageDirVisit { entry, files }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+fn compute_package_names(node: &DirNode, base: Option<&str>) -> Option<(String, String)> {
+    let storage_relative = if !node.relative.is_empty() {
+        node.relative.trim_matches('/').to_string()
+    } else if let Some(prefix) = base {
+        node.path
+            .trim_start_matches(prefix)
+            .trim_matches('/')
+            .to_string()
+    } else {
+        node.path.trim_matches('/').to_string()
+    };
+
+    if storage_relative.is_empty() {
+        return None;
+    }
+
+    let mut display_name = storage_relative.clone();
+    if matches!(base, Some(prefix) if prefix == "go-proxy-cache/") {
+        if let Some(stripped) = display_name.strip_suffix("/@v") {
+            display_name = stripped.to_string();
+        }
+    }
+    if let Some(stripped) = display_name.strip_suffix("/@v") {
+        display_name = stripped.to_string();
+    }
+
+    if display_name.is_empty() {
+        return None;
+    }
+
+    Some((display_name, storage_relative))
+}
+
+fn build_package_entries_from_directory(
+    display_name: &str,
+    files: &[StorageFileMeta<FileType>],
+    directory_path: &str,
+) -> Vec<PackageFileEntry> {
+    let directory_prefix = directory_path.trim_end_matches('/');
+    let mut items = Vec::new();
+    for meta in files.iter() {
+        if should_ignore(meta.name()) {
+            continue;
+        }
+        if let FileType::File(file_meta) = meta.file_type() {
+            let cache_path = if directory_prefix.is_empty() {
+                meta.name().to_string()
+            } else {
+                format!("{}/{}", directory_prefix, meta.name())
+            };
+            items.push(PackageFileEntry {
+                package: display_name.to_string(),
+                name: meta.name().to_string(),
+                cache_path,
+                size: file_meta.file_size,
+                modified: meta.modified().clone(),
+            });
+        }
+    }
+    items
+}
+
+fn build_go_entries_from_directory(
+    display_name: &str,
+    files: &[StorageFileMeta<FileType>],
+    directory_path: &str,
+) -> Vec<PackageFileEntry> {
+    let mut versions: BTreeMap<String, (PackageFileEntry, GoFileKind)> = BTreeMap::new();
+
+    for entry in files.iter() {
+        if should_ignore(entry.name()) {
+            continue;
+        }
+        if let FileType::File(file_meta) = entry.file_type() {
+            if let Some((version, kind)) = parse_go_file_name(entry.name()) {
+                let cache_path = format!("{}{}", directory_path, entry.name());
+                let candidate = PackageFileEntry {
+                    package: display_name.to_string(),
+                    name: version.clone(),
+                    cache_path,
+                    size: file_meta.file_size,
+                    modified: entry.modified().clone(),
+                };
+                match versions.get_mut(&version) {
+                    Some((existing, existing_kind)) => {
+                        if should_replace_go_file(*existing_kind, kind)
+                            || (existing.cache_path.is_empty() && candidate.cache_path.is_empty())
+                        {
+                            *existing = candidate;
+                            *existing_kind = kind;
+                        } else if candidate.modified > existing.modified {
+                            existing.modified = candidate.modified;
+                            existing.size = candidate.size;
+                        }
+                    }
+                    None => {
+                        versions.insert(version, (candidate, kind));
+                    }
+                }
+            }
+        }
+    }
+
+    versions.into_values().map(|(entry, _)| entry).collect()
+}
+
 async fn list_go_packages(
     repository: DynRepository,
     base: &str,
@@ -680,26 +894,8 @@ async fn list_go_packages(
     per_page_raw: usize,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
-    let entries = collect_go_package_entries(&storage, repository.id(), base).await?;
-
-    let total_packages = entries.len();
-    let per_page = per_page_raw.clamp(1, 200);
-    let current_page = page.max(1);
-    let start = (current_page - 1) * per_page;
-    let end = min(start + per_page, total_packages);
-
-    let page_items = if start < total_packages {
-        entries[start..end].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    let response = PackageListResponse {
-        page: current_page,
-        per_page,
-        total_packages,
-        items: page_items,
-    };
+    let response =
+        collect_go_package_page(&storage, repository.id(), base, page, per_page_raw).await?;
     Ok(ResponseBuilder::ok().json(&response))
 }
 
@@ -1993,83 +2189,14 @@ async fn gather_package_dirs(
     repository_id: Uuid,
     base: Option<&str>,
 ) -> Result<Vec<(String, String)>, nr_storage::StorageError> {
-    use std::collections::VecDeque;
-
-    let mut queue: VecDeque<(String, String)> = VecDeque::new();
-    let initial_path = base.unwrap_or("");
-    queue.push_back((initial_path.to_string(), String::new()));
+    let mut walker = PackageDirectoryWalker::new(storage, repository_id, base);
     let mut packages = Vec::new();
-
-    while let Some((path, relative)) = queue.pop_front() {
-        let storage_path = if path.is_empty() {
-            nr_core::storage::StoragePath::default()
-        } else {
-            nr_core::storage::StoragePath::from(path.clone())
-        };
-        let Some(StorageFile::Directory { files, .. }) =
-            storage.open_file(repository_id, &storage_path).await?
-        else {
-            continue;
-        };
-
-        let mut has_files = false;
-        for entry in files.iter() {
-            if should_ignore(entry.name()) {
-                continue;
-            }
-            match entry.file_type() {
-                FileType::File(_) => {
-                    has_files = true;
-                }
-                FileType::Directory(_) => {
-                    let name = entry.name();
-                    let child_path = if path.is_empty() {
-                        format!("{}/", name)
-                    } else {
-                        format!("{}{}/", path, name)
-                    };
-                    let child_relative = if relative.is_empty() {
-                        name.to_string()
-                    } else {
-                        format!("{}/{}", relative, name)
-                    };
-                    queue.push_back((child_path, child_relative));
-                }
-            }
-        }
-
-        if has_files {
-            let storage_relative = if !relative.is_empty() {
-                relative.trim_matches('/').to_string()
-            } else if let Some(prefix) = base {
-                path.trim_start_matches(prefix)
-                    .trim_matches('/')
-                    .to_string()
-            } else {
-                path.trim_matches('/').to_string()
-            };
-
-            if storage_relative.is_empty() {
-                continue;
-            }
-
-            let mut display_name = storage_relative.clone();
-            if let Some(prefix) = base {
-                if prefix == "go-proxy-cache/" {
-                    if let Some(stripped) = display_name.strip_suffix("/@v") {
-                        display_name = stripped.to_string();
-                    }
-                }
-            }
-            if let Some(stripped) = display_name.strip_suffix("/@v") {
-                display_name = stripped.to_string();
-            }
-            if !display_name.is_empty() {
-                packages.push((display_name, storage_relative));
-            }
-        }
+    while let Some(visit) = walker.next().await? {
+        packages.push((
+            visit.entry.display_name.clone(),
+            visit.entry.storage_relative.clone(),
+        ));
     }
-
     Ok(packages)
 }
 

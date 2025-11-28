@@ -152,6 +152,59 @@ async fn gather_package_dirs_handles_go_proxy_layout() -> Result<()> {
 }
 
 #[tokio::test]
+async fn directory_package_pagination_respects_page_window() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository = Uuid::new_v4();
+
+    for idx in 0..3 {
+        let pkg = format!("pkg-{idx}");
+        let path = format!("packages/{pkg}/{pkg}.tar.gz");
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"archive".as_slice()),
+                &nr_core::storage::StoragePath::from(path),
+            )
+            .await?;
+    }
+
+    let response =
+        super::collect_directory_package_page(&storage, repository, Some("packages/"), 2, 1)
+            .await?;
+
+    assert_eq!(response.total_packages, 3);
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(response.items[0].package, "pkg-1");
+    Ok(())
+}
+
+#[tokio::test]
+async fn go_package_pagination_respects_page_window() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository = Uuid::new_v4();
+
+    let module = "github.com/example/module";
+    for version in ["v1.0.0", "v1.1.0", "v2.0.0"] {
+        let base = format!("go-proxy-cache/{module}/@v/{version}");
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"info".as_slice()),
+                &nr_core::storage::StoragePath::from(format!("{base}.info")),
+            )
+            .await?;
+    }
+
+    let response =
+        super::collect_go_package_page(&storage, repository, "go-proxy-cache/", 2, 1).await?;
+
+    assert_eq!(response.total_packages, 3);
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(response.items[0].name, "v1.1.0");
+    Ok(())
+}
+
+#[tokio::test]
 async fn build_maven_proxy_package_list_exposes_cached_files() -> Result<()> {
     let (storage, _tempdir) = local_storage().await?;
     let repository = Uuid::new_v4();

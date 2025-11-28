@@ -1,7 +1,13 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
 use super::{
-    BodyRetrievalStrategy, CustomRegion, MAX_BUFFERED_OBJECT_BYTES, S3CacheConfig, S3Config,
-    S3Credentials, S3StorageRegion,
+    AdaptiveBufferConfig, BodyRetrievalStrategy, CustomRegion, DEFAULT_MAX_BUFFERED_OBJECT_BYTES,
+    S3CacheConfig, S3Config, S3Credentials, S3DiskCache, S3StorageRegion,
+};
+use bytes::Bytes;
+use tempfile::tempdir;
+use tokio::{
+    fs,
+    time::{Duration, sleep},
 };
 
 #[test]
@@ -51,6 +57,7 @@ fn custom_region_returns_endpoint_and_name() {
         credentials: S3Credentials::default(),
         path_style: true,
         cache: S3CacheConfig::default(),
+        adaptive_buffer: AdaptiveBufferConfig::default(),
     };
 
     let resolved = config
@@ -62,26 +69,98 @@ fn custom_region_returns_endpoint_and_name() {
 
 #[test]
 fn body_strategy_caches_small_objects() {
-    let result =
-        BodyRetrievalStrategy::from_content_length(Some(MAX_BUFFERED_OBJECT_BYTES - 1), true);
+    let limit = DEFAULT_MAX_BUFFERED_OBJECT_BYTES;
+    let result = BodyRetrievalStrategy::from_content_length(Some(limit - 1), true, limit);
     assert_eq!(result, BodyRetrievalStrategy::BufferAndCache);
 }
 
 #[test]
 fn body_strategy_streams_large_objects() {
-    let result =
-        BodyRetrievalStrategy::from_content_length(Some(MAX_BUFFERED_OBJECT_BYTES + 1), true);
+    let limit = DEFAULT_MAX_BUFFERED_OBJECT_BYTES;
+    let result = BodyRetrievalStrategy::from_content_length(Some(limit + 1), true, limit);
     assert_eq!(result, BodyRetrievalStrategy::StreamWithoutCache);
 }
 
 #[test]
 fn body_strategy_streams_when_cache_disabled() {
-    let result = BodyRetrievalStrategy::from_content_length(Some(1), false);
+    let result = BodyRetrievalStrategy::from_content_length(Some(1), false, 1);
     assert_eq!(result, BodyRetrievalStrategy::StreamWithoutCache);
 }
 
 #[test]
 fn body_strategy_streams_when_size_unknown() {
-    let result = BodyRetrievalStrategy::from_content_length(None, true);
+    let limit = DEFAULT_MAX_BUFFERED_OBJECT_BYTES;
+    let result = BodyRetrievalStrategy::from_content_length(None, true, limit);
     assert_eq!(result, BodyRetrievalStrategy::StreamWithoutCache);
+}
+
+fn cache_config_with_dir(dir: &std::path::Path) -> S3CacheConfig {
+    S3CacheConfig {
+        enabled: true,
+        path: Some(dir.to_path_buf()),
+        max_bytes: 8,
+        max_entries: 4,
+    }
+}
+
+#[tokio::test]
+async fn disk_cache_retries_failed_deletions_on_next_put() {
+    let temp_dir = tempdir().expect("tempdir");
+    let cache = S3DiskCache::new(&cache_config_with_dir(temp_dir.path()), "test-cache")
+        .await
+        .expect("cache");
+
+    cache
+        .put("first", Bytes::from_static(b"abcdefgh"), None)
+        .await
+        .expect("initial write");
+
+    let relative = S3DiskCache::hashed_filename("first");
+    let disk_path = cache.dir.join(&relative);
+    fs::remove_file(&disk_path)
+        .await
+        .expect("remove original file");
+    fs::create_dir_all(&disk_path)
+        .await
+        .expect("replace file with dir");
+
+    cache
+        .put("second", Bytes::from_static(b"ijklmnop"), None)
+        .await
+        .expect("evict first entry");
+
+    let metadata = fs::metadata(&disk_path).await.expect("metadata");
+    assert!(metadata.is_dir(), "corrupted entry stays on disk");
+
+    fs::remove_dir_all(&disk_path)
+        .await
+        .expect("cleanup dir before retry");
+    fs::File::create(&disk_path)
+        .await
+        .expect("recreate file so deletion can succeed");
+
+    sleep(Duration::from_millis(150)).await;
+
+    cache
+        .put("third", Bytes::from_static(b"qrstuvwx"), None)
+        .await
+        .expect("trigger retry");
+
+    let exists = fs::try_exists(&disk_path).await.expect("exists check");
+    assert!(!exists, "failed deletions get retried before new puts");
+}
+
+#[test]
+fn adaptive_buffer_respects_pressure_threshold() {
+    let config = AdaptiveBufferConfig {
+        min_buffer_bytes: 1024 * 1024,
+        max_buffer_bytes: 16 * 1024 * 1024,
+        memory_pressure_threshold: 0.5,
+    };
+
+    assert_eq!(config.limit_for_pressure(0.0), 16 * 1024 * 1024);
+    let mid = config.limit_for_pressure(0.25);
+    assert!(mid < 16 * 1024 * 1024 && mid > 1024 * 1024);
+    assert_eq!(config.limit_for_pressure(0.5), 1024 * 1024);
+    assert_eq!(config.limit_for_pressure(0.9), 1024 * 1024);
 }
