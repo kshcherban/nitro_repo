@@ -80,7 +80,46 @@ When reviewing or writing code, check for:
 4. **Refactor**: Clean up while keeping tests green
 5. **Verify**: Run full test suite + fmt + dev.sh
 6. **Document**: Ensure code is self-documenting with clear names and necessary comments
-7. **Memorize**: Add prompts for bigger features/bug fixes and summary of your work into @history/MEMORY.md for future reference
+7. **Memorize**: Check knowledge graph memory section below on how to work with projects memory
+
+# Knowledge Graph Memory
+
+You have access to a persistent knowledge graph via the memory MCP server. Use it to maintain context across sessions and projects.
+
+## When to READ from memory
+
+- **At the start of EVERY conversation**: Search for relevant entities related to the current project or task
+- Before starting work on any project, run `mcp__memory__search_nodes` with the project name
+- When the user references something that might have been discussed before
+- When you need context about user preferences, past decisions, or project-specific patterns
+
+## When to WRITE to memory
+
+- When learning new facts about a project (architecture decisions, tech stack, conventions)
+- When the user expresses preferences or makes decisions that should persist
+- When completing significant milestones or discovering important patterns
+- When encountering gotchas, bugs, or lessons learned that would be valuable later
+
+## What to store as entities
+
+- **Projects**: name, tech stack, key conventions, directory structure insights
+- **Decisions**: architectural choices, library selections, design patterns chosen
+- **Preferences**: user's coding style preferences, tooling choices, workflow preferences
+- **People**: team members mentioned, their roles, relevant context
+- **Gotchas**: bugs encountered, workarounds, things that didn't work
+
+## Entity naming convention
+
+- Use `project:<name>` for projects (e.g., `project:claude-code-router`)
+- Use `decision:<topic>` for decisions (e.g., `decision:auth-strategy`)
+- Use `preference:<topic>` for preferences (e.g., `preference:testing-style`)
+
+## Example workflow
+
+1. Start of session: `mcp__memory__search_nodes` with project name or topic
+2. During work: `mcp__memory__add_observations` when learning new facts
+3. New concepts: `mcp__memory__create_entities` for new projects/decisions
+4. Connections: `mcp__memory__create_relations` to link related entities
 
 
 ## Red Flags to Avoid
