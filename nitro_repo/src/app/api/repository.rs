@@ -8,7 +8,7 @@ use axum::{
 use management::NewRepositoryRequest;
 use nr_core::{
     database::entities::repository::{
-        DBRepository, DBRepositoryNames, DBRepositoryNamesWithVisibility,
+        DBRepository, DBRepositoryConfig, DBRepositoryNames, DBRepositoryNamesWithVisibility,
         DBRepositoryWithStorageName,
     },
     repository::{
@@ -25,6 +25,7 @@ use nr_core::{
 };
 use nr_storage::{FileType, Storage, StorageFile};
 use page::RepositoryPageRoutes;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::{instrument, warn};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -327,31 +328,192 @@ async fn resolve_repository_kind(
     repository: &DBRepositoryWithStorageName,
     site: &NitroRepo,
 ) -> Result<Option<String>, InternalError> {
-    if repository.repository_type != crate::repository::docker::REPOSITORY_TYPE_ID {
-        return Ok(None);
+    let repo_type = repository.repository_type.as_str();
+    if repo_type.eq_ignore_ascii_case(crate::repository::docker::REPOSITORY_TYPE_ID) {
+        load_proxy_kind::<crate::repository::docker::DockerRegistryConfig>(
+            repository,
+            site,
+            crate::repository::docker::DockerRegistryConfigType::get_type_static(),
+        )
+        .await
+    } else if repo_type.eq_ignore_ascii_case(crate::repository::maven::REPOSITORY_TYPE_ID) {
+        load_proxy_kind::<crate::repository::maven::MavenRepositoryConfig>(
+            repository,
+            site,
+            crate::repository::maven::MavenRepositoryConfigType::get_type_static(),
+        )
+        .await
+    } else if repo_type.eq_ignore_ascii_case("python") {
+        load_proxy_kind::<crate::repository::python::PythonRepositoryConfig>(
+            repository,
+            site,
+            crate::repository::python::PythonRepositoryConfigType::get_type_static(),
+        )
+        .await
+    } else if repo_type.eq_ignore_ascii_case("npm") {
+        load_proxy_kind::<crate::repository::npm::NPMRegistryConfig>(
+            repository,
+            site,
+            crate::repository::npm::NPMRegistryConfigType::get_type_static(),
+        )
+        .await
+    } else if repo_type.eq_ignore_ascii_case("go") {
+        load_proxy_kind::<crate::repository::go::GoRepositoryConfig>(
+            repository,
+            site,
+            crate::repository::go::GoRepositoryConfigType::get_type_static(),
+        )
+        .await
+    } else {
+        Ok(None)
     }
+}
 
-    use crate::repository::docker::{DockerRegistryConfig, DockerRegistryConfigType};
-    use nr_core::database::entities::repository::DBRepositoryConfig;
-
-    let config = DBRepositoryConfig::<DockerRegistryConfig>::get_config(
-        repository.id,
-        DockerRegistryConfigType::get_type_static(),
-        site.as_ref(),
-    )
-    .await?;
-
+async fn load_proxy_kind<T>(
+    repository: &DBRepositoryWithStorageName,
+    site: &NitroRepo,
+    config_key: &'static str,
+) -> Result<Option<String>, InternalError>
+where
+    T: ProxyKindClassifier + DeserializeOwned + Send + Sync + Unpin + 'static,
+{
+    let config =
+        DBRepositoryConfig::<T>::get_config(repository.id, config_key, site.as_ref()).await?;
     let Some(config) = config else {
         return Ok(None);
     };
+    Ok(config.value.0.proxy_kind_label().map(str::to_string))
+}
 
-    let kind = match config.value.0 {
-        DockerRegistryConfig::Hosted => "hosted",
-        DockerRegistryConfig::Proxy(_) => "proxy",
+trait ProxyKindClassifier {
+    fn proxy_kind_label(&self) -> Option<&'static str>;
+}
+
+impl ProxyKindClassifier for crate::repository::docker::DockerRegistryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
     }
-    .to_string();
+}
 
-    Ok(Some(kind))
+impl ProxyKindClassifier for crate::repository::maven::MavenRepositoryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
+impl ProxyKindClassifier for crate::repository::python::PythonRepositoryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
+impl ProxyKindClassifier for crate::repository::npm::NPMRegistryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
+impl ProxyKindClassifier for crate::repository::go::GoRepositoryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod repository_kind_tests {
+    use super::ProxyKindClassifier;
+    use crate::repository::{
+        docker::{DockerRegistryConfig, proxy::DockerProxyConfig},
+        go::{GoProxyConfig, GoRepositoryConfig},
+        maven::{MavenRepositoryConfig, proxy::MavenProxyConfig},
+        npm::{NPMRegistryConfig, NpmProxyConfig},
+        python::{PythonProxyConfig, PythonRepositoryConfig},
+    };
+
+    fn sample_docker_proxy() -> DockerProxyConfig {
+        DockerProxyConfig {
+            upstream_url: "https://registry-1.docker.io".into(),
+            upstream_auth: None,
+            cache_enabled: true,
+            revalidation_ttl_seconds: 300,
+            skip_tag_revalidation: false,
+        }
+    }
+
+    #[test]
+    fn docker_proxy_reports_proxy_kind() {
+        let config = DockerRegistryConfig::Proxy(sample_docker_proxy());
+        assert_eq!(config.proxy_kind_label(), Some("proxy"));
+    }
+
+    #[test]
+    fn docker_hosted_reports_hosted_kind() {
+        let config = DockerRegistryConfig::Hosted;
+        assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
+
+    #[test]
+    fn maven_proxy_reports_proxy_kind() {
+        let config = MavenRepositoryConfig::Proxy(MavenProxyConfig { routes: vec![] });
+        assert_eq!(config.proxy_kind_label(), Some("proxy"));
+    }
+
+    #[test]
+    fn maven_hosted_reports_hosted_kind() {
+        let config = MavenRepositoryConfig::Hosted;
+        assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
+
+    #[test]
+    fn python_proxy_reports_proxy_kind() {
+        let config = PythonRepositoryConfig::Proxy(PythonProxyConfig::default());
+        assert_eq!(config.proxy_kind_label(), Some("proxy"));
+    }
+
+    #[test]
+    fn python_hosted_reports_hosted_kind() {
+        let config = PythonRepositoryConfig::Hosted;
+        assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
+
+    #[test]
+    fn npm_proxy_reports_proxy_kind() {
+        let config = NPMRegistryConfig::Proxy(NpmProxyConfig::default());
+        assert_eq!(config.proxy_kind_label(), Some("proxy"));
+    }
+
+    #[test]
+    fn npm_hosted_reports_hosted_kind() {
+        let config = NPMRegistryConfig::Hosted;
+        assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
+
+    #[test]
+    fn go_proxy_reports_proxy_kind() {
+        let config = GoRepositoryConfig::Proxy(GoProxyConfig::default());
+        assert_eq!(config.proxy_kind_label(), Some("proxy"));
+    }
+
+    #[test]
+    fn go_hosted_reports_hosted_kind() {
+        let config = GoRepositoryConfig::Hosted;
+        assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
 }
 
 async fn compute_repository_storage_usage(site: &NitroRepo, repository_id: Uuid) -> Option<u64> {

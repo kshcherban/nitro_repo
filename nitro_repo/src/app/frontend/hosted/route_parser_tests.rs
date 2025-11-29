@@ -57,7 +57,7 @@ pub fn browse_test() {
 
 #[test]
 fn parse_all() {
-    let file = include_str!("../../../../site/src/router/routes.json");
+    let file = include_str!("../../../../../site/src/router/routes.json");
     let routes: Vec<RouteItem> = serde_json::from_str(file).unwrap();
 
     for route in routes {

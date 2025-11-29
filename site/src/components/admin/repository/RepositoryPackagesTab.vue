@@ -73,7 +73,9 @@
         show-select
         class="elevation-0"
         :items-per-page="perPage"
-        :item-length="totalPackages">
+        :items-per-page-options="perPageOptions"
+        :item-length="totalPackages"
+        @update:items-per-page="handleItemsPerPageChange">
 
         <template v-slot:item.size="{ value }">
           <div class="text-end">{{ formatBytes(value) }}</div>
@@ -408,6 +410,17 @@ async function refreshPackages() {
   await loadPackages();
 }
 
+function handleItemsPerPageChange(value: number) {
+  if (typeof value !== "number") {
+    return;
+  }
+  const nextValue = perPageOptions.includes(value) ? value : perPageOptions[0];
+  if (perPage.value === nextValue) {
+    return;
+  }
+  perPage.value = nextValue;
+  currentPage.value = 1;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) {

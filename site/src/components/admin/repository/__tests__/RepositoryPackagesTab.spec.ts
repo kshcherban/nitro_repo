@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { defineComponent, nextTick } from "vue";
 import RepositoryPackagesTab from "@/components/admin/repository/RepositoryPackagesTab.vue";
+import http from "@/http";
 
 vi.mock("@/http", () => ({
   default: {
@@ -167,5 +168,32 @@ describe("RepositoryPackagesTab.vue", () => {
     field.vm.$emit("click:clear");
     await nextTick();
     expect(wrapper.vm.searchTerm).toBe("");
+  });
+
+  it("reloads packages when items per page changes", async () => {
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "1",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const httpGet = http.get as vi.Mock;
+    httpGet.mockClear();
+
+    (wrapper.vm as any).currentPage = 2;
+    (wrapper.vm as any).handleItemsPerPageChange(100);
+
+    await flushPromises();
+
+    expect(httpGet).toHaveBeenCalledTimes(1);
+    expect(httpGet).toHaveBeenCalledWith("/api/repository/1/packages", {
+      params: { page: 1, per_page: 100 },
+    });
   });
 });

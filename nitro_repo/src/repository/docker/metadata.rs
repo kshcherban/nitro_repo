@@ -96,6 +96,9 @@ pub async fn collect_manifest_entries(
                         let repository_name = segments.join("/");
 
                         for manifest in files {
+                            if manifest.name.ends_with(".nr-docker-tagmeta") {
+                                continue;
+                            }
                             if let FileType::File(file_meta) = manifest.file_type {
                                 let mut manifest_path = manifests_path.clone();
                                 manifest_path.push_mut(&manifest.name);
@@ -153,6 +156,9 @@ async fn collect_manifest_entries_s3(
             let repo_relative = obj.key.strip_prefix("v2/").unwrap_or(&obj.key);
             let (repository, reference) = repo_relative.split_once("/manifests/")?;
             if repository.is_empty() || reference.is_empty() {
+                return None;
+            }
+            if reference.ends_with(".nr-docker-tagmeta") {
                 return None;
             }
             Some(DockerManifestEntry {

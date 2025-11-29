@@ -218,3 +218,55 @@ async fn search_repository_storage_finds_docker_images() {
     assert_eq!(results[0].cache_path, "v2/library/nginx/manifests/latest");
     assert_eq!(results[0].size, 7023 + 32654);
 }
+
+#[tokio::test]
+async fn search_repository_storage_skips_docker_tag_metadata() {
+    let storage = test_storage().await;
+    let repo_id = Uuid::new_v4();
+    let manifest_path = StoragePath::from("v2/local/docker-proxy/manifests/nightly");
+    let manifest = r#"{"schemaVersion": 2, "config": {"size": 1}, "layers": []}"#;
+    storage
+        .save_file(
+            repo_id,
+            FileContent::Bytes(Bytes::from(manifest)),
+            &manifest_path,
+        )
+        .await
+        .unwrap();
+
+    let tag_meta_path =
+        StoragePath::from("v2/local/docker-proxy/manifests/nightly.nr-docker-tagmeta");
+    storage
+        .save_file(
+            repo_id,
+            FileContent::Bytes(Bytes::from_static(b"{}")),
+            &tag_meta_path,
+        )
+        .await
+        .unwrap();
+
+    let summary = RepositorySummary {
+        repository_id: repo_id,
+        repository_name: "docker-proxy".into(),
+        storage_name: "test".into(),
+        repository_type: "docker".into(),
+    };
+
+    let results = super::search_repository_storage(
+        &storage,
+        &summary,
+        SearchStrategy::Docker,
+        &simple_query("docker"),
+        10,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].file_name, "local/docker-proxy:nightly");
+    assert!(
+        results
+            .iter()
+            .all(|result| !result.file_name.ends_with(".nr-docker-tagmeta"))
+    );
+}
