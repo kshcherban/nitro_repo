@@ -18,4 +18,12 @@ describe("router security metadata", () => {
     const home = routes.find((route) => route.name === "home");
     expect(home?.meta?.requiresAuth).toBe(true);
   });
+
+  it("redirects admin home to repositories list", async () => {
+    const router = (await import("@/router")).default;
+    const routes = router.getRoutes();
+    const admin = routes.find((route) => route.name === "admin");
+
+    expect(admin?.redirect).toBe("/admin/repositories");
+  });
 });

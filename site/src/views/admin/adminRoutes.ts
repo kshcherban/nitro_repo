@@ -1,5 +1,4 @@
 import AdminNav from "@/components/nav/AdminNav.vue";
-import AdminHome from "@/views/admin/AdminHome.vue";
 import InstallView from "@/views/admin/InstallView.vue";
 import CreateRepositoryView from "@/views/admin/repository/CreateRepositoryView.vue";
 import RepositoryListView from "@/views/admin/repository/RepositoryListView.vue";
@@ -27,7 +26,7 @@ export const adminRoutes = [
   {
     path: "/admin",
     name: "admin",
-    component: AdminHome,
+    redirect: "/admin/repositories",
     meta: defaultAdminMeta,
   },
   {
