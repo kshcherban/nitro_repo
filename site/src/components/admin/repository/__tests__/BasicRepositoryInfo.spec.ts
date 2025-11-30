@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 
 vi.mock("@/http", () => ({
   default: {
@@ -34,6 +34,12 @@ const vuetifyStubs = {
   "v-card-title": {
     template: `<div data-stub="v-card-title"><slot /></div>`,
   },
+  "v-card-actions": {
+    template: `<div data-stub="v-card-actions"><slot /></div>`,
+  },
+  "v-spacer": {
+    template: `<div data-stub="v-spacer"></div>`,
+  },
   "v-divider": {
     template: `<div data-stub="v-divider"><slot /></div>`,
   },
@@ -45,6 +51,11 @@ const vuetifyStubs = {
   },
   "v-chip": {
     template: `<span data-stub="v-chip"><slot /></span>`,
+  },
+  "v-dialog": {
+    props: ["modelValue"],
+    emits: ["update:modelValue"],
+    template: `<div v-if="modelValue" data-stub="v-dialog"><slot /></div>`,
   },
   "v-btn": {
     template: `<button data-stub="v-btn"><slot /></button>`,
@@ -96,5 +107,60 @@ describe("BasicRepositoryInfo", () => {
 
     expect(wrapper.find('[data-testid="repository-toggle"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="repository-delete"]').exists()).toBe(true);
+  });
+
+  it("opens a confirmation dialog before deleting a repository", async () => {
+    const wrapper = mount(BasicRepositoryInfo, {
+      props: { repository },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    expect(wrapper.find('[data-testid="repository-delete-dialog"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="repository-delete"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="repository-delete-dialog"]').exists()).toBe(true);
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+    expect(mockAlerts.success).not.toHaveBeenCalled();
+  });
+
+  it("deletes the repository only after confirmation", async () => {
+    const http = await import("@/http");
+    (http.default.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({});
+
+    const wrapper = mount(BasicRepositoryInfo, {
+      props: { repository },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await wrapper.find('[data-testid="repository-delete"]').trigger("click");
+    await wrapper.find('[data-testid="repository-delete-confirm"]').trigger("click");
+    await flushPromises();
+
+    expect(http.default.delete).toHaveBeenCalledWith(`/api/repository/${repository.id}`);
+    expect(mockAlerts.success).toHaveBeenCalledWith("Repository deleted", "Repository has been deleted.");
+    const router = await import("@/router");
+    expect(router.default.push).toHaveBeenCalledWith({ name: "RepositoriesList" });
+  });
+
+  it("does not delete when deletion is cancelled", async () => {
+    const http = await import("@/http");
+    const wrapper = mount(BasicRepositoryInfo, {
+      props: { repository },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await wrapper.find('[data-testid="repository-delete"]').trigger("click");
+    await wrapper.find('[data-testid="repository-delete-cancel"]').trigger("click");
+    await flushPromises();
+
+    expect(http.default.delete).not.toHaveBeenCalled();
+    expect(mockAlerts.success).not.toHaveBeenCalled();
   });
 });

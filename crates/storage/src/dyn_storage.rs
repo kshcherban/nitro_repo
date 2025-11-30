@@ -203,6 +203,19 @@ impl Storage for DynStorage {
         }
     }
 
+    async fn delete_repository(&self, repository: Uuid) -> Result<(), StorageError> {
+        match self {
+            DynStorage::Local(storage) => storage
+                .delete_repository(repository)
+                .await
+                .map_err(Into::into),
+            DynStorage::S3(storage) => storage
+                .delete_repository(repository)
+                .await
+                .map_err(Into::into),
+        }
+    }
+
     async fn stream_directory(
         &self,
         repository: Uuid,

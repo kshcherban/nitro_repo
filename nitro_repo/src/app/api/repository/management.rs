@@ -26,6 +26,7 @@ use crate::{
     repository::Repository,
     utils::{ResponseBuilder, conflict::ConflictResponse},
 };
+use nr_storage::Storage;
 pub fn management_routes() -> Router<NitroRepo> {
     Router::new()
         .route("/{repository_id}/configs", get(get_configs_for_repository))
@@ -333,9 +334,20 @@ pub async fn delete_repository(
         return Ok(RepositoryNotFound::Uuid(repository).into_response());
     };
     info!("Deleting Repository: {}", db_repository.name);
+
+    let Some(storage) = site.get_storage(db_repository.storage_id) else {
+        error!(
+            repository = %repository,
+            storage_id = %db_repository.storage_id,
+            "Storage not loaded for repository deletion"
+        );
+        return Ok(ResponseBuilder::internal_server_error().body("Storage missing for repository"));
+    };
+
+    storage.delete_repository(repository).await?;
+
     DBRepository::delete_by_id(repository, site.as_ref()).await?;
 
     site.remove_repository(repository);
-    // TODO: Delete all files for the repository
     Ok(ResponseBuilder::no_content().empty())
 }

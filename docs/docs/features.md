@@ -11,7 +11,7 @@ without guesswork.
 | Maven | Yes | Yes | Standard Maven 2 layout for private artifacts or upstream caching ([docs](./repositoryTypes/maven/index.md)). |
 | npm | Yes | Yes | Works as a private registry or smart cache with multiple upstreams ([docs](./repositoryTypes/npm/index.md)). |
 | Python | Yes | Yes | Hosts wheels/sdists and proxies PyPI-compatible indexes, including `uv` workflows ([docs](./repositoryTypes/python/index.md)). |
-| Composer (PHP) | Yes | No | Vendor/package storage with indexed metadata for downstream Composer clients ([docs](./repositoryTypes/php/index.md)). |
+| Composer (PHP) | Yes | Planned | Work in progress. Vendor/package storage with indexed metadata for downstream Composer clients ([docs](./repositoryTypes/php/index.md)). |
 | Go modules | Yes | Yes | Athens-style hosted uploads plus multi-route proxy cache control ([docs](./repositoryTypes/go/index.md)). |
 | Cargo (Rust) | Yes | No | Sparse index + publish/download endpoints for private crates ([docs](./repositoryTypes/cargo/index.md)). |
 | Docker / OCI | Yes | Yes | Private Docker Registry HTTP API v2 implementation plus pull-through caching for upstream registries ([docs](./repositoryTypes/docker/index.md)). |

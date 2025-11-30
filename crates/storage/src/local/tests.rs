@@ -172,3 +172,79 @@ async fn repository_size_bytes_missing_repo_returns_zero() -> anyhow::Result<()>
 
     Ok(())
 }
+
+#[tokio::test]
+async fn delete_repository_removes_all_files() -> anyhow::Result<()> {
+    let temp = tempdir()?;
+    let storage =
+        <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(StorageConfig {
+            storage_config: StorageConfigInner::test_config(),
+            type_config: StorageTypeConfig::Local(LocalConfig {
+                path: temp.path().to_path_buf(),
+            }),
+        })
+        .await?;
+
+    let repository = Uuid::new_v4();
+    let paths = [
+        StoragePath::from("packages/file.bin"),
+        StoragePath::from("packages/nested/inner.txt"),
+    ];
+
+    for path in &paths {
+        storage
+            .save_file(repository, FileContent::from(b"payload".as_slice()), path)
+            .await?;
+        assert!(storage.file_exists(repository, path).await?);
+    }
+
+    let repository_root = temp.path().join(repository.to_string());
+    assert!(
+        repository_root.exists(),
+        "repository root must exist before deletion"
+    );
+
+    storage.delete_repository(repository).await?;
+
+    assert!(
+        !repository_root.exists(),
+        "repository directory should be removed"
+    );
+    for path in &paths {
+        assert!(!storage.file_exists(repository, path).await?);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_repository_is_idempotent_for_missing_repo() -> anyhow::Result<()> {
+    let temp = tempdir()?;
+    let storage =
+        <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(StorageConfig {
+            storage_config: StorageConfigInner::test_config(),
+            type_config: StorageTypeConfig::Local(LocalConfig {
+                path: temp.path().to_path_buf(),
+            }),
+        })
+        .await?;
+
+    let repository_without_files = Uuid::new_v4();
+    storage.delete_repository(repository_without_files).await?;
+
+    let preserved_repository = Uuid::new_v4();
+    let path = StoragePath::from("keep/me.txt");
+    storage
+        .save_file(
+            preserved_repository,
+            FileContent::from(b"keep".as_slice()),
+            &path,
+        )
+        .await?;
+
+    storage.delete_repository(repository_without_files).await?;
+
+    assert!(storage.file_exists(preserved_repository, &path).await?);
+
+    Ok(())
+}

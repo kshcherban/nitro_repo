@@ -204,6 +204,15 @@ impl<ST: Storage> Storage for TestingStorage<ST> {
         );
         Ok(result)
     }
+
+    async fn delete_repository(&self, repository: Uuid) -> Result<(), Self::Error> {
+        self.storage.delete_repository(repository).await?;
+        let mut files = self.testing_storage.lock().await;
+        files
+            .created_files
+            .retain(|file| file.repository != repository);
+        Ok(())
+    }
     async fn stream_directory(
         &self,
         repository: Uuid,

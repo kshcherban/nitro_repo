@@ -123,6 +123,12 @@ pub trait Storage: Send + Sync {
         repository: Uuid,
         location: &StoragePath,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// Deletes all files and metadata associated with a repository.
+    fn delete_repository(
+        &self,
+        repository: Uuid,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 pub trait StorageFactory: Send + Sync {
     fn storage_name(&self) -> &'static str;

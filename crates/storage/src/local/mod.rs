@@ -4,6 +4,7 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     sync::Mutex,
     task::{JoinSet, spawn_blocking},
+    time::sleep,
 };
 use tracing::{
     Level, Span, debug, debug_span, error, event,
@@ -818,6 +820,42 @@ impl Storage for LocalStorage {
     ) -> Result<bool, LocalStorageError> {
         let path = self.get_path(&repository, location);
         Ok(path.exists())
+    }
+
+    #[instrument(
+        fields(
+            storage.type = "local",
+            storage.id = %self.storage_config.storage_id,
+            repository = %repository,
+        ),
+        skip(self)
+    )]
+    async fn delete_repository(&self, repository: Uuid) -> Result<(), LocalStorageError> {
+        let root = self.config.path.join(repository.to_string());
+        if !root.exists() {
+            return Ok(());
+        }
+
+        let is_dir = root.is_dir();
+        let mut attempt = 0u8;
+        loop {
+            attempt = attempt.saturating_add(1);
+            let result = if is_dir {
+                tokio::fs::remove_dir_all(&root).await
+            } else {
+                tokio::fs::remove_file(&root).await
+            };
+
+            match result {
+                Ok(()) => break,
+                Err(err) if is_dir && err.kind() == ErrorKind::DirectoryNotEmpty && attempt < 3 => {
+                    sleep(Duration::from_millis(25 * attempt as u64)).await;
+                }
+                Err(err) => return Err(LocalStorageError::IOError(err)),
+            }
+        }
+
+        Ok(())
     }
 
     async fn stream_directory(

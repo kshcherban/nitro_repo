@@ -66,7 +66,7 @@
             variant="flat"
             class="text-none"
             data-testid="repository-delete"
-            @click="deleteRepository">
+            @click="openDeleteDialog">
             <v-icon
               class="mr-2"
               icon="mdi-delete-outline" />
@@ -76,13 +76,47 @@
       </div>
     </v-card-text>
   </v-card>
+
+  <v-dialog
+    v-model="isDeleteDialogOpen"
+    max-width="500"
+    data-testid="repository-delete-dialog">
+    <v-card>
+      <v-card-title class="text-h6">
+        Delete repository "{{ repository?.name ?? "this repository" }}"?
+      </v-card-title>
+      <v-card-text>
+        <p class="mb-2">This will permanently remove all packages and metadata stored on its backing storage.</p>
+        <p class="mb-0 font-weight-medium">This action cannot be undone.</p>
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn
+          variant="text"
+          class="text-none"
+          data-testid="repository-delete-cancel"
+          @click="closeDeleteDialog">
+          Cancel
+        </v-btn>
+        <v-btn
+          color="error"
+          variant="flat"
+          class="text-none"
+          :loading="isDeleting"
+          data-testid="repository-delete-confirm"
+          @click="confirmDelete">
+          Delete
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 <script setup lang="ts">
 import http from "@/http";
 import router from "@/router";
 import type { RepositoryWithStorageName } from "@/types/repository";
 import { useAlertsStore } from "@/stores/alerts";
-import { computed, type PropType } from "vue";
+import { computed, ref, type PropType } from "vue";
 
 const props = defineProps({
   repository: {
@@ -168,15 +202,33 @@ function formatUpdatedAt(timestamp?: string | null): string {
   return date.toLocaleString();
 }
 const alerts = useAlertsStore();
+const isDeleteDialogOpen = ref(false);
+const isDeleting = ref(false);
 
-async function deleteRepository() {
+function openDeleteDialog() {
+  isDeleteDialogOpen.value = true;
+}
+
+function closeDeleteDialog() {
+  isDeleteDialogOpen.value = false;
+}
+
+async function confirmDelete() {
+  if (!props.repository) {
+    return;
+  }
+
+  isDeleting.value = true;
   try {
     await http.delete(`/api/repository/${props.repository.id}`);
     alerts.success("Repository deleted", "Repository has been deleted.");
+    closeDeleteDialog();
     router.push({ name: "RepositoriesList" });
   } catch (error) {
     console.error(error);
     alerts.error("Failed to delete repository", "An error occurred while deleting repository.");
+  } finally {
+    isDeleting.value = false;
   }
 }
 

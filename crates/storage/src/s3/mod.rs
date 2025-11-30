@@ -1618,6 +1618,60 @@ impl Storage for S3Storage {
     }
 
     #[instrument(
+        name = "Storage::delete_repository",
+        fields(storage_type = "s3", repository = %repository),
+        skip(self)
+    )]
+    async fn delete_repository(&self, repository: uuid::Uuid) -> Result<(), S3StorageError> {
+        let prefix = format!("{repository}/");
+        let mut continuation: Option<String> = None;
+
+        loop {
+            let mut request = self
+                .aws_client()
+                .list_objects_v2()
+                .bucket(self.bucket())
+                .prefix(&prefix)
+                .max_keys(1000);
+
+            if let Some(token) = &continuation {
+                request = request.continuation_token(token);
+            }
+
+            let response = request
+                .send()
+                .await
+                .map_err(S3StorageError::from_sdk_error)?;
+
+            let paths: Vec<StoragePath> = response
+                .contents()
+                .iter()
+                .filter_map(|obj| obj.key())
+                .filter_map(|key| key.strip_prefix(&prefix))
+                .filter(|relative| !relative.is_empty())
+                .map(StoragePath::from)
+                .collect();
+
+            if !paths.is_empty() {
+                self.delete_files_batch(repository, &paths).await?;
+            }
+
+            if response.is_truncated().unwrap_or(false) {
+                continuation = response
+                    .next_continuation_token()
+                    .map(|token| token.to_string());
+                if continuation.is_some() {
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        Ok(())
+    }
+
+    #[instrument(
         name = "Storage::stream_directory",
         fields(storage_type = "s3", repository = %repository, path = %location),
         skip(self)
