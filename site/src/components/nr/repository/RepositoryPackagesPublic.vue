@@ -32,6 +32,14 @@
     </header>
 
     <div
+      v-if="indexingWarning"
+      class="packages__indexing-warning"
+      role="status"
+      data-testid="public-packages-indexing-warning">
+      {{ indexingWarning }}
+    </div>
+
+    <div
       v-if="isLoading"
       class="packages__state">
       Loading packages...
@@ -201,7 +209,7 @@
 
 <script setup lang="ts">
 import http from "@/http";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useResizableColumns } from "@/composables/useResizableColumns";
 
 interface PackageEntry {
@@ -231,6 +239,7 @@ const props = defineProps<{
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
+const indexingWarning = ref<string | null>(null);
 const currentPage = ref(1);
 const perPageOptions = [50, 100, 200];
 const perPage = ref(100);
@@ -403,6 +412,9 @@ const pageLabel = computed(() => {
 });
 
 const emptyRepositoryMessage = computed(() => {
+  if (indexingWarning.value) {
+    return "Repository indexing in progress. Results will appear once cataloging finishes.";
+  }
   if (isDockerRepository.value) {
     if (isDockerProxy.value) {
       return "No images cached yet. Pull an image through this proxy to populate the list.";
@@ -423,6 +435,7 @@ async function loadPackages() {
   lastRequestToken.value = requestToken;
   isLoading.value = true;
   error.value = null;
+  indexingWarning.value = null;
   try {
     const response = await http.get(`/api/repository/${props.repositoryId}/packages`, {
       params: { page: currentPage.value, per_page: perPage.value },
@@ -431,6 +444,8 @@ async function loadPackages() {
       return;
     }
     const data = response.data ?? {};
+    const warning = response.headers?.["x-nitro-warning"];
+    indexingWarning.value = typeof warning === "string" ? warning : null;
     const items: PackageEntry[] = (data.items ?? []).map((item: any) => ({
       name: item.name ?? "",
       size: Number(item.size ?? 0),
@@ -618,7 +633,20 @@ watch(
 );
 
 // Enable resizable columns
-useResizableColumns('.packages__table');
+const { initResizable: initPackageTableResizers } = useResizableColumns('.packages__table');
+
+watch(
+  () => visiblePackages.value.length,
+  (length) => {
+    if (length === 0) {
+      return;
+    }
+    nextTick(() => {
+      initPackageTableResizers();
+    });
+  },
+  { flush: "post" },
+);
 
 watch(
   () => ({
@@ -750,6 +778,16 @@ watch(
   flex-wrap: wrap;
 }
 
+.packages__indexing-warning {
+  border-left: 4px solid var(--nr-primary-color, #4c6ef5);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  background: rgba(76, 110, 245, 0.12);
+  color: var(--nr-primary-color, #4c6ef5);
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
 .packages__state {
   color: var(--text-secondary, #6c757d);
 }
@@ -796,6 +834,21 @@ watch(
   border-collapse: collapse;
   table-layout: fixed;
   color: var(--nr-text-color, inherit);
+}
+
+.column-resizer {
+  background: transparent;
+}
+
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: rgba(0, 0, 0, 0.15);
+  transform: translateX(-50%);
 }
 
 .packages__header-cell {

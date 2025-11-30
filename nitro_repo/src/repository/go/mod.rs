@@ -17,6 +17,7 @@ pub mod utils;
 pub use types::*;
 pub mod ext;
 
+use crate::error::OtherInternalError;
 use hosted::GoHosted;
 use proxy::GoProxy;
 
@@ -83,6 +84,11 @@ impl_from_other!(nr_storage::StorageError);
 impl_from_other!(sqlx::Error);
 impl_from_other!(serde_json::Error);
 impl_from_other!(crate::app::authentication::AuthenticationError);
+impl From<crate::repository::proxy_indexing::ProxyIndexingError> for GoRepositoryError {
+    fn from(value: crate::repository::proxy_indexing::ProxyIndexingError) -> Self {
+        GoRepositoryError::Other(Box::new(OtherInternalError::new(value)))
+    }
+}
 
 // Also add direct conversion from GoModuleError to RepositoryHandlerError
 impl From<types::GoModuleError> for crate::repository::RepositoryHandlerError {

@@ -10,6 +10,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewVersion {
     pub project_id: Uuid,
+    pub repository_id: Uuid,
     /// The version of the project
     pub version: String,
     /// Release type
@@ -27,6 +28,7 @@ impl NewVersion {
     pub async fn insert(self, db: &PgPool) -> Result<DBProjectVersion, sqlx::Error> {
         let Self {
             project_id,
+            repository_id,
             version,
             release_type,
             version_path,
@@ -36,6 +38,7 @@ impl NewVersion {
         } = self;
         let db_version = InsertQueryBuilder::new(DBProjectVersion::table_name())
             .insert(DBProjectVersionColumn::ProjectId, project_id.value())
+            .insert(DBProjectVersionColumn::RepositoryId, repository_id.value())
             .insert(DBProjectVersionColumn::Version, version.value())
             .insert(DBProjectVersionColumn::ReleaseType, release_type.value())
             .insert(DBProjectVersionColumn::Path, version_path.value())

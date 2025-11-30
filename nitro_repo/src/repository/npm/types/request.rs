@@ -137,6 +137,7 @@ impl PublishVersion {
     pub fn new_version(
         &self,
         project_id: Uuid,
+        repository_id: Uuid,
         save_path: String,
         publisher: i32,
     ) -> Result<NewVersion, NPMRegistryError> {
@@ -147,6 +148,7 @@ impl PublishVersion {
         };
         Ok(NewVersion {
             project_id,
+            repository_id,
             version: self.version.clone(),
             release_type,
             version_path: save_path,

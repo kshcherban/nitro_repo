@@ -24,6 +24,7 @@ pub mod utils;
 pub use super::prelude::*;
 use crate::{
     app::authentication::AuthenticationError,
+    error::OtherInternalError,
     utils::{IntoErrorResponse, bad_request::BadRequestErrors},
 };
 mod configs;
@@ -97,6 +98,11 @@ impl_from_error_for_other!(std::io::Error);
 impl_from_error_for_other!(AuthenticationError);
 impl_from_error_for_other!(RepositoryHandlerError);
 impl_from_error_for_other!(nr_storage::StorageError);
+impl From<crate::repository::proxy_indexing::ProxyIndexingError> for NPMRegistryError {
+    fn from(value: crate::repository::proxy_indexing::ProxyIndexingError) -> Self {
+        NPMRegistryError::Other(Box::new(OtherInternalError::new(value)))
+    }
+}
 
 impl IntoErrorResponse for NPMRegistryError {
     fn into_response_boxed(self: Box<Self>) -> axum::response::Response {

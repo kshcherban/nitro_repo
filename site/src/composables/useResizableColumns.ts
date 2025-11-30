@@ -10,12 +10,21 @@ export interface ResizableColumnState {
 export function useResizableColumns(tableSelector: string, minColumnWidth = 80) {
   const state = ref<ResizableColumnState | null>(null);
 
+  const cleanupResizers = () => {
+    const table = document.querySelector(tableSelector);
+    if (!table) return;
+    table.querySelectorAll('.column-resizer').forEach((handle) => handle.remove());
+  };
+
   const initResizable = () => {
     const table = document.querySelector(tableSelector);
     if (!table) return;
 
+    cleanupResizers();
+
     const headers = table.querySelectorAll('th');
     headers.forEach((th, index) => {
+      const headerEl = th as HTMLElement;
       // Create resize handle
       const resizer = document.createElement('div');
       resizer.className = 'column-resizer';
@@ -27,14 +36,15 @@ export function useResizableColumns(tableSelector: string, minColumnWidth = 80) 
         height: 100%;
         cursor: col-resize;
         user-select: none;
-        z-index: 1;
+        z-index: 2;
       `;
 
-      // Make th position relative for absolute positioning of resizer
-      (th as HTMLElement).style.position = 'relative';
+      if (getComputedStyle(headerEl).position === 'static') {
+        headerEl.style.position = 'relative';
+      }
 
-      resizer.addEventListener('mousedown', (e) => onMouseDown(e, th as HTMLElement, index));
-      th.appendChild(resizer);
+      resizer.addEventListener('mousedown', (e) => onMouseDown(e, headerEl, index));
+      headerEl.appendChild(resizer);
     });
   };
 
@@ -83,11 +93,13 @@ export function useResizableColumns(tableSelector: string, minColumnWidth = 80) 
   });
 
   onBeforeUnmount(() => {
+    cleanupResizers();
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup', onMouseUp);
   });
 
   return {
     initResizable,
+    cleanupResizers,
   };
 }

@@ -1,14 +1,21 @@
 use std::sync::{Arc, LazyLock};
 
+use chrono::Utc;
 use http::StatusCode;
 use nr_core::{
     database::entities::repository::{DBRepository, DBRepositoryConfig},
-    repository::{Visibility, config::RepositoryConfigType, proxy_url::ProxyURL},
+    repository::{
+        Visibility,
+        config::RepositoryConfigType,
+        project::{ProxyArtifactKey, ProxyArtifactMeta},
+        proxy_url::ProxyURL,
+    },
     storage::StoragePath,
 };
 use nr_storage::{DynStorage, FileContent, Storage};
 use parking_lot::{RwLock, RwLockReadGuard};
 use tracing::{debug, warn};
+use url::Url;
 use uuid::Uuid;
 
 use super::{
@@ -19,12 +26,13 @@ use crate::{
     app::NitroRepo,
     repository::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
-        RepositoryRequest, utils::can_read_repository_with_auth,
+        RepositoryRequest,
+        proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
+        utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
 };
 
-#[derive(Debug)]
 pub struct NpmProxyInner {
     pub id: Uuid,
     pub name: String,
@@ -34,10 +42,22 @@ pub struct NpmProxyInner {
     pub routes: RwLock<Vec<NpmProxyRoute>>,
     pub client: reqwest::Client,
     pub active: bool,
+    pub indexer: Arc<dyn ProxyIndexing>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NpmProxyRegistry(pub Arc<NpmProxyInner>);
+
+impl std::fmt::Debug for NpmProxyInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NpmProxyInner")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("visibility", &self.visibility.read())
+            .field("active", &self.active)
+            .finish()
+    }
+}
 
 static DEFAULT_ROUTE: LazyLock<NpmProxyRoute> = LazyLock::new(|| NpmProxyRoute {
     url: ProxyURL::try_from(String::from("https://registry.npmjs.org"))
@@ -69,15 +89,18 @@ impl NpmProxyRegistry {
                     err.to_string(),
                 )
             })?;
+        let indexer: Arc<dyn ProxyIndexing> =
+            Arc::new(DatabaseProxyIndexer::new(site.clone(), repository.id));
         Ok(Self(Arc::new(NpmProxyInner {
             id: repository.id,
             name: repository.name.to_string(),
             visibility: RwLock::new(repository.visibility),
             storage,
-            site,
+            site: site.clone(),
             routes: RwLock::new(normalize_routes(config.routes)),
             client,
             active: repository.active,
+            indexer,
         })))
     }
 
@@ -92,6 +115,19 @@ impl NpmProxyRegistry {
     }
     fn routes(&self) -> RwLockReadGuard<'_, Vec<NpmProxyRoute>> {
         self.0.routes.read()
+    }
+
+    fn indexer(&self) -> &Arc<dyn ProxyIndexing> {
+        &self.0.indexer
+    }
+
+    pub async fn handle_external_eviction(
+        &self,
+        path: &StoragePath,
+    ) -> Result<(), NPMRegistryError> {
+        let canonical = cache_path_for_npm_proxy(path).unwrap_or_else(|| path.clone());
+        evict_npm_proxy_cache_entry(self.indexer().as_ref(), &canonical).await?;
+        Ok(())
     }
 
     async fn download_and_cache(
@@ -133,36 +169,48 @@ impl NpmProxyRegistry {
                             Err(other) => return Err(other.into()),
                         }
 
-                        if let Some(cache_path) = cache_path_for_npm_proxy(path) {
-                            if cache_path != *path {
-                                if let Err(err) = self
-                                    .storage()
-                                    .save_file(
-                                        self.0.id,
-                                        FileContent::Bytes(bytes.clone()),
-                                        &cache_path,
-                                    )
-                                    .await
-                                {
-                                    match err {
-                                        nr_storage::StorageError::PathCollision(_) => {
-                                            debug!(
-                                                ?cache_path,
-                                                "Cache file already exists, skipping overwrite"
-                                            );
-                                        }
-                                        other => {
-                                            warn!(
-                                                ?other,
-                                                ?cache_path,
-                                                "Failed to persist npm proxy cache entry"
-                                            );
-                                            return Err(other.into());
+                        let canonical_path =
+                            if let Some(cache_path) = cache_path_for_npm_proxy(path) {
+                                if cache_path != *path {
+                                    if let Err(err) = self
+                                        .storage()
+                                        .save_file(
+                                            self.0.id,
+                                            FileContent::Bytes(bytes.clone()),
+                                            &cache_path,
+                                        )
+                                        .await
+                                    {
+                                        match err {
+                                            nr_storage::StorageError::PathCollision(_) => {
+                                                debug!(
+                                                    ?cache_path,
+                                                    "Cache file already exists, skipping overwrite"
+                                                );
+                                            }
+                                            other => {
+                                                warn!(
+                                                    ?other,
+                                                    ?cache_path,
+                                                    "Failed to persist npm proxy cache entry"
+                                                );
+                                                return Err(other.into());
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
+                                cache_path
+                            } else {
+                                path.clone()
+                            };
+
+                        record_npm_proxy_cache_hit(
+                            self.indexer().as_ref(),
+                            &canonical_path,
+                            bytes.len() as u64,
+                            Some(&url),
+                        )
+                        .await?;
                         debug!(%url, "Cached npm proxy resource");
                         return Ok(true);
                     }
@@ -515,6 +563,87 @@ fn cache_path_for_npm_proxy(path: &StoragePath) -> Option<StoragePath> {
 
 #[cfg(test)]
 mod tests;
+
+fn npm_package_components(path: &StoragePath) -> Option<(String, String)> {
+    let components: Vec<String> = path.clone().into_iter().map(String::from).collect();
+    if components.len() < 3 || components.first().map(String::as_str) != Some("packages") {
+        return None;
+    }
+    let file_name = components.last()?.clone();
+    let package_components = &components[1..components.len() - 1];
+    if package_components.is_empty() {
+        return None;
+    }
+    let package_name = package_components.join("/");
+    Some((package_name, file_name))
+}
+
+fn npm_version_from_filename(file_name: &str) -> Option<String> {
+    let stem = file_name.strip_suffix(".tgz")?;
+    let (_name_part, version_part) = stem.rsplit_once('-')?;
+    if version_part.is_empty() {
+        return None;
+    }
+    if !version_part
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(version_part.to_string())
+}
+
+pub(super) fn npm_proxy_meta_from_cache_path(
+    path: &StoragePath,
+    size: u64,
+    upstream_url: Option<&Url>,
+) -> Option<ProxyArtifactMeta> {
+    let (package_name, file_name) = npm_package_components(path)?;
+    let version = npm_version_from_filename(&file_name)?;
+    let mut builder =
+        ProxyArtifactMeta::builder(package_name.clone(), package_name.clone(), path.to_string())
+            .version(version)
+            .size(size)
+            .fetched_at(Utc::now());
+    if let Some(url) = upstream_url {
+        builder = builder.upstream_url(url.to_string());
+    }
+    Some(builder.build())
+}
+
+pub(super) fn npm_proxy_key_from_cache_path(path: &StoragePath) -> Option<ProxyArtifactKey> {
+    let (package_name, file_name) = npm_package_components(path)?;
+    let version = npm_version_from_filename(&file_name)?;
+    Some(ProxyArtifactKey {
+        package_key: package_name,
+        version: Some(version),
+        cache_path: Some(path.to_string()),
+    })
+}
+
+pub(super) async fn record_npm_proxy_cache_hit(
+    indexer: &dyn ProxyIndexing,
+    path: &StoragePath,
+    size: u64,
+    upstream_url: Option<&Url>,
+) -> Result<(), ProxyIndexingError> {
+    if let Some(meta) = npm_proxy_meta_from_cache_path(path, size, upstream_url) {
+        indexer.record_cached_artifact(meta).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn evict_npm_proxy_cache_entry(
+    indexer: &dyn ProxyIndexing,
+    path: &StoragePath,
+) -> Result<(), ProxyIndexingError> {
+    if let Some(key) = npm_proxy_key_from_cache_path(path) {
+        indexer.evict_cached_artifact(key).await?;
+    }
+    Ok(())
+}
 
 fn build_head_response(response: reqwest::Response) -> RepoResponse {
     use http::header::{CONTENT_LENGTH, CONTENT_TYPE};

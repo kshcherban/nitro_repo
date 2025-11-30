@@ -141,6 +141,25 @@ pub async fn collect_manifest_entries(
     Ok(manifests)
 }
 
+pub fn split_manifest_cache_path(path: &str) -> Option<(String, String)> {
+    if !path.starts_with("v2/") {
+        return None;
+    }
+    let without_prefix = &path[3..];
+    let marker = "/manifests/";
+    let split_index = without_prefix.find(marker)?;
+    let repository = &without_prefix[..split_index];
+    let reference = &without_prefix[split_index + marker.len()..];
+    if repository.is_empty() || reference.is_empty() {
+        return None;
+    }
+    Some((repository.to_string(), reference.to_string()))
+}
+
+pub fn docker_package_key(repository_name: &str) -> String {
+    repository_name.trim_matches('/').to_ascii_lowercase()
+}
+
 /// S3-optimized manifest listing: uses ListObjectsV2 and avoids fetching manifest bodies.
 async fn collect_manifest_entries_s3(
     storage: &S3Storage,

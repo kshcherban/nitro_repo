@@ -115,7 +115,7 @@ function mockHttpSequence() {
       return Promise.resolve({ data: ["docker"] });
     }
     if (url === "/api/repository/repo-123/config/docker") {
-      return Promise.resolve({ data: { type: "Proxy", config: { upstream_url: "https://registry-1.docker.io", cache_enabled: true } } });
+      return Promise.resolve({ data: { type: "Proxy", config: { upstream_url: "https://registry-1.docker.io" } } });
     }
     if (url === "/api/storage/storage-123") {
       return Promise.resolve({ data: s3StorageResponse });

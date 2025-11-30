@@ -35,6 +35,7 @@
         @click="addRoute">
         Add Route
       </v-btn>
+      <ProxyCacheNotice class="mt-2" />
     </div>
 
     <SubmitButton
@@ -51,6 +52,7 @@ import DropDown from "@/components/form/dropdown/DropDown.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 import http from "@/http";
+import ProxyCacheNotice from "@/components/nr/repository/ProxyCacheNotice.vue";
 import { defaultProxy, type PythonConfigType } from "./python";
 
 const typeOptions = [

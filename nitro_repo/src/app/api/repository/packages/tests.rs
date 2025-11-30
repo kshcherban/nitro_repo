@@ -1,8 +1,11 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
 use super::*;
+use crate::repository::proxy_indexing::{ProxyIndexing, ProxyIndexingError};
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{FixedOffset, Utc};
 use nr_core::ConfigTimeStamp;
+use nr_core::repository::project::{ProxyArtifactKey, ProxyArtifactMeta};
 use nr_storage::{
     DynStorage, FileContent, StaticStorageFactory,
     local::{LocalConfig, LocalStorageFactory},
@@ -12,7 +15,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::{
-    sync::Barrier,
+    sync::{Barrier, Mutex},
     time::{Duration, sleep, timeout},
 };
 
@@ -33,6 +36,39 @@ async fn local_storage() -> Result<(DynStorage, TempDir)> {
         <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(storage_config)
             .await?;
     Ok((DynStorage::Local(local), tempdir))
+}
+
+#[derive(Clone, Default)]
+struct RecordingIndexer {
+    recorded: Arc<Mutex<Vec<ProxyArtifactMeta>>>,
+    evicted: Arc<Mutex<Vec<ProxyArtifactKey>>>,
+}
+
+impl RecordingIndexer {
+    #[allow(dead_code)]
+    async fn recorded(&self) -> Vec<ProxyArtifactMeta> {
+        self.recorded.lock().await.clone()
+    }
+
+    async fn evicted(&self) -> Vec<ProxyArtifactKey> {
+        self.evicted.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl ProxyIndexing for RecordingIndexer {
+    async fn record_cached_artifact(
+        &self,
+        meta: ProxyArtifactMeta,
+    ) -> Result<(), ProxyIndexingError> {
+        self.recorded.lock().await.push(meta);
+        Ok(())
+    }
+
+    async fn evict_cached_artifact(&self, key: ProxyArtifactKey) -> Result<(), ProxyIndexingError> {
+        self.evicted.lock().await.push(key);
+        Ok(())
+    }
 }
 
 #[tokio::test]
@@ -454,7 +490,8 @@ async fn delete_docker_manifest_removes_all_payloads() -> Result<()> {
     }
 
     let tag_cache_path = tag_path.to_string();
-    let result = delete_docker_package(&storage, repository_id, tag_cache_path.as_str()).await?;
+    let result =
+        delete_docker_package(&storage, repository_id, tag_cache_path.as_str(), None).await?;
     assert_eq!(result.removed_manifests, 2);
     assert_eq!(result.removed_blobs, 3);
 
@@ -528,7 +565,8 @@ async fn delete_docker_manifest_handles_digest_path() -> Result<()> {
     }
 
     let digest_cache_path = digest_path.to_string();
-    let result = delete_docker_package(&storage, repository_id, digest_cache_path.as_str()).await?;
+    let result =
+        delete_docker_package(&storage, repository_id, digest_cache_path.as_str(), None).await?;
     assert_eq!(result.removed_manifests, 1);
     assert_eq!(result.removed_blobs, 2);
 
@@ -538,6 +576,93 @@ async fn delete_docker_manifest_handles_digest_path() -> Result<()> {
             nr_core::storage::StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
         assert!(!storage.file_exists(repository_id, &blob_path).await?);
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_docker_package_notifies_indexer() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository_id = Uuid::new_v4();
+    let repository_name = "library/notify";
+
+    let config_bytes = b"config";
+    let layer_bytes = b"layer";
+    let config_digest = format!("sha256:{:x}", Sha256::digest(config_bytes));
+    let layer_digest = format!("sha256:{:x}", Sha256::digest(layer_bytes));
+
+    let manifest_json = json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "config": {
+            "mediaType": "application/vnd.docker.container.image.v1+json",
+            "size": config_bytes.len(),
+            "digest": config_digest,
+        },
+        "layers": [
+            {
+                "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
+                "size": layer_bytes.len(),
+                "digest": layer_digest,
+            }
+        ],
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest_json)?;
+    let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+    let tag_path =
+        nr_core::storage::StoragePath::from(format!("v2/{}/manifests/latest", repository_name));
+    storage
+        .save_file(
+            repository_id,
+            FileContent::from(manifest_bytes.clone()),
+            &tag_path,
+        )
+        .await?;
+
+    let digest_path = nr_core::storage::StoragePath::from(format!(
+        "v2/{}/manifests/{}",
+        repository_name, manifest_digest
+    ));
+    storage
+        .save_file(
+            repository_id,
+            FileContent::from(manifest_bytes.clone()),
+            &digest_path,
+        )
+        .await?;
+
+    for (digest, bytes) in [
+        (&config_digest, config_bytes.as_slice()),
+        (&layer_digest, layer_bytes.as_slice()),
+    ] {
+        let blob_path =
+            nr_core::storage::StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
+        storage
+            .save_file(repository_id, FileContent::from(bytes.to_vec()), &blob_path)
+            .await?;
+    }
+
+    let indexer = Arc::new(RecordingIndexer::default());
+    delete_docker_package(
+        &storage,
+        repository_id,
+        tag_path.to_string().as_str(),
+        Some(indexer.as_ref()),
+    )
+    .await?;
+
+    let evicted = indexer.evicted().await;
+    assert!(
+        evicted
+            .iter()
+            .any(|key| key.version.as_deref() == Some("latest"))
+    );
+    assert!(
+        evicted
+            .iter()
+            .any(|key| key.version.as_deref() == Some(manifest_digest.as_str()))
+    );
 
     Ok(())
 }
@@ -618,6 +743,7 @@ async fn collect_docker_deletions_batch_deduplicates_shared_layers() -> Result<(
         &storage,
         repository_id,
         &tag_paths.iter().cloned().collect::<Vec<_>>(),
+        None,
     )
     .await?;
 
@@ -725,7 +851,8 @@ async fn collect_docker_deletions_batch_streams_large_batches() -> Result<()> {
     }
 
     let batch =
-        super::collect_docker_deletions_batch(&storage, repository_id, &manifest_paths).await?;
+        super::collect_docker_deletions_batch(&storage, repository_id, &manifest_paths, None)
+            .await?;
 
     assert!(batch.deleted_objects > 0);
     assert_eq!(batch.deleted_packages, LARGE_DELETE_COUNT);
@@ -918,4 +1045,302 @@ fn build_package_page_trims_go_proxy_suffix() {
         response.items[0].cache_path,
         "go-proxy-cache/github.com/example/module/@v/v1.0.0.zip"
     );
+}
+
+#[test]
+fn derive_version_path_handles_strip_mode() {
+    let cache_path = "crates/demo/1.0.0/demo-1.0.0.crate";
+    let derived =
+        super::derive_version_path(cache_path, super::CatalogDeletionMode::StripLastSegment);
+    assert_eq!(derived, Some("crates/demo/1.0.0".to_string()));
+}
+
+#[test]
+fn derive_version_path_returns_none_for_root_objects() {
+    let derived = super::derive_version_path(
+        "single-segment",
+        super::CatalogDeletionMode::StripLastSegment,
+    );
+    assert!(derived.is_none());
+}
+
+#[tokio::test]
+async fn delete_version_records_by_path_normalizes_and_deletes() {
+    let repository_id = Uuid::new_v4();
+    let mut targets = ahash::HashSet::new();
+    targets.insert("Crates/Demo/1.0.0/".to_string());
+    targets.insert("crates/demo/1.0.0".to_string());
+    targets.insert("   ".to_string());
+
+    let mut mock = super::MockCatalogDeletionExecutor::new();
+    mock.expect_delete_paths()
+        .times(1)
+        .withf(move |repo, paths| {
+            repo == &repository_id && paths == &vec!["crates/demo/1.0.0".to_string()]
+        })
+        .returning(|_, _| Box::pin(async { Ok(1) }));
+
+    let deleted = super::delete_version_records_by_path(&mock, repository_id, &targets)
+        .await
+        .expect("deletion succeeds");
+    assert_eq!(deleted, 1);
+}
+
+#[tokio::test]
+async fn delete_version_records_by_path_skips_executor_when_empty() {
+    let repository_id = Uuid::new_v4();
+    let mut mock = super::MockCatalogDeletionExecutor::new();
+    mock.expect_delete_paths().never();
+    let targets: ahash::HashSet<String> = ahash::HashSet::new();
+
+    let deleted = super::delete_version_records_by_path(&mock, repository_id, &targets)
+        .await
+        .expect("skip is ok");
+    assert_eq!(deleted, 0);
+}
+
+mod catalog_db_tests {
+    use super::*;
+    use once_cell::sync::Lazy;
+    use sqlx::PgPool;
+    use std::collections::HashMap;
+    use crate::repository::NewRepository;
+    use testcontainers::{
+        core::{IntoContainerPort, WaitFor},
+        runners::AsyncRunner,
+        ContainerAsync, GenericImage,
+    };
+    use testcontainers::ImageExt;
+
+    use nr_core::{
+        database::entities::{
+            project::{DBProject, NewProject, ProjectDBType, versions::NewVersion},
+            storage::NewDBStorage,
+        },
+        repository::project::ReleaseType,
+        storage::StorageName,
+    };
+
+    const POSTGRES_IMAGE: &str = "postgres";
+    const POSTGRES_TAG: &str = "14-alpine";
+    const POSTGRES_PORT: u16 = 5432;
+
+    struct PostgresFixture {
+        connection_string: String,
+        _container: ContainerAsync<GenericImage>,
+    }
+
+    impl PostgresFixture {
+        fn url(&self) -> &str {
+            &self.connection_string
+        }
+    }
+
+    static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+    static DATABASE_CONTAINER: tokio::sync::OnceCell<PostgresFixture> =
+        tokio::sync::OnceCell::const_new();
+    static DB_MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    async fn postgres_fixture() -> &'static PostgresFixture {
+        DATABASE_CONTAINER
+            .get_or_init(|| async {
+                let base_image = GenericImage::new(POSTGRES_IMAGE, POSTGRES_TAG)
+                    .with_wait_for(WaitFor::seconds(5))
+                    .with_exposed_port(POSTGRES_PORT.tcp());
+
+                let image = base_image
+                    .with_env_var("POSTGRES_USER", "test")
+                    .with_env_var("POSTGRES_PASSWORD", "test")
+                    .with_env_var(
+                        "POSTGRES_INITDB_ARGS",
+                        "--locale=C --encoding=UTF8 --lc-collate=C --lc-ctype=C",
+                    )
+                    .with_startup_timeout(std::time::Duration::from_secs(60));
+
+                let container = image.start().await.expect("start postgres test container");
+                let host = container
+                    .get_host()
+                    .await
+                    .expect("postgres host")
+                    .to_string();
+                let port = container
+                    .get_host_port_ipv4(POSTGRES_PORT)
+                    .await
+                    .expect("postgres mapped port");
+
+                let admin_url = format!("postgres://test:test@{host}:{port}/postgres");
+                let admin_pool = PgPool::connect(&admin_url)
+                    .await
+                    .expect("connect to admin database");
+                sqlx::query("DROP DATABASE IF EXISTS nitro_repo_packages_test")
+                    .execute(&admin_pool)
+                    .await
+                    .expect("drop test database");
+                sqlx::query(
+                    "CREATE DATABASE nitro_repo_packages_test TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'",
+                )
+                .execute(&admin_pool)
+                .await
+                .expect("create test database");
+
+                let connection_string =
+                    format!("postgres://test:test@{host}:{port}/nitro_repo_packages_test");
+
+                PostgresFixture {
+                    connection_string,
+                    _container: container,
+                }
+            })
+            .await
+    }
+
+    async fn fresh_pool() -> PgPool {
+        let fixture = postgres_fixture().await;
+        let pool = PgPool::connect(fixture.url())
+            .await
+            .expect("connect to packages test database");
+
+        let migrate_pool = pool.clone();
+        DB_MIGRATIONS
+            .get_or_init(|| async move {
+                nr_core::database::migration::run_migrations(&migrate_pool)
+                    .await
+                    .expect("run migrations");
+            })
+            .await;
+
+        pool
+    }
+
+    async fn reset_database(pool: &PgPool) {
+        sqlx::query(
+            "TRUNCATE TABLE project_versions, projects, repositories, storages RESTART IDENTITY CASCADE",
+        )
+        .execute(pool)
+        .await
+        .expect("truncate tables");
+    }
+
+    async fn insert_storage(pool: &PgPool) -> Uuid {
+        let storage_name = StorageName::new("primary".to_string()).expect("storage name");
+        let storage = NewDBStorage::new(
+            "Local".into(),
+            storage_name,
+            serde_json::json!({ "path": "/tmp" }),
+        );
+        storage
+            .insert(pool)
+            .await
+            .expect("insert storage")
+            .expect("storage row")
+            .id
+    }
+
+    async fn insert_repository(pool: &PgPool, storage_id: Uuid) -> Uuid {
+        let repo = NewRepository {
+            name: "maven-proxy-test".into(),
+            uuid: Uuid::new_v4(),
+            repository_type: "maven".into(),
+            configs: HashMap::with_hasher(Default::default()),
+        };
+        repo.insert(storage_id, pool)
+            .await
+            .expect("insert repository")
+            .id
+    }
+
+    async fn insert_maven_version(
+        pool: &PgPool,
+        repository_id: Uuid,
+        project_key: &str,
+        version: &str,
+        version_path: &str,
+    ) {
+        let project = if let Some(existing) = DBProject::find_by_project_key(
+            project_key,
+            repository_id,
+            pool,
+        )
+        .await
+        .expect("query project")
+        {
+            existing
+        } else {
+            NewProject {
+                scope: None,
+                project_key: project_key.to_string(),
+                name: project_key.to_string(),
+                description: None,
+                repository: repository_id,
+                storage_path: format!("{project_key}/"),
+            }
+            .insert(pool)
+            .await
+            .expect("insert project")
+        };
+
+        let new_version = NewVersion {
+            project_id: project.id,
+            repository_id,
+            version: version.to_string(),
+            release_type: ReleaseType::Stable,
+            version_path: version_path.to_string(),
+            publisher: None,
+            version_page: None,
+            extra: VersionData::default(),
+        };
+        new_version
+            .insert(pool)
+            .await
+            .expect("insert version");
+    }
+
+    #[tokio::test]
+    async fn fetch_maven_catalog_page_respects_pagination() {
+        let _guard = DB_LOCK.lock().await;
+        let pool = fresh_pool().await;
+        reset_database(&pool).await;
+
+        let storage_id = insert_storage(&pool).await;
+        let repository_id = insert_repository(&pool, storage_id).await;
+
+        insert_maven_version(
+            &pool,
+            repository_id,
+            "com.example:alpha",
+            "1.0.0",
+            "com/example/alpha/1.0.0",
+        )
+        .await;
+        insert_maven_version(
+            &pool,
+            repository_id,
+            "com.example:alpha",
+            "2.0.0",
+            "com/example/alpha/2.0.0",
+        )
+        .await;
+        insert_maven_version(
+            &pool,
+            repository_id,
+            "com.example:bravo",
+            "1.0.0",
+            "com/example/bravo/1.0.0",
+        )
+        .await;
+
+        let first_page = super::fetch_maven_catalog_page(&pool, repository_id, 2, 0)
+            .await
+            .expect("fetch catalog page");
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(first_page[0].version, "1.0.0");
+        assert_eq!(first_page[1].version, "2.0.0");
+
+        let second_page = super::fetch_maven_catalog_page(&pool, repository_id, 2, 2)
+            .await
+            .expect("fetch second page");
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].project_key, "com.example:bravo");
+        assert_eq!(second_page[0].version_path, "com/example/bravo/1.0.0");
+    }
 }

@@ -62,6 +62,17 @@
         </v-alert>
       </v-card-text>
 
+      <v-card-text
+        v-if="!isLoading && indexingWarning"
+        class="pt-0 px-4">
+        <div
+          class="packages__indexing-alert"
+          role="status"
+          data-testid="packages-indexing-warning">
+          {{ indexingWarning }}
+        </div>
+      </v-card-text>
+
       <v-data-table
         v-if="!isLoading && !error && totalPackages > 0 && visiblePackages.length > 0"
         :headers="headers"
@@ -154,6 +165,7 @@ const props = defineProps<{
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
+const indexingWarning = ref<string | null>(null);
 const currentPage = ref(1);
 const perPage = ref(50);
 const totalPackages = ref(0);
@@ -313,6 +325,9 @@ const timestampColumnTitle = computed(() =>
 );
 
 const emptyRepositoryMessage = computed(() => {
+  if (indexingWarning.value) {
+    return "Repository indexing in progress. Use Reindex or upload a new package to finish cataloging.";
+  }
   if (isDockerRepository.value) {
     if (isDockerProxy.value) {
       return "No images cached yet. Pull an image through this proxy to populate the list.";
@@ -330,11 +345,14 @@ async function loadPackages() {
   }
   isLoading.value = true;
   error.value = null;
+  indexingWarning.value = null;
   try {
     const response = await http.get(`/api/repository/${props.repositoryId}/packages`, {
       params: { page: currentPage.value, per_page: perPage.value },
     });
     const data = response.data ?? {};
+    const warning = response.headers?.["x-nitro-warning"];
+    indexingWarning.value = typeof warning === "string" ? warning : null;
     const items: PackageEntry[] = (data.items ?? []).map((item: any) => ({
       name: item.name,
       size: item.size,
@@ -414,7 +432,8 @@ function handleItemsPerPageChange(value: number) {
   if (typeof value !== "number") {
     return;
   }
-  const nextValue = perPageOptions.includes(value) ? value : perPageOptions[0];
+  const fallbackPerPage = perPageOptions[0] ?? perPage.value;
+  const nextValue = perPageOptions.includes(value) ? value : fallbackPerPage;
   if (perPage.value === nextValue) {
     return;
   }
@@ -487,5 +506,13 @@ function formatBytes(bytes: number): string {
 
 .packages__deletion-alert {
   margin: 0;
+}
+
+.packages__indexing-alert {
+  border-left: 4px solid var(--v-theme-primary, #4c6ef5);
+  padding: 0.5rem 0.75rem;
+  background: rgba(76, 110, 245, 0.08);
+  border-radius: 4px;
+  font-size: 0.9rem;
 }
 </style>

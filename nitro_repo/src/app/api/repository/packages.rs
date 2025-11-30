@@ -1,9 +1,10 @@
 use std::{
     cmp::{Ordering, Reverse, min},
     collections::{BTreeMap, BinaryHeap},
+    sync::Arc,
 };
 
-use futures::{StreamExt, stream};
+use futures::{StreamExt, future::BoxFuture, stream};
 
 use axum::{
     Json,
@@ -12,13 +13,14 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, FixedOffset};
+use http::header::HeaderValue;
 use nr_storage::{
     DynStorage, FileType, Storage, StorageError, StorageFile, StorageFileMeta, s3::S3Storage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, types::Json as SqlxJson};
+use sqlx::{PgPool, Row, types::Json as SqlxJson};
 use tokio::io::AsyncReadExt;
 use tracing::{debug, instrument, warn};
 use utoipa::{IntoParams, ToSchema};
@@ -34,18 +36,29 @@ use crate::{
     repository::{
         DynRepository, Repository,
         docker::{
-            metadata::collect_manifest_entries,
+            DockerRegistry,
+            metadata::{collect_manifest_entries, docker_package_key, split_manifest_cache_path},
             types::{Manifest as DockerManifest, MediaType},
         },
+        go::GoRepository,
         helm::hosted::HelmHosted,
         helm::{DeletePackageEntry, HelmChartVersionExtra, HelmRepository, HelmRepositoryError},
+        npm::NPMRegistry,
+        proxy_indexing::{ProxyIndexing, ProxyIndexingError},
+        python::PythonRepository,
         utils::can_read_repository_with_auth,
     },
+    search::PackageSearchRepository,
     utils::ResponseBuilder,
 };
 use ahash::{HashSet, HashSetExt};
-use nr_core::repository::project::{CargoPackageMetadata, DebPackageMetadata, VersionData};
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
+use nr_core::{
+    repository::project::{
+        CargoPackageMetadata, DebPackageMetadata, ProxyArtifactKey, VersionData,
+    },
+    storage::StoragePath,
+};
 
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -291,6 +304,40 @@ enum PackageStrategy {
     DebHosted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogDeletionMode {
+    None,
+    ExactPath,
+    StripLastSegment,
+}
+
+#[cfg_attr(test, mockall::automock)]
+trait CatalogDeletionExecutor {
+    fn delete_paths<'a>(
+        &'a self,
+        repository_id: Uuid,
+        normalized_paths: Vec<String>,
+    ) -> BoxFuture<'a, Result<u64, sqlx::Error>>;
+}
+
+struct SqlCatalogDeletionExecutor<'a> {
+    database: &'a PgPool,
+}
+
+impl<'a> CatalogDeletionExecutor for SqlCatalogDeletionExecutor<'a> {
+    fn delete_paths<'b>(
+        &'b self,
+        repository_id: Uuid,
+        normalized_paths: Vec<String>,
+    ) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
+        Box::pin(sql_delete_project_versions(
+            self.database,
+            repository_id,
+            normalized_paths,
+        ))
+    }
+}
+
 fn package_strategy(repository: &DynRepository) -> PackageStrategy {
     match repository {
         DynRepository::Maven(maven_repo) => match maven_repo {
@@ -323,6 +370,113 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             base: Some("packages/"),
         },
     }
+}
+
+fn catalog_deletion_mode(repository: &DynRepository) -> CatalogDeletionMode {
+    match repository {
+        DynRepository::Cargo(_) => CatalogDeletionMode::StripLastSegment,
+        DynRepository::Python(python_repo) => match python_repo {
+            crate::repository::python::PythonRepository::Hosted(_) => {
+                CatalogDeletionMode::StripLastSegment
+            }
+            _ => CatalogDeletionMode::None,
+        },
+        DynRepository::NPM(npm_repo) => match npm_repo {
+            crate::repository::npm::NPMRegistry::Hosted(_) => CatalogDeletionMode::StripLastSegment,
+            _ => CatalogDeletionMode::None,
+        },
+        DynRepository::Php(_) => CatalogDeletionMode::StripLastSegment,
+        DynRepository::Deb(_) => CatalogDeletionMode::ExactPath,
+        DynRepository::Maven(_) => CatalogDeletionMode::StripLastSegment,
+        // Helm uses repository-specific delete handlers that already update the catalog.
+        DynRepository::Helm(_) => CatalogDeletionMode::None,
+        _ => CatalogDeletionMode::None,
+    }
+}
+
+fn derive_version_path(cache_path: &str, mode: CatalogDeletionMode) -> Option<String> {
+    match mode {
+        CatalogDeletionMode::None => None,
+        CatalogDeletionMode::ExactPath => {
+            let trimmed = cache_path.trim().trim_end_matches('/');
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        CatalogDeletionMode::StripLastSegment => {
+            let components: Vec<String> = StoragePath::from(cache_path)
+                .into_iter()
+                .map(String::from)
+                .collect();
+            if components.len() <= 1 {
+                return None;
+            }
+            let stripped = components[..components.len() - 1].join("/");
+            if stripped.is_empty() {
+                None
+            } else {
+                Some(stripped)
+            }
+        }
+    }
+}
+
+fn normalize_catalog_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.trim_end_matches('/').to_lowercase())
+}
+
+async fn delete_version_records_by_path<E: CatalogDeletionExecutor + ?Sized>(
+    executor: &E,
+    repository_id: Uuid,
+    version_paths: &HashSet<String>,
+) -> Result<u64, sqlx::Error> {
+    if version_paths.is_empty() {
+        return Ok(0);
+    }
+    let mut normalized = Vec::with_capacity(version_paths.len());
+    for path in version_paths {
+        if let Some(value) = normalize_catalog_path(path) {
+            normalized.push(value);
+        }
+    }
+    if normalized.is_empty() {
+        return Ok(0);
+    }
+    normalized.sort();
+    normalized.dedup();
+
+    executor.delete_paths(repository_id, normalized).await
+}
+
+async fn sql_delete_project_versions(
+    database: &PgPool,
+    repository_id: Uuid,
+    normalized_paths: Vec<String>,
+) -> Result<u64, sqlx::Error> {
+    let mut total_deleted = 0u64;
+    for path in normalized_paths {
+        let rows = sqlx::query(
+            r#"
+            DELETE FROM project_versions
+            WHERE repository_id = $1
+              AND LOWER(path) = $2
+            RETURNING id
+            "#,
+        )
+        .bind(repository_id)
+        .bind(&path)
+        .fetch_all(database)
+        .await?;
+        total_deleted += rows.len() as u64;
+    }
+
+    Ok(total_deleted)
 }
 
 pub fn package_routes() -> axum::Router<NitroRepo> {
@@ -367,7 +521,10 @@ pub async fn list_cached_packages(
     {
         return Ok(MissingPermission::ReadRepository(repository.id()).into_response());
     }
-    match package_strategy(&repository) {
+    let searcher = PackageSearchRepository::new(&site.database);
+    let has_index_rows = searcher.repository_has_index_rows(repository.id()).await?;
+    let repository_name = repository.name();
+    let mut response = match package_strategy(&repository) {
         PackageStrategy::PackagesDirectory { base } => {
             let storage = repository.get_storage();
             if let DynStorage::S3(s3_storage) = storage.clone() {
@@ -387,7 +544,7 @@ pub async fn list_cached_packages(
             list_maven_hosted_packages(site, repository, query.page, query.per_page).await
         }
         PackageStrategy::MavenProxy => {
-            list_maven_proxy_packages(repository, query.page, query.per_page).await
+            list_maven_proxy_packages(site, repository, query.page, query.per_page).await
         }
         PackageStrategy::PythonHosted => {
             let storage = repository.get_storage();
@@ -422,7 +579,18 @@ pub async fn list_cached_packages(
         PackageStrategy::DebHosted => {
             list_deb_packages(site, repository, query.page, query.per_page).await
         }
+    }?;
+
+    if !has_index_rows {
+        if let Ok(value) = HeaderValue::from_str(&format!(
+            "Repository awaiting indexing: {}",
+            repository_name
+        )) {
+            response.headers_mut().insert("X-Nitro-Warning", value);
+        }
     }
+
+    Ok(response)
 }
 
 fn should_ignore(name: &str) -> bool {
@@ -575,6 +743,36 @@ struct MavenVersionRow {
     project_key: String,
     version: String,
     version_path: String,
+    version_data: SqlxJson<VersionData>,
+    updated_at: DateTime<FixedOffset>,
+}
+
+async fn fetch_maven_catalog_page(
+    database: &PgPool,
+    repository_id: Uuid,
+    per_page: usize,
+    offset: i64,
+) -> Result<Vec<MavenVersionRow>, sqlx::Error> {
+    sqlx::query_as::<_, MavenVersionRow>(
+        r#"
+        SELECT
+            p.key AS project_key,
+            pv.version AS version,
+            pv.path AS version_path,
+            pv.extra AS version_data,
+            pv.updated_at
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        ORDER BY LOWER(p.key) COLLATE "C", LOWER(pv.version) COLLATE "C"
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(repository_id)
+    .bind(per_page as i64)
+    .bind(offset)
+    .fetch_all(database)
+    .await
 }
 
 fn deb_metadata(data: &VersionData) -> Option<DebPackageMetadata> {
@@ -1136,6 +1334,7 @@ async fn list_maven_hosted_packages(
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
+    let repository_id = repository.id();
 
     let total_versions: i64 = sqlx::query_scalar(
         r#"
@@ -1145,7 +1344,7 @@ async fn list_maven_hosted_packages(
         WHERE p.repository_id = $1
         "#,
     )
-    .bind(repository.id())
+    .bind(repository_id)
     .fetch_one(&site.database)
     .await?;
 
@@ -1169,29 +1368,11 @@ async fn list_maven_hosted_packages(
         return Ok(ResponseBuilder::ok().json(&empty));
     }
 
-    let rows = sqlx::query_as::<_, MavenVersionRow>(
-        r#"
-        SELECT
-            p.key AS project_key,
-            pv.version AS version,
-            pv.path AS version_path
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        ORDER BY p.key ASC, pv.version ASC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(repository.id())
-    .bind(per_page as i64)
-    .bind(offset)
-    .fetch_all(&site.database)
-    .await?;
+    let rows = fetch_maven_catalog_page(&site.database, repository_id, per_page, offset).await?;
 
     let storage = repository.get_storage();
     let version_chunks = map_ordered_concurrent(rows, MAX_STORAGE_CONCURRENCY, move |row| {
         let storage = storage.clone();
-        let repository_id = repository.id();
         async move { load_maven_version_entries(storage, repository_id, row).await }
     })
     .await?;
@@ -1216,43 +1397,80 @@ async fn load_maven_version_entries(
         project_key,
         version,
         version_path,
+        version_data,
+        updated_at: _updated_at,
     } = row;
+    let version_data = version_data.0;
+    let package_label = format!("{}:{}", project_key, version);
+    let cache_prefix = version_path.trim_end_matches('/');
     let normalized_path = ensure_trailing_slash(&version_path);
     let storage_path = nr_core::storage::StoragePath::from(normalized_path);
-    let Some(StorageFile::Directory { files, .. }) =
+
+    if let Some(StorageFile::Directory { files, .. }) =
         storage.open_file(repository_id, &storage_path).await?
-    else {
-        return Ok(Vec::new());
-    };
+    {
+        let mut file_entries: Vec<_> = files.iter().collect();
+        file_entries.sort_by(|a, b| a.name().cmp(b.name()));
 
-    let cache_prefix = version_path.trim_end_matches('/');
-    let package_label = format!("{}:{}", project_key, version);
-
-    let mut file_entries: Vec<_> = files.iter().collect();
-    file_entries.sort_by(|a, b| a.name().cmp(b.name()));
-
-    let mut items = Vec::new();
-    for meta in file_entries {
-        if should_ignore(meta.name()) {
-            continue;
+        let mut items = Vec::new();
+        for meta in file_entries {
+            if should_ignore(meta.name()) {
+                continue;
+            }
+            if let FileType::File(file_meta) = meta.file_type() {
+                let cache_path = if cache_prefix.is_empty() {
+                    meta.name().to_string()
+                } else {
+                    format!("{cache_prefix}/{}", meta.name())
+                };
+                items.push(PackageFileEntry {
+                    package: package_label.clone(),
+                    name: meta.name().to_string(),
+                    cache_path,
+                    size: file_meta.file_size,
+                    modified: meta.modified().clone(),
+                });
+            }
         }
-        if let FileType::File(file_meta) = meta.file_type() {
-            let cache_path = if cache_prefix.is_empty() {
-                meta.name().to_string()
-            } else {
-                format!("{cache_prefix}/{}", meta.name())
-            };
-            items.push(PackageFileEntry {
-                package: package_label.clone(),
-                name: meta.name().to_string(),
-                cache_path,
-                size: file_meta.file_size,
-                modified: meta.modified().clone(),
-            });
-        }
+        return Ok(items);
     }
 
-    Ok(items)
+    if let Some(proxy_meta) = version_data.proxy_artifact() {
+        let modified: DateTime<FixedOffset> = proxy_meta.fetched_at.into();
+        let file_name = proxy_meta
+            .cache_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&proxy_meta.cache_path)
+            .to_string();
+        return Ok(vec![PackageFileEntry {
+            package: package_label,
+            name: file_name,
+            cache_path: proxy_meta.cache_path.clone(),
+            size: proxy_meta.size.unwrap_or_default(),
+            modified,
+        }]);
+    }
+
+    let direct_path = nr_core::storage::StoragePath::from(version_path.as_str());
+    if let Some(StorageFile::File { meta, .. }) =
+        storage.open_file(repository_id, &direct_path).await?
+    {
+        let name = version_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&version_path)
+            .to_string();
+        return Ok(vec![PackageFileEntry {
+            package: package_label,
+            name,
+            cache_path: version_path,
+            size: meta.file_type.file_size,
+            modified: meta.modified,
+        }]);
+    }
+
+    Ok(Vec::new())
 }
 
 async fn list_deb_packages(
@@ -1340,13 +1558,60 @@ async fn list_deb_packages(
 }
 
 async fn list_maven_proxy_packages(
+    site: NitroRepo,
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
 ) -> Result<Response, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let offset = ((current_page - 1) * per_page) as i64;
+    let repository_id = repository.id();
+
+    let total_versions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM project_versions pv
+        WHERE pv.repository_id = $1
+        "#,
+    )
+    .bind(repository_id)
+    .fetch_one(&site.database)
+    .await?;
+
+    if total_versions == 0 {
+        let storage = repository.get_storage();
+        let response =
+            build_maven_proxy_package_list(&storage, repository_id, page, per_page_raw).await?;
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
+
+    if offset >= total_versions {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions as usize,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    let rows = fetch_maven_catalog_page(&site.database, repository_id, per_page, offset).await?;
     let storage = repository.get_storage();
-    let response =
-        build_maven_proxy_package_list(&storage, repository.id(), page, per_page_raw).await?;
+    let version_chunks = map_ordered_concurrent(rows, MAX_STORAGE_CONCURRENCY, move |row| {
+        let storage = storage.clone();
+        async move { load_maven_version_entries(storage, repository_id, row).await }
+    })
+    .await?;
+
+    let items: Vec<PackageFileEntry> = version_chunks.into_iter().flatten().collect();
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions as usize,
+        items,
+    };
     Ok(ResponseBuilder::ok().json(&response))
 }
 
@@ -1636,12 +1901,24 @@ pub enum DockerDeletionError {
     Storage(#[from] nr_storage::StorageError),
     #[error("invalid manifest: {0}")]
     InvalidManifest(String),
+    #[error("indexing error: {0}")]
+    Indexing(#[from] ProxyIndexingError),
+}
+
+fn docker_proxy_key_from_path(path: &str) -> Option<ProxyArtifactKey> {
+    let (repository, reference) = split_manifest_cache_path(path)?;
+    Some(ProxyArtifactKey {
+        package_key: docker_package_key(&repository),
+        version: Some(reference),
+        cache_path: Some(path.to_string()),
+    })
 }
 
 pub async fn delete_docker_package(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,
     cache_path: &str,
+    indexer: Option<&dyn ProxyIndexing>,
 ) -> Result<DockerDeletionResult, DockerDeletionError> {
     let (repository_name, _) =
         split_manifest_cache_path(cache_path).ok_or(DockerDeletionError::InvalidManifestPath)?;
@@ -1670,6 +1947,14 @@ pub async fn delete_docker_package(
                 // Nested manifest already removed; skip silently.
             }
             Err(err) => return Err(err),
+        }
+    }
+
+    if let Some(indexer) = indexer {
+        for path in paths_to_delete.iter() {
+            if let Some(key) = docker_proxy_key_from_path(path) {
+                indexer.evict_cached_artifact(key).await?;
+            }
         }
     }
 
@@ -1709,7 +1994,6 @@ struct DockerBatchDeletion {
     deleted_objects: usize,
 }
 
-#[derive(Debug)]
 struct StreamingDockerBatchDeletion {
     storage: nr_storage::DynStorage,
     repository_id: Uuid,
@@ -1720,10 +2004,15 @@ struct StreamingDockerBatchDeletion {
     rejected: Vec<String>,
     deleted_packages: usize,
     deleted_objects: usize,
+    indexer: Option<Arc<dyn ProxyIndexing>>,
 }
 
 impl StreamingDockerBatchDeletion {
-    fn new(storage: &nr_storage::DynStorage, repository_id: Uuid) -> Self {
+    fn new(
+        storage: &nr_storage::DynStorage,
+        repository_id: Uuid,
+        indexer: Option<Arc<dyn ProxyIndexing>>,
+    ) -> Self {
         Self {
             storage: storage.clone(),
             repository_id,
@@ -1734,6 +2023,7 @@ impl StreamingDockerBatchDeletion {
             rejected: Vec::new(),
             deleted_packages: 0,
             deleted_objects: 0,
+            indexer,
         }
     }
 
@@ -1742,9 +2032,18 @@ impl StreamingDockerBatchDeletion {
             return Ok(());
         }
 
-        let paths: Vec<_> = self
-            .paths_to_delete
-            .drain()
+        let drained: Vec<String> = self.paths_to_delete.drain().collect();
+
+        if let Some(indexer) = self.indexer.as_ref() {
+            for path in drained.iter() {
+                if let Some(key) = docker_proxy_key_from_path(path) {
+                    indexer.evict_cached_artifact(key).await?;
+                }
+            }
+        }
+
+        let paths: Vec<_> = drained
+            .iter()
             .map(|p| nr_core::storage::StoragePath::from(p.as_str()))
             .collect();
 
@@ -1780,15 +2079,16 @@ impl From<StreamingDockerBatchDeletion> for DockerBatchDeletion {
 /// and manifest digests to minimize downstream S3 delete calls.
 #[instrument(
     name = "collect_docker_deletions_batch",
-    skip(storage, paths),
+    skip(storage, paths, indexer),
     fields(repo_id = %repository_id, path_count = paths.len())
 )]
 async fn collect_docker_deletions_batch(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,
     paths: &[String],
+    indexer: Option<Arc<dyn ProxyIndexing>>,
 ) -> Result<DockerBatchDeletion, DockerDeletionError> {
-    let mut batch = StreamingDockerBatchDeletion::new(storage, repository_id);
+    let mut batch = StreamingDockerBatchDeletion::new(storage, repository_id, indexer);
 
     for path in paths {
         if !is_valid_docker_manifest_path(path) {
@@ -1899,21 +2199,6 @@ async fn delete_helm_package(
         .delete_chart_versions(std::slice::from_ref(&entry))
         .await?;
     Ok(removed > 0)
-}
-
-fn split_manifest_cache_path(path: &str) -> Option<(String, String)> {
-    if !path.starts_with("v2/") {
-        return None;
-    }
-    let without_prefix = &path[3..];
-    let marker = "/manifests/";
-    let split_index = without_prefix.find(marker)?;
-    let repository = &without_prefix[..split_index];
-    let reference = &without_prefix[split_index + marker.len()..];
-    if repository.is_empty() || reference.is_empty() {
-        return None;
-    }
-    Some((repository.to_string(), reference.to_string()))
 }
 
 fn collect_blob_path(
@@ -2085,15 +2370,45 @@ pub async fn delete_cached_packages(
     } else {
         None
     };
+    let python_proxy = match repository.clone() {
+        DynRepository::Python(PythonRepository::Proxy(proxy)) => Some(proxy),
+        _ => None,
+    };
+    let npm_proxy = match repository.clone() {
+        DynRepository::NPM(NPMRegistry::Proxy(proxy)) => Some(proxy),
+        _ => None,
+    };
+    let go_proxy = match repository.clone() {
+        DynRepository::Go(GoRepository::Proxy(proxy)) => Some(proxy),
+        _ => None,
+    };
+    let maven_proxy = match repository.clone() {
+        DynRepository::Maven(crate::repository::maven::MavenRepository::Proxy(proxy)) => {
+            Some(proxy)
+        }
+        _ => None,
+    };
+    let docker_proxy = match repository.clone() {
+        DynRepository::Docker(DockerRegistry::Proxy(proxy)) => Some(proxy),
+        _ => None,
+    };
     let storage = repository.get_storage();
     let mut deleted = 0usize;
     let mut missing = Vec::new();
     let mut rejected = Vec::new();
+    let catalog_mode = catalog_deletion_mode(&repository);
+    let mut catalog_targets: HashSet<String> = HashSet::new();
 
     if let PackageStrategy::Docker = strategy {
-        let batch = collect_docker_deletions_batch(&storage, repository.id(), &request.paths)
-            .await
-            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+        let docker_indexer = docker_proxy.as_ref().map(|proxy| proxy.indexer().clone());
+        let batch = collect_docker_deletions_batch(
+            &storage,
+            repository.id(),
+            &request.paths,
+            docker_indexer,
+        )
+        .await
+        .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
 
         debug!(
             paths = request.paths.len(),
@@ -2166,7 +2481,36 @@ pub async fn delete_cached_packages(
 
             let storage_path = nr_core::storage::StoragePath::from(path.as_str());
             match storage.delete_file(repository.id(), &storage_path).await {
-                Ok(true) => deleted += 1,
+                Ok(true) => {
+                    deleted += 1;
+                    if let Some(version_path) = derive_version_path(path, catalog_mode) {
+                        catalog_targets.insert(version_path);
+                    }
+                    if let Some(proxy) = python_proxy.as_ref() {
+                        proxy
+                            .handle_external_eviction(&storage_path)
+                            .await
+                            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+                    }
+                    if let Some(proxy) = npm_proxy.as_ref() {
+                        proxy
+                            .handle_external_eviction(&storage_path)
+                            .await
+                            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+                    }
+                    if let Some(proxy) = go_proxy.as_ref() {
+                        proxy
+                            .handle_external_eviction(&storage_path)
+                            .await
+                            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+                    }
+                    if let Some(proxy) = maven_proxy.as_ref() {
+                        proxy
+                            .handle_external_eviction(&storage_path)
+                            .await
+                            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+                    }
+                }
                 Ok(false) => missing.push(path.clone()),
                 Err(err) => {
                     warn!(?err, path, "Failed to delete cached package");
@@ -2174,6 +2518,15 @@ pub async fn delete_cached_packages(
                 }
             }
         }
+    }
+
+    if catalog_mode != CatalogDeletionMode::None && !catalog_targets.is_empty() {
+        let executor = SqlCatalogDeletionExecutor {
+            database: &site.database,
+        };
+        delete_version_records_by_path(&executor, repository.id(), &catalog_targets)
+            .await
+            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
     }
 
     let response = PackageDeleteResponse {

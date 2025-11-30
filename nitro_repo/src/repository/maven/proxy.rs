@@ -1,10 +1,12 @@
 use std::{
+    fmt,
     ops::Deref,
     sync::{Arc, atomic::AtomicBool},
 };
 
 use axum::{body::Body, response::Response};
 use bytes::Bytes;
+use chrono::Utc;
 use http::{
     StatusCode,
     header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED},
@@ -15,6 +17,7 @@ use nr_core::{
     repository::{
         Visibility,
         config::{RepositoryConfigType as _, repository_page::RepositoryPageType},
+        project::{ProxyArtifactKey, ProxyArtifactMeta},
         proxy_url::ProxyURL,
     },
     storage::StoragePath,
@@ -32,7 +35,10 @@ use super::{
 };
 use crate::{
     app::NitroRepo,
-    repository::{Repository, RepositoryAuthConfigType},
+    repository::{
+        Repository, RepositoryAuthConfigType,
+        proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
+    },
 };
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MavenProxyConfig {
@@ -66,7 +72,6 @@ fn project_download_files(pom: &Pom) -> Result<Vec<String>, MavenError> {
         format!("{}-{}-javadoc.jar", pom.artifact_id, version),
     ])
 }
-#[derive(Debug)]
 pub struct MavenProxyInner {
     pub storage: DynStorage,
     pub site: NitroRepo,
@@ -75,6 +80,18 @@ pub struct MavenProxyInner {
     pub visibility: RwLock<Visibility>,
     pub active: AtomicBool,
     pub config: RwLock<MavenProxyConfig>,
+    pub indexer: Arc<dyn ProxyIndexing>,
+}
+
+impl fmt::Debug for MavenProxyInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MavenProxyInner")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("active", &self.active)
+            .field("visibility", &self.visibility.read())
+            .finish()
+    }
 }
 #[derive(Debug, Clone)]
 pub struct MavenProxy(Arc<MavenProxyInner>);
@@ -91,6 +108,8 @@ impl MavenProxy {
         site: NitroRepo,
         proxy_config: MavenProxyConfig,
     ) -> Result<Self, RepositoryFactoryError> {
+        let indexer: Arc<dyn ProxyIndexing> =
+            Arc::new(DatabaseProxyIndexer::new(site.clone(), repository.id));
         let inner = MavenProxyInner {
             id: repository.id,
             name: repository.name.into(),
@@ -99,17 +118,16 @@ impl MavenProxy {
             config: RwLock::new(proxy_config),
             storage,
             site,
+            indexer,
         };
         Ok(Self(Arc::new(inner)))
     }
-    async fn save_bytes(
-        &self,
-        bytes: Bytes,
-        to: &StoragePath,
-    ) -> Result<(), nr_storage::StorageError> {
+    async fn save_bytes(&self, bytes: Bytes, to: &StoragePath) -> Result<(), MavenError> {
+        let size = bytes.len() as u64;
         self.storage
             .save_file(self.id, FileContent::Bytes(bytes), to)
             .await?;
+        record_maven_proxy_cache_hit(Some(self.indexer().as_ref()), to, size).await?;
         Ok(())
     }
     #[instrument(skip(self), fields(nr.repository.id = %self.id, nr.repository.name = %self.name))]
@@ -196,15 +214,22 @@ impl MavenProxy {
                         };
                     });
                 }
-                self.storage
-                    .save_file(self.id, FileContent::Bytes(response_bytes), &path)
-                    .await?;
+                self.save_bytes(response_bytes, &path).await?;
                 return Ok(self.storage.open_file(self.id, &path).await?);
             } else {
                 warn!(?response, ?url_string, "Failed to proxy request");
             }
         }
         Ok(None)
+    }
+
+    fn indexer(&self) -> &Arc<dyn ProxyIndexing> {
+        &self.0.indexer
+    }
+
+    pub async fn handle_external_eviction(&self, path: &StoragePath) -> Result<(), MavenError> {
+        evict_maven_proxy_cache_entry(Some(self.indexer().as_ref()), path).await?;
+        Ok(())
     }
 
     #[instrument(skip(self), fields(nr.repository.id = %self.id, nr.repository.name = %self.name))]
@@ -263,6 +288,170 @@ impl MavenProxy {
         }
 
         Ok(None)
+    }
+}
+
+fn parse_maven_coordinates(path: &StoragePath) -> Option<(String, String, String)> {
+    let components: Vec<String> = path.clone().into_iter().map(|p| p.to_string()).collect();
+    if components.len() < 4 {
+        return None;
+    }
+    let file_name = components.last()?.to_string();
+    let lowered = file_name.to_ascii_lowercase();
+    if lowered == "maven-metadata.xml"
+        || lowered.ends_with(".sha1")
+        || lowered.ends_with(".sha256")
+        || lowered.ends_with(".md5")
+        || lowered.ends_with(".asc")
+    {
+        return None;
+    }
+    let version = components.get(components.len() - 2)?.to_string();
+    if version.is_empty() {
+        return None;
+    }
+    let artifact = components.get(components.len() - 3)?.to_string();
+    if artifact.is_empty() {
+        return None;
+    }
+    let group_segments = &components[..components.len() - 3];
+    if group_segments.is_empty() {
+        return None;
+    }
+    let group = group_segments.join(".");
+    if group.is_empty() {
+        return None;
+    }
+    Some((group, artifact, version))
+}
+
+pub(super) fn maven_proxy_meta_from_cache_path(
+    path: &StoragePath,
+    size: u64,
+) -> Option<ProxyArtifactMeta> {
+    let (group, artifact, version) = parse_maven_coordinates(path)?;
+    let package_key = format!("{}:{}", group, artifact);
+    Some(
+        ProxyArtifactMeta::builder(artifact, package_key, path.to_string())
+            .version(version)
+            .size(size)
+            .fetched_at(Utc::now())
+            .build(),
+    )
+}
+
+pub(super) fn maven_proxy_key_from_cache_path(path: &StoragePath) -> Option<ProxyArtifactKey> {
+    let (group, artifact, version) = parse_maven_coordinates(path)?;
+    Some(ProxyArtifactKey {
+        package_key: format!("{}:{}", group, artifact),
+        version: Some(version),
+        cache_path: Some(path.to_string()),
+    })
+}
+
+pub(super) async fn record_maven_proxy_cache_hit(
+    indexer: Option<&dyn ProxyIndexing>,
+    path: &StoragePath,
+    size: u64,
+) -> Result<(), ProxyIndexingError> {
+    let Some(indexer) = indexer else {
+        return Ok(());
+    };
+    if let Some(meta) = maven_proxy_meta_from_cache_path(path, size) {
+        indexer.record_cached_artifact(meta).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn evict_maven_proxy_cache_entry(
+    indexer: Option<&dyn ProxyIndexing>,
+    path: &StoragePath,
+) -> Result<(), ProxyIndexingError> {
+    let Some(indexer) = indexer else {
+        return Ok(());
+    };
+    if let Some(key) = maven_proxy_key_from_cache_path(path) {
+        indexer.evict_cached_artifact(key).await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use nr_core::repository::project::{ProxyArtifactKey, ProxyArtifactMeta};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct RecordingIndexer {
+        recorded: Arc<Mutex<Vec<ProxyArtifactMeta>>>,
+        evicted: Arc<Mutex<Vec<ProxyArtifactKey>>>,
+    }
+
+    impl RecordingIndexer {
+        async fn recorded(&self) -> Vec<ProxyArtifactMeta> {
+            self.recorded.lock().await.clone()
+        }
+
+        async fn evicted(&self) -> Vec<ProxyArtifactKey> {
+            self.evicted.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl ProxyIndexing for RecordingIndexer {
+        async fn record_cached_artifact(
+            &self,
+            meta: ProxyArtifactMeta,
+        ) -> Result<(), ProxyIndexingError> {
+            self.recorded.lock().await.push(meta);
+            Ok(())
+        }
+
+        async fn evict_cached_artifact(
+            &self,
+            key: ProxyArtifactKey,
+        ) -> Result<(), ProxyIndexingError> {
+            self.evicted.lock().await.push(key);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn maven_proxy_meta_parses_coordinates() {
+        let path = StoragePath::from("com/example/app/1.2.3/app-1.2.3.jar");
+        let meta = maven_proxy_meta_from_cache_path(&path, 2048).expect("meta");
+        assert_eq!(meta.package_name, "app");
+        assert_eq!(meta.package_key, "com.example:app");
+        assert_eq!(meta.version.as_deref(), Some("1.2.3"));
+        assert_eq!(meta.cache_path, path.to_string());
+        assert_eq!(meta.size, Some(2048));
+    }
+
+    #[tokio::test]
+    async fn record_maven_proxy_cache_hit_invokes_indexer() {
+        let path = StoragePath::from("com/example/app/1.2.3/app-1.2.3.pom");
+        let indexer = Arc::new(RecordingIndexer::default());
+        record_maven_proxy_cache_hit(Some(indexer.clone().as_ref()), &path, 1024)
+            .await
+            .expect("recording succeeds");
+        let recorded = indexer.recorded().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].version.as_deref(), Some("1.2.3"));
+    }
+
+    #[tokio::test]
+    async fn evict_maven_proxy_cache_entry_invokes_indexer() {
+        let path = StoragePath::from("com/example/app/1.2.3/app-1.2.3.pom");
+        let indexer = Arc::new(RecordingIndexer::default());
+        evict_maven_proxy_cache_entry(Some(indexer.clone().as_ref()), &path)
+            .await
+            .expect("eviction succeeds");
+        let evicted = indexer.evicted().await;
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].version.as_deref(), Some("1.2.3"));
     }
 }
 

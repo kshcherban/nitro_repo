@@ -1,20 +1,29 @@
 <template>
-  <div
-    @click="click"
-    class="browseItem"
-    data-type="folder">
-    <div class="itemAndName">
-      <font-awesome-icon icon="fa-solid fa-folder" />
-      {{ props.file.name }}
-    </div>
-  </div>
+  <tr
+    class="browse__row browse__row--directory"
+    data-type="folder"
+    role="button"
+    tabindex="0"
+    @click="activate"
+    @keyup.enter.prevent="activate"
+    @keyup.space.prevent="activate">
+    <td class="browse__cell browse__cell--name">
+      <div class="browse__cell-content">
+        <font-awesome-icon icon="fa-solid fa-folder" />
+        <span class="browse__name">{{ props.file.name }}</span>
+      </div>
+    </td>
+    <td class="browse__cell browse__cell--meta">
+      {{ directorySummary }}
+    </td>
+  </tr>
 </template>
 
 <script setup lang="ts">
 import router from "@/router";
 import { fixCurrentPath, type RawDirectory } from "@/types/browse";
 import { type RepositoryWithStorageName } from "@/types/repository";
-import { type PropType } from "vue";
+import { computed, type PropType } from "vue";
 import "./browse.scss";
 
 const props = defineProps({
@@ -34,7 +43,15 @@ const props = defineProps({
 const fixedPath = fixCurrentPath(props.currentPath);
 const browseRoute = `/browse/${props.repository.id}/${fixedPath}/${props.file.name}`;
 
-function click() {
+const directorySummary = computed(() => {
+  const count = props.file.number_of_files;
+  if (typeof count !== "number") {
+    return "";
+  }
+  return `${count} item${count === 1 ? "" : "s"}`;
+});
+
+function activate() {
   router.push(browseRoute);
 }
 </script>

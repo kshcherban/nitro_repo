@@ -39,6 +39,8 @@ pub mod npm;
 pub mod php;
 pub mod python;
 pub use auth_config::*;
+pub mod proxy_indexing;
+pub use proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError};
 mod repo_type;
 pub use repo_type::*;
 use uuid::Uuid;

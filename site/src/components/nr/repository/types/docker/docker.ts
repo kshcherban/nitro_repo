@@ -28,7 +28,6 @@ export type DockerConfigType =
 
 export interface DockerProxyConfig {
   upstream_url: string;
-  cache_enabled: boolean;
   upstream_auth?: {
     username: string;
     password: string;
@@ -38,6 +37,5 @@ export interface DockerProxyConfig {
 export function defaultDockerProxyConfig(): DockerProxyConfig {
   return {
     upstream_url: "https://registry-1.docker.io",
-    cache_enabled: true,
   };
 }

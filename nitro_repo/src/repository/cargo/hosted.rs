@@ -524,6 +524,7 @@ impl CargoHosted {
 
         let new_version = NewVersion {
             project_id,
+            repository_id: self.id(),
             version,
             release_type,
             version_path,

@@ -11,12 +11,13 @@ vi.mock("@/http", () => ({
 import RepositoryPackagesPublic from "@/components/nr/repository/RepositoryPackagesPublic.vue";
 import http from "@/http";
 
-function createPackages(items: any[] = [], total = items.length) {
+function createPackages(items: any[] = [], total = items.length, headers: Record<string, string> = {}) {
   return {
     data: {
       items,
       total_packages: total,
     },
+    headers,
   };
 }
 
@@ -236,6 +237,27 @@ describe("RepositoryPackagesPublic.vue", () => {
     const rows = wrapper.findAll('[data-testid="package-row"]');
     expect(rows).toHaveLength(1);
     expect(rows[0].find('[data-testid="package-cell"]').text()).toBe("pkg-two");
+  });
+
+  it("shows indexing warning when backend signals indexing", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([], 0, { "x-nitro-warning": "Repository indexing in progress" }),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-123",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const warning = wrapper.find('[data-testid="public-packages-indexing-warning"]');
+    expect(warning.exists()).toBe(true);
+    expect(warning.text()).toContain("Repository indexing in progress");
   });
 
   it("persists column visibility preferences per repository", async () => {

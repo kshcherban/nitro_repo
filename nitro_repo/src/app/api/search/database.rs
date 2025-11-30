@@ -1,24 +1,42 @@
-use chrono::{DateTime, FixedOffset};
+use async_trait::async_trait;
 use serde_json::Value;
-use sqlx::FromRow;
+use uuid::Uuid;
 
 use super::{InternalError, PackageSearchResult, RepositorySummary, query_parser::SearchQuery};
-use crate::app::NitroRepo;
+use crate::search::query::{DatabasePackageRow, PackageSearchRepository};
 use nr_core::repository::project::DebPackageMetadata;
 
-#[derive(Debug, Clone, FromRow)]
-pub struct DatabasePackageRow {
-    pub package_name: String,
-    pub package_key: String,
-    pub version: String,
-    pub path: String,
-    #[sqlx(json)]
-    pub extra: Option<Value>,
-    pub updated_at: DateTime<FixedOffset>,
+#[async_trait]
+pub trait SearchBackend: Send + Sync {
+    async fn fetch_repository_rows(
+        &self,
+        repository_id: Uuid,
+        query: &SearchQuery,
+        limit: usize,
+    ) -> Result<Vec<DatabasePackageRow>, sqlx::Error>;
+
+    async fn repository_has_index_rows(&self, repository_id: Uuid) -> Result<bool, sqlx::Error>;
 }
 
-pub async fn search_database_packages(
-    site: &NitroRepo,
+#[async_trait]
+impl<'a> SearchBackend for PackageSearchRepository<'a> {
+    async fn fetch_repository_rows(
+        &self,
+        repository_id: Uuid,
+        query: &SearchQuery,
+        limit: usize,
+    ) -> Result<Vec<DatabasePackageRow>, sqlx::Error> {
+        self.fetch_repository_rows(repository_id, query, limit)
+            .await
+    }
+
+    async fn repository_has_index_rows(&self, repository_id: Uuid) -> Result<bool, sqlx::Error> {
+        self.repository_has_index_rows(repository_id).await
+    }
+}
+
+pub async fn search_database_packages<B: SearchBackend + ?Sized>(
+    searcher: &B,
     summary: &RepositorySummary,
     query: &SearchQuery,
     limit: usize,
@@ -26,27 +44,9 @@ pub async fn search_database_packages(
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let fetch_limit = limit.max(1).saturating_mul(4).min(500);
-    let rows = sqlx::query_as::<_, DatabasePackageRow>(
-        r#"
-            SELECT
-                p.name AS package_name,
-                p.key AS package_key,
-                pv.version,
-                pv.path,
-                pv.extra,
-                pv.updated_at
-            FROM projects p
-            INNER JOIN project_versions pv ON pv.project_id = p.id
-            WHERE p.repository_id = $1
-            ORDER BY pv.updated_at DESC
-            LIMIT $2
-        "#,
-    )
-    .bind(summary.repository_id)
-    .bind(fetch_limit as i64)
-    .fetch_all(&site.database)
-    .await?;
+    let rows = searcher
+        .fetch_repository_rows(summary.repository_id, query, limit)
+        .await?;
 
     filter_database_rows(summary, rows, query, limit)
 }
@@ -136,7 +136,7 @@ fn deb_metadata(extra: &Option<Value>) -> Option<DebPackageMetadata> {
 }
 
 fn deb_metadata_terms(metadata: &DebPackageMetadata) -> Vec<String> {
-    let mut terms = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
     terms.push(metadata.architecture.clone());
     terms.push(metadata.component.clone());
     terms.push(metadata.distribution.clone());

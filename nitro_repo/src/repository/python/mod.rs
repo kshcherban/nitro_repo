@@ -1,3 +1,4 @@
+use crate::error::OtherInternalError;
 use ahash::HashMap;
 use futures::future::BoxFuture;
 use nr_core::{
@@ -66,6 +67,12 @@ impl_from_other!(nr_storage::StorageError);
 impl_from_other!(sqlx::Error);
 impl_from_other!(serde_json::Error);
 impl_from_other!(crate::app::authentication::AuthenticationError);
+
+impl From<crate::repository::proxy_indexing::ProxyIndexingError> for PythonRepositoryError {
+    fn from(value: crate::repository::proxy_indexing::ProxyIndexingError) -> Self {
+        PythonRepositoryError::Other(Box::new(OtherInternalError::new(value)))
+    }
+}
 
 impl crate::utils::IntoErrorResponse for PythonRepositoryError {
     fn into_response_boxed(self: Box<Self>) -> axum::response::Response {

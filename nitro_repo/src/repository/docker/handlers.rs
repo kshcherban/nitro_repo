@@ -1373,6 +1373,7 @@ async fn delete_manifest(
         &repo.get_storage(),
         repo.id(),
         &manifest_path_str,
+        None,
     )
     .await
     {

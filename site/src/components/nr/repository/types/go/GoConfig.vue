@@ -102,6 +102,7 @@
           </p>
         </div>
       </div>
+      <ProxyCacheNotice class="mt-4" />
     </div>
 
     <div v-else-if="value.type === 'Hosted'" class="hosted-configuration">
@@ -136,6 +137,7 @@ import NumberInput from "@/components/form/NumberInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 import http from "@/http";
+import ProxyCacheNotice from "@/components/nr/repository/ProxyCacheNotice.vue";
 import type { GoConfigType, GoProxyConfigType, GoProxyRoute } from "./go";
 import { defaultProxy, validateGoConfig, validateProxyRoute } from "./go";
 

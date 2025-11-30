@@ -121,7 +121,7 @@ impl PythonHosted {
             .save_file(self.id(), FileContent::Bytes(bytes), &request.path)
             .await?;
 
-        self.upsert_metadata(publisher, &info).await?;
+        self.upsert_metadata(Some(publisher), &info).await?;
 
         Ok(RepoResponse::Other(ResponseBuilder::created().empty()))
     }
@@ -201,15 +201,15 @@ impl PythonHosted {
             .save_file(self.id(), FileContent::Content(file_bytes), &storage_path)
             .await?;
 
-        self.upsert_metadata(publisher, &info).await?;
+        self.upsert_metadata(Some(publisher), &info).await?;
 
         Ok(RepoResponse::Other(ResponseBuilder::created().empty()))
     }
 
     #[instrument(skip(self, info))]
-    async fn upsert_metadata(
+    pub(crate) async fn upsert_metadata(
         &self,
-        publisher: i32,
+        publisher: Option<i32>,
         info: &PythonPackagePathInfo,
     ) -> Result<(), PythonRepositoryError> {
         let project_key = info.project_key();
@@ -253,10 +253,11 @@ impl PythonHosted {
 
         let new_version = nr_core::database::entities::project::versions::NewVersion {
             project_id: project.id,
+            repository_id: self.id(),
             version: info.version.clone(),
             release_type: info.release_type(),
             version_path: info.version_storage_path(),
-            publisher: Some(publisher),
+            publisher,
             version_page: None,
             extra: VersionData {
                 extra: Some(to_value(metadata)?),

@@ -1,3 +1,4 @@
+use chrono::Utc;
 use http::{
     StatusCode,
     header::{CONTENT_LENGTH, CONTENT_TYPE},
@@ -7,7 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nr_core::{
     database::entities::repository::DBRepository,
-    repository::{Visibility, config::RepositoryConfigType, proxy_url::ProxyURL},
+    repository::{
+        Visibility,
+        config::RepositoryConfigType,
+        project::{ProxyArtifactKey, ProxyArtifactMeta},
+        proxy_url::ProxyURL,
+    },
     storage::StoragePath,
 };
 use nr_storage::{DynStorage, FileContent, Storage};
@@ -25,11 +31,13 @@ use crate::{
     app::NitroRepo,
     repository::utils::can_read_repository_with_auth,
     repository::{
-        RepoResponse, Repository, RepositoryFactoryError, RepositoryHandlerError, RepositoryRequest,
+        RepoResponse, Repository, RepositoryFactoryError, RepositoryHandlerError,
+        RepositoryRequest,
+        proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
     },
 };
 
-use crate::repository::RepositoryAuthConfigType;
+use crate::repository::{RepositoryAuthConfigType, go::GoRepositoryError};
 
 use nr_core::repository::config::repository_page::RepositoryPageType;
 
@@ -53,7 +61,6 @@ fn normalize_routes(routes: Vec<GoProxyRoute>) -> Vec<GoProxyRoute> {
     }
 }
 
-#[derive(Debug)]
 pub struct GoProxyInner {
     pub id: Uuid,
     pub name: String,
@@ -65,10 +72,23 @@ pub struct GoProxyInner {
     pub active: bool,
     pub storage_name: String,
     pub cache_ttl: u64,
+    pub indexer: Arc<dyn ProxyIndexing>,
 }
 
 #[derive(Debug, Clone)]
 pub struct GoProxy(pub Arc<GoProxyInner>);
+
+impl std::fmt::Debug for GoProxyInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoProxyInner")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("visibility", &self.visibility.read())
+            .field("active", &self.active)
+            .field("cache_ttl", &self.cache_ttl)
+            .finish()
+    }
+}
 
 impl GoProxy {
     pub async fn load(
@@ -91,17 +111,20 @@ impl GoProxy {
         let storage_name = storage.storage_config().storage_config.storage_name.clone();
         let cache_ttl = config.go_module_cache_ttl.unwrap_or(3600); // Default 1 hour
 
+        let indexer: Arc<dyn ProxyIndexing> =
+            Arc::new(DatabaseProxyIndexer::new(site.clone(), repository.id));
         Ok(Self(Arc::new(GoProxyInner {
             id: repository.id,
             name: repository.name.to_string(),
             visibility: RwLock::new(repository.visibility),
             storage,
-            site,
+            site: site.clone(),
             routes: RwLock::new(normalize_routes(config.routes)),
             client,
             active: repository.active,
             storage_name,
             cache_ttl,
+            indexer,
         })))
     }
 
@@ -127,6 +150,18 @@ impl GoProxy {
 
     fn routes(&self) -> Vec<GoProxyRoute> {
         self.0.routes.read().clone()
+    }
+
+    fn indexer(&self) -> &Arc<dyn ProxyIndexing> {
+        &self.0.indexer
+    }
+
+    pub async fn handle_external_eviction(
+        &self,
+        path: &StoragePath,
+    ) -> Result<(), GoRepositoryError> {
+        evict_go_proxy_cache_entry(self.indexer().as_ref(), path).await?;
+        Ok(())
     }
 
     /// Build proxy URL for the request
@@ -299,6 +334,14 @@ impl GoProxy {
             .save_file(self.id(), FileContent::Content(cached_content), &cache_path)
             .await
             .map_err(|e| crate::repository::RepositoryHandlerError::Other(Box::new(e)))?;
+
+        record_go_proxy_cache_hit(self.indexer().as_ref(), &cache_path, content.len() as u64)
+            .await
+            .map_err(|err| {
+                crate::repository::RepositoryHandlerError::Other(Box::new(GoRepositoryError::from(
+                    err,
+                )))
+            })?;
 
         debug!(cache_key = %cache_key, "Cached content");
         Ok(())
@@ -925,6 +968,86 @@ impl Repository for GoProxy {
             })
         }
     }
+}
+
+fn go_proxy_components(path: &StoragePath) -> Option<(String, String)> {
+    let components: Vec<String> = path.clone().into_iter().map(String::from).collect();
+    if components.len() < 4 || components.first().map(String::as_str) != Some("go-proxy-cache") {
+        return None;
+    }
+    let version_idx = components.iter().position(|segment| segment == "@v")?;
+    if version_idx <= 1 || version_idx + 1 >= components.len() {
+        return None;
+    }
+    let module = components[1..version_idx].join("/");
+    if module.is_empty() {
+        return None;
+    }
+    let file_name = components.last()?.clone();
+    Some((module, file_name))
+}
+
+const GO_PROXY_SUFFIXES: [&str; 3] = [".zip", ".mod", ".info"];
+
+fn go_proxy_version_from_filename(file_name: &str) -> Option<String> {
+    for suffix in GO_PROXY_SUFFIXES {
+        if let Some(stripped) = file_name.strip_suffix(suffix) {
+            if stripped.is_empty() {
+                return None;
+            }
+            return Some(stripped.to_string());
+        }
+    }
+    None
+}
+
+pub(super) fn go_proxy_meta_from_cache_path(
+    path: &StoragePath,
+    size: u64,
+) -> Option<ProxyArtifactMeta> {
+    let (module, file_name) = go_proxy_components(path)?;
+    if !file_name.ends_with(".zip") {
+        return None;
+    }
+    let version = go_proxy_version_from_filename(&file_name)?;
+    Some(
+        ProxyArtifactMeta::builder(module.clone(), module, path.to_string())
+            .version(version)
+            .size(size)
+            .fetched_at(Utc::now())
+            .build(),
+    )
+}
+
+pub(super) fn go_proxy_key_from_cache_path(path: &StoragePath) -> Option<ProxyArtifactKey> {
+    let (module, file_name) = go_proxy_components(path)?;
+    let version = go_proxy_version_from_filename(&file_name)?;
+    Some(ProxyArtifactKey {
+        package_key: module,
+        version: Some(version),
+        cache_path: Some(path.to_string()),
+    })
+}
+
+pub(super) async fn record_go_proxy_cache_hit(
+    indexer: &dyn ProxyIndexing,
+    path: &StoragePath,
+    size: u64,
+) -> Result<(), ProxyIndexingError> {
+    if let Some(meta) = go_proxy_meta_from_cache_path(path, size) {
+        indexer.record_cached_artifact(meta).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn evict_go_proxy_cache_entry(
+    indexer: &dyn ProxyIndexing,
+    path: &StoragePath,
+) -> Result<(), ProxyIndexingError> {
+    if let Some(key) = go_proxy_key_from_cache_path(path) {
+        indexer.evict_cached_artifact(key).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

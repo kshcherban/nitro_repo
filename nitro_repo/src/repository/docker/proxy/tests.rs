@@ -1,15 +1,21 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
 use super::*;
-use crate::repository::test_helpers::test_storage;
+use crate::repository::{
+    proxy_indexing::{ProxyIndexing, ProxyIndexingError},
+    test_helpers::test_storage,
+};
+use async_trait::async_trait;
 use axum::{Router, body::Body as AxumBody, routing::get};
 use bytes::Bytes;
 use futures::stream;
 use http::{HeaderValue, StatusCode};
-use nr_core::storage::StoragePath;
+use nr_core::{
+    repository::project::{ProxyArtifactKey, ProxyArtifactMeta},
+    storage::StoragePath,
+};
 use sha2::Digest;
-use std::convert::Infallible;
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use std::{convert::Infallible, sync::Arc};
+use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
 async fn reader_bytes(reader: nr_storage::StorageFileReader, len: u64) -> anyhow::Result<Vec<u8>> {
     let len: usize = len.try_into().expect("length fits in usize for tests");
@@ -256,6 +262,39 @@ async fn start_revalidating_upstream_server(
     Ok((format!("http://{}", addr), state_for_return, server))
 }
 
+#[derive(Clone, Default)]
+struct RecordingIndexer {
+    recorded: Arc<Mutex<Vec<ProxyArtifactMeta>>>,
+    evicted: Arc<Mutex<Vec<ProxyArtifactKey>>>,
+}
+
+impl RecordingIndexer {
+    async fn recorded(&self) -> Vec<ProxyArtifactMeta> {
+        self.recorded.lock().await.clone()
+    }
+
+    #[allow(dead_code)]
+    async fn evicted(&self) -> Vec<ProxyArtifactKey> {
+        self.evicted.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl ProxyIndexing for RecordingIndexer {
+    async fn record_cached_artifact(
+        &self,
+        meta: ProxyArtifactMeta,
+    ) -> Result<(), ProxyIndexingError> {
+        self.recorded.lock().await.push(meta);
+        Ok(())
+    }
+
+    async fn evict_cached_artifact(&self, key: ProxyArtifactKey) -> Result<(), ProxyIndexingError> {
+        self.evicted.lock().await.push(key);
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
     let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":7023,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"layers":[]}"#;
@@ -267,7 +306,6 @@ async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: base,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -278,6 +316,7 @@ async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
         repository_id,
         "library/alpine",
         "latest",
+        None,
         None,
     )
     .await?;
@@ -318,6 +357,55 @@ async fn fetch_manifest_caches_locally() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn fetch_manifest_records_proxy_index_entries() -> anyhow::Result<()> {
+    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":7023,"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},"layers":[]}"#;
+    let blob = b"blob-data";
+    let (base, server) = start_upstream_server(manifest, blob).await?;
+
+    let storage = test_storage().await;
+    let repository_id = Uuid::new_v4();
+    let upstream = ProxyUpstream::new(&DockerProxyConfig {
+        upstream_url: base,
+        upstream_auth: None,
+        revalidation_ttl_seconds: default_revalidation_ttl(),
+        skip_tag_revalidation: false,
+    })?;
+
+    let indexer = Arc::new(RecordingIndexer::default());
+    let cached = fetch_and_cache_manifest(
+        &upstream,
+        &storage,
+        repository_id,
+        "library/alpine",
+        "latest",
+        None,
+        Some(indexer.as_ref()),
+    )
+    .await?;
+    server.abort();
+
+    let recorded = indexer.recorded().await;
+    assert_eq!(recorded.len(), 2);
+    assert!(
+        recorded
+            .iter()
+            .any(|meta| meta.version.as_deref() == Some("latest"))
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|meta| meta.version.as_deref() == Some(cached.digest.as_str()))
+    );
+    assert!(
+        recorded
+            .iter()
+            .all(|meta| meta.cache_path.starts_with("v2/library/alpine/manifests/"))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn fetch_blob_uses_cache_on_second_request() -> anyhow::Result<()> {
     let manifest = br#"{}"#;
     let blob = b"blob-body-for-cache";
@@ -329,7 +417,6 @@ async fn fetch_blob_uses_cache_on_second_request() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: base,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -399,7 +486,6 @@ async fn manifest_accept_mismatch_falls_back_to_cache() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: base,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -412,6 +498,7 @@ async fn manifest_accept_mismatch_falls_back_to_cache() -> anyhow::Result<()> {
         "library/alpine",
         "latest",
         Some("application/vnd.docker.distribution.manifest.list.v2+json"),
+        None,
     )
     .await?;
 
@@ -423,6 +510,7 @@ async fn manifest_accept_mismatch_falls_back_to_cache() -> anyhow::Result<()> {
         "library/alpine",
         "latest",
         Some("application/vnd.docker.distribution.manifest.v2+json"),
+        None,
     )
     .await?;
 
@@ -448,7 +536,6 @@ async fn cached_manifest_uses_manifest_media_type() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: base,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -460,6 +547,7 @@ async fn cached_manifest_uses_manifest_media_type() -> anyhow::Result<()> {
         repository_id,
         "library/alpine",
         "latest",
+        None,
         None,
     )
     .await?;
@@ -473,6 +561,7 @@ async fn cached_manifest_uses_manifest_media_type() -> anyhow::Result<()> {
         repository_id,
         "library/alpine",
         "latest",
+        None,
         None,
     )
     .await?;
@@ -499,7 +588,6 @@ async fn tag_revalidation_fetches_moved_digest() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: 0,
         skip_tag_revalidation: false,
     })?;
@@ -511,6 +599,7 @@ async fn tag_revalidation_fetches_moved_digest() -> anyhow::Result<()> {
         "library/test",
         "latest",
         Some(MODERN_UPSTREAM_ACCEPT),
+        None,
     )
     .await?;
 
@@ -527,6 +616,7 @@ async fn tag_revalidation_fetches_moved_digest() -> anyhow::Result<()> {
         "library/test",
         "latest",
         Some(MODERN_UPSTREAM_ACCEPT),
+        None,
     )
     .await?;
 
@@ -548,7 +638,6 @@ async fn accept_mismatch_triggers_refetch_with_preferred_media_type() -> anyhow:
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: base,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -560,6 +649,7 @@ async fn accept_mismatch_triggers_refetch_with_preferred_media_type() -> anyhow:
         repository_id,
         "library/alpine",
         "latest",
+        None,
         None,
     )
     .await?;
@@ -577,6 +667,7 @@ async fn accept_mismatch_triggers_refetch_with_preferred_media_type() -> anyhow:
         "library/alpine",
         "latest",
         Some(accept_header),
+        None,
     )
     .await?;
 
@@ -602,7 +693,6 @@ async fn deleted_manifest_is_downloaded_again() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: base,
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -615,6 +705,7 @@ async fn deleted_manifest_is_downloaded_again() -> anyhow::Result<()> {
         "library/alpine",
         "latest",
         None,
+        None,
     )
     .await?;
 
@@ -625,9 +716,14 @@ async fn deleted_manifest_is_downloaded_again() -> anyhow::Result<()> {
     );
 
     // Simulate admin deletion via API helper
-    delete_docker_package(&storage, repository_id, manifest_path.to_string().as_str())
-        .await
-        .expect("docker deletion should succeed");
+    delete_docker_package(
+        &storage,
+        repository_id,
+        manifest_path.to_string().as_str(),
+        None,
+    )
+    .await
+    .expect("docker deletion should succeed");
 
     assert!(
         !storage.file_exists(repository_id, &manifest_path).await?,
@@ -641,6 +737,7 @@ async fn deleted_manifest_is_downloaded_again() -> anyhow::Result<()> {
         repository_id,
         "library/alpine",
         "latest",
+        None,
         None,
     )
     .await?;
@@ -688,7 +785,6 @@ async fn blob_digest_mismatch_is_reported() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: format!("http://{addr}"),
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -762,7 +858,6 @@ async fn large_blob_is_streamed_without_buffering() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: format!("http://{addr}"),
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -951,7 +1046,6 @@ async fn bearer_challenge_is_followed_for_public_token() -> anyhow::Result<()> {
     let upstream = ProxyUpstream::new(&DockerProxyConfig {
         upstream_url: format!("http://{addr}"),
         upstream_auth: None,
-        cache_enabled: true,
         revalidation_ttl_seconds: default_revalidation_ttl(),
         skip_tag_revalidation: false,
     })?;
@@ -962,6 +1056,7 @@ async fn bearer_challenge_is_followed_for_public_token() -> anyhow::Result<()> {
         repository_id,
         "library/alpine",
         "latest",
+        None,
         None,
     )
     .await?;

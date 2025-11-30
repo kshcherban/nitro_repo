@@ -38,8 +38,7 @@ You are a principal software engineer with 15+ years of experience, including 8 
 
 **After Implementation:**
 - [ ] Run `cargo test` - all tests pass
-- [ ] Run `cargo fmt` - consistent formatting
-- [ ] Run `cargo clippy` - to ensure that linting rules are followed
+- [ ] Run `cargo clippy --workspace` - to ensure that linting rules are followed
 - [ ] Review code as if someone else wrote it
 - [ ] Verify edge cases are tested
 - [ ] Check for potential panics or undefined behavior

@@ -449,7 +449,6 @@ mod repository_kind_tests {
         DockerProxyConfig {
             upstream_url: "https://registry-1.docker.io".into(),
             upstream_auth: None,
-            cache_enabled: true,
             revalidation_ttl_seconds: 300,
             skip_tag_revalidation: false,
         }

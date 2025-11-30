@@ -153,6 +153,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Component } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
+import { useAlertsStore } from "@/stores/alerts";
 import type { RepositoryWithStorageName } from "@/types/repository";
 import { HelmIcon, DockerIcon, DebianIcon } from "vue3-simple-icons";
 import CargoIcon from "@/components/nr/repository/types/cargo/CargoIcon.vue";
@@ -168,6 +169,7 @@ const packageError = ref<string | null>(null);
 let debounceHandle: number | undefined;
 const repoStore = useRepositoryStore();
 const session = sessionStore();
+const alerts = useAlertsStore();
 const user = computed(() => session.user);
 const isAdmin = computed(() => Boolean(user.value?.admin));
 function repositoryKindLabel(repo: RepositoryWithStorageName) {
@@ -325,10 +327,14 @@ onMounted(getRepositories);
 
 async function fetchPackages(query: string) {
   try {
-    const { data } = await http.get<PackageSearchResponse[]>("/api/search/packages", {
+    const response = await http.get<PackageSearchResponse[]>("/api/search/packages", {
       params: { q: query, limit: 25 },
     });
-    packageResults.value = data.map((item) => ({
+    const warning = response.headers?.["x-nitro-warning"];
+    if (warning) {
+      alerts.error("Repository indexing in progress", warning, 8000);
+    }
+    packageResults.value = response.data.map((item) => ({
       repositoryId: item.repository_id,
       repositoryName: item.repository_name,
       storageName: item.storage_name,

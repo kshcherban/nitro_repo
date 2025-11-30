@@ -170,6 +170,7 @@ pub trait MavenRepositoryExt: Repository + Debug {
         } else {
             let version = pom_to_db_project_version(
                 project_id,
+                self.id(),
                 version_directory.clone(),
                 publisher,
                 pom.clone(),
@@ -219,6 +220,7 @@ pub fn pom_to_db_project(
 }
 pub fn pom_to_db_project_version(
     project_id: Uuid,
+    repository_id: Uuid,
     version_path: StoragePath,
     publisher: Option<i32>,
     pom: Pom,
@@ -235,6 +237,7 @@ pub fn pom_to_db_project_version(
     let release_type = ReleaseType::release_type_from_version(&version);
     let version = NewVersion {
         project_id,
+        repository_id,
         version,
         publisher,
         version_path: version_path.to_string(),

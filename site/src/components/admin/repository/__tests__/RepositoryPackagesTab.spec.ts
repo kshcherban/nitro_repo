@@ -19,6 +19,7 @@ vi.mock("@/http", () => ({
           },
         ],
       },
+      headers: {},
     }),
     delete: vi.fn(),
   },
@@ -195,5 +196,28 @@ describe("RepositoryPackagesTab.vue", () => {
     expect(httpGet).toHaveBeenCalledWith("/api/repository/1/packages", {
       params: { page: 1, per_page: 100 },
     });
+  });
+
+  it("surfaces indexing warning headers", async () => {
+    const httpGet = http.get as vi.Mock;
+    httpGet.mockResolvedValueOnce({
+      data: { total_packages: 0, items: [] },
+      headers: { "x-nitro-warning": "Repository indexing in progress" },
+    });
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "1",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const warning = wrapper.find('[data-testid="packages-indexing-warning"]');
+    expect(warning.exists()).toBe(true);
+    expect(warning.text()).toContain("Repository indexing in progress");
   });
 });

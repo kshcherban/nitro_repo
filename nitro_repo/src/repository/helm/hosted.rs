@@ -574,6 +574,7 @@ impl HelmHosted {
         } else {
             let new_version = NewVersion {
                 project_id: project.id,
+                repository_id: self.id(),
                 version: artifact.version.clone(),
                 release_type,
                 version_path: canonical_path.to_string(),

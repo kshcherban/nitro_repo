@@ -73,9 +73,9 @@ impl PhpHosted {
         })))
     }
 
-    async fn upsert_metadata(
+    pub(crate) async fn upsert_metadata(
         &self,
-        publisher: i32,
+        publisher: Option<i32>,
         info: &PhpPackagePathInfo,
     ) -> Result<(), PhpRepositoryError> {
         let project_key = info.normalized_package_name();
@@ -113,10 +113,11 @@ impl PhpHosted {
 
         let new_version = nr_core::database::entities::project::versions::NewVersion {
             project_id: project.id,
+            repository_id: self.id(),
             version: info.version.clone(),
             release_type: info.release_type(),
             version_path: info.version_storage_path(),
-            publisher: Some(publisher),
+            publisher,
             version_page: None,
             extra: VersionData {
                 extra: Some(to_value(metadata)?),
@@ -143,7 +144,7 @@ impl PhpHosted {
         self.storage()
             .save_file(self.id(), bytes.into(), &request.path)
             .await?;
-        self.upsert_metadata(user.id, &info).await?;
+        self.upsert_metadata(Some(user.id), &info).await?;
         Ok(RepoResponse::Other(ResponseBuilder::created().empty()))
     }
 

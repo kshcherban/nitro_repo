@@ -31,17 +31,10 @@
               placeholder="https://registry-1.docker.io">
               Upstream Registry URL
             </TextInput>
-            <SwitchInput
-              id="docker-cache-enabled"
-              v-model="proxyConfig.cache_enabled">
-              Enable local caching
-              <template #comment>
-                Store pulled manifests and layers in this repository for faster subsequent pulls.
-              </template>
-            </SwitchInput>
             <p class="text-body-2 text-medium-emphasis mb-0">
               Upstream authentication is not supported in this version; only public registries are proxied.
             </p>
+            <ProxyCacheNotice class="mt-4" />
           </div>
         </v-expand-transition>
       </v-card-text>
@@ -67,15 +60,11 @@
 import { computed, ref, watch } from "vue";
 import DropDown from "@/components/form/dropdown/DropDown.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
-import SwitchInput from "@/components/form/SwitchInput.vue";
 import TextInput from "@/components/form/text/TextInput.vue";
 import http from "@/http";
 import { useAlertsStore } from "@/stores/alerts";
-import {
-  defaultDockerProxyConfig,
-  type DockerConfigType,
-  type DockerProxyConfig,
-} from "./docker";
+import ProxyCacheNotice from "@/components/nr/repository/ProxyCacheNotice.vue";
+import { defaultDockerProxyConfig, type DockerConfigType, type DockerProxyConfig } from "./docker";
 
 const dockerTypes = [
   { value: "Hosted", label: "Hosted" },

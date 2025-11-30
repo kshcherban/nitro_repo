@@ -8,9 +8,12 @@ repository.workspace = true
 build = "build.rs"
 
 [dev-dependencies]
+mockall = "0.14"
 pretty_assertions = "1.1"
 serde_urlencoded = "0.7"
 rsa = { version = "0.9" }
+criterion = "0.5"
+testcontainers = { version = "0.19", features = ["blocking"] }
 [dependencies]
 # Web
 axum = { version = "0.8", features = ["macros", "tokio", "ws"] }
@@ -72,6 +75,7 @@ bytes.workspace = true
 ahash.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
+once_cell.workspace = true
 oauth2 = { version = "5", features = ["reqwest"] }
 flate2 = "1"
 tar = "0.4"

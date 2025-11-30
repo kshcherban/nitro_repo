@@ -17,7 +17,10 @@ use nr_storage::DynStorage;
 use proxy::MavenProxy;
 
 use super::*;
-use crate::{app::NitroRepo, error::OtherInternalError, utils::bad_request::BadRequestErrors};
+use crate::{
+    app::NitroRepo, error::OtherInternalError, repository::proxy_indexing::ProxyIndexingError,
+    utils::bad_request::BadRequestErrors,
+};
 mod configs;
 use super::{DynRepository, Repository, RepositoryFactoryError, RepositoryType};
 pub mod hosted;
@@ -172,6 +175,7 @@ impl_from_error_for_other!(RepositoryHandlerError);
 impl_from_error_for_other!(nr_storage::StorageError);
 impl_from_error_for_other!(reqwest::Error);
 impl_from_error_for_other!(OtherInternalError);
+impl_from_error_for_other!(ProxyIndexingError);
 
 impl IntoErrorResponse for MavenError {
     fn into_response_boxed(self: Box<Self>) -> axum::response::Response {

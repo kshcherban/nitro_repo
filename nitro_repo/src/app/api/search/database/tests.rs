@@ -4,9 +4,12 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::*;
-use crate::app::api::search::{
-    query_parser::{Operator, SearchQuery},
-    version_constraint::VersionConstraint,
+use crate::{
+    app::api::search::{
+        query_parser::{Operator, SearchQuery},
+        version_constraint::VersionConstraint,
+    },
+    search::query::DatabasePackageRow,
 };
 
 fn make_row(name: &str, version: &str) -> DatabasePackageRow {

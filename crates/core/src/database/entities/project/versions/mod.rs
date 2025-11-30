@@ -21,6 +21,8 @@ pub struct DBProjectVersion {
     pub id: Uuid,
     /// A reference to the project
     pub project_id: Uuid,
+    /// The repository this version belongs to
+    pub repository_id: Uuid,
     /// The version of the project
     pub version: String,
     /// Release type
@@ -68,7 +70,7 @@ impl DBProjectVersion {
         database: &PgPool,
     ) -> Result<Option<Self>, sqlx::Error> {
         let version = sqlx::query_as::<_, Self>(
-            r#"SELECT project_versions.* FROM project_versions FULL JOIN projects ON projects.id = project_versions.project_id AND projects.repository_id = $1 WHERE LOWER(project_versions.path) = $2"#,
+            r#"SELECT * FROM project_versions WHERE repository_id = $1 AND LOWER(path) = $2"#,
         )
         .bind(repository_id)
         .bind(directory.to_lowercase())
@@ -83,7 +85,7 @@ impl DBProjectVersion {
         database: &PgPool,
     ) -> Result<Option<ProjectIds>, sqlx::Error> {
         let version = sqlx::query_as::<_, ProjectIds>(
-            r#"SELECT project_versions.id as version_id, project_versions.project_id as project_id FROM project_versions FULL JOIN projects ON projects.id = project_versions.project_id AND projects.repository_id = $1 WHERE LOWER(project_versions.path) = $2"#,
+            r#"SELECT id as version_id, project_id FROM project_versions WHERE repository_id = $1 AND LOWER(path) = $2"#,
         )
         .bind(repository_id)
         .bind(directory.to_lowercase())

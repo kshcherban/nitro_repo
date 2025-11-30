@@ -1,17 +1,22 @@
 <template>
-  <div
-    @click="click"
-    class="browseItem"
-    data-type="file">
-    <div class="itemAndName">
-      <font-awesome-icon :icon="fileIcon" />
-      {{ props.file.name }}
-    </div>
-
-    <div>
-      {{ new Date(file.modified).toLocaleString() }}
-    </div>
-  </div>
+  <tr
+    class="browse__row browse__row--file"
+    data-type="file"
+    role="button"
+    tabindex="0"
+    @click="activate"
+    @keyup.enter.prevent="activate"
+    @keyup.space.prevent="activate">
+    <td class="browse__cell browse__cell--name">
+      <div class="browse__cell-content">
+        <font-awesome-icon :icon="fileIcon" />
+        <span class="browse__name">{{ props.file.name }}</span>
+      </div>
+    </td>
+    <td class="browse__cell browse__cell--meta">
+      {{ formattedModified }}
+    </td>
+  </tr>
 </template>
 
 <script setup lang="ts">
@@ -37,11 +42,13 @@ const props = defineProps({
 const fixedPath = fixCurrentPath(props.currentPath);
 const repositoryURL = createRepositoryRoute(props.repository, `${fixedPath}/${props.file.name}`);
 
-const fileIcon = computed(() => {
-  // TODO: More icons
-  return "fa-solid fa-file";
-});
-function click() {
+const fileIcon = computed(() => "fa-solid fa-file" /* TODO: file-type specific */);
+
+const formattedModified = computed(() =>
+  new Date(props.file.modified).toLocaleString(),
+);
+
+function activate() {
   window.open(repositoryURL, "_blank");
 }
 </script>

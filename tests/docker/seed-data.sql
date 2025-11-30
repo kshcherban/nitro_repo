@@ -117,7 +117,6 @@ INSERT INTO repository_configs (repository_id, key, value) VALUES
             "type": "Proxy",
             "config": {
                 "upstream_url": "https://registry-1.docker.io",
-                "cache_enabled": true
             }
         }'::jsonb
     ),

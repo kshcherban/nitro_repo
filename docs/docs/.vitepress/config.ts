@@ -65,6 +65,7 @@ function knowledgeBaseBar() {
       text: "Other",
       items: [
         { text: "Architecture", link: "/knowledge/Architecture" },
+        { text: "Search", link: "/knowledge/search" },
         { text: "Internal Workings", link: "/knowledge/InternalWorkings" },
       ],
     },

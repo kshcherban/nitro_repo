@@ -24,15 +24,22 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use app::config::NitroRepoConfig;
+use anyhow::Context;
+use app::{
+    NitroRepo,
+    config::{NitroRepoConfig, load_config},
+};
 use clap::{Parser, Subcommand};
 use config_editor::ConfigSection;
+use search::reindex::{self, ReindexKind};
+use uuid::Uuid;
 pub mod app;
 mod config_editor;
 pub mod error;
 mod exporter;
 pub mod logging;
 pub mod repository;
+mod search;
 pub mod utils;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ExportOptions {
@@ -88,6 +95,39 @@ enum SubCommands {
         export: ExportOptions,
         location: PathBuf,
     },
+    /// Search indexing and catalog maintenance commands
+    Search {
+        #[clap(subcommand)]
+        command: SearchCommands,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum SearchCommands {
+    /// Reindex repository metadata used by the search service
+    Reindex {
+        #[clap(value_enum)]
+        target: SearchReindexKind,
+        /// Repository UUID to reindex
+        #[clap(short, long)]
+        repository: Uuid,
+        /// Optional config file path (defaults to nitro_repo.toml)
+        #[clap(short, long)]
+        config: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum SearchReindexKind {
+    PythonHosted,
+}
+
+impl From<SearchReindexKind> for ReindexKind {
+    fn from(value: SearchReindexKind) -> Self {
+        match value {
+            SearchReindexKind::PythonHosted => ReindexKind::PythonHosted,
+        }
+    }
 }
 fn main() -> anyhow::Result<()> {
     // For Some Reason Lettre fails if this is not installed
@@ -121,6 +161,7 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             tokio.block_on(config_editor::editor(section, config))
         }
+        SubCommands::Search { command } => run_search_command(command),
 
         #[cfg(feature = "frontend")]
         SubCommands::ValidateFrontend => {
@@ -163,8 +204,69 @@ fn save_config(config_path: PathBuf, add_defaults: bool) -> anyhow::Result<()> {
     std::fs::write(config_path, contents)?;
     Ok(())
 }
+
+fn run_search_command(command: SearchCommands) -> anyhow::Result<()> {
+    match command {
+        SearchCommands::Reindex {
+            target,
+            repository,
+            config,
+        } => run_search_reindex(target, repository, config),
+    }
+}
+
+fn run_search_reindex(
+    target: SearchReindexKind,
+    repository: Uuid,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .thread_name_fn(thread_name)
+        .enable_all()
+        .build()?;
+
+    let count = tokio.block_on(async move {
+        let site = load_site_for_cli(config).await?;
+        reindex::reindex_repository(site, repository, target.into()).await
+    })?;
+
+    println!("Reindex completed for repository {repository}: processed {count} artifact(s).");
+    Ok(())
+}
+
 fn thread_name() -> String {
     static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
     let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
     format!("nitro-repo-{}", id)
+}
+
+async fn load_site_for_cli(config_path: Option<PathBuf>) -> anyhow::Result<NitroRepo> {
+    let NitroRepoConfig {
+        web_server: _,
+        database,
+        log: _,
+        opentelemetry: _,
+        mode,
+        sessions,
+        staging: staging_config,
+        site,
+        security,
+        email,
+        suggested_local_storage_path,
+    } = load_config(config_path)?;
+
+    let site = NitroRepo::new(
+        mode,
+        site,
+        security,
+        sessions,
+        staging_config,
+        email,
+        database,
+        suggested_local_storage_path,
+    )
+    .await
+    .context("Unable to initialize Nitro site for CLI command")?;
+
+    Ok(site)
 }

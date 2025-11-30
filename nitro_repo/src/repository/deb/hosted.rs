@@ -279,6 +279,7 @@ impl DebHostedRepository {
 
         let new_version = nr_core::database::entities::project::versions::NewVersion {
             project_id: project.id,
+            repository_id: self.id(),
             version: version.clone(),
             release_type: ReleaseType::release_type_from_version(&version),
             version_path: build_pool_path(&component, &package, &file_name).to_string(),

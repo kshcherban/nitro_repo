@@ -4,6 +4,7 @@
 //! upstream Docker registry, caching responses locally.
 
 use std::{
+    fmt,
     num::NonZeroUsize,
     pin::Pin,
     sync::{
@@ -23,7 +24,8 @@ use http::{
 };
 use lru::LruCache;
 use nr_core::{
-    repository::Visibility, repository::config::RepositoryConfigType, storage::StoragePath,
+    repository::{Visibility, config::RepositoryConfigType, project::ProxyArtifactMeta},
+    storage::StoragePath,
     utils::base64_utils,
 };
 use nr_storage::{DynStorage, FileContent, FileType, Storage, StorageFile, StorageFileReader};
@@ -40,13 +42,15 @@ use tracing::{instrument, warn};
 use url::Url;
 use uuid::Uuid;
 
-use super::{DockerError, types::MediaType};
+use super::{DockerError, metadata::docker_package_key, types::MediaType};
 use crate::repository::docker::DockerRegistryConfigType;
 use crate::{
     app::NitroRepo,
     repository::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
-        RepositoryRequest, utils::can_read_repository_with_auth,
+        RepositoryRequest,
+        proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
+        utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
 };
@@ -61,10 +65,6 @@ pub struct DockerProxyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream_auth: Option<DockerProxyAuth>,
 
-    /// Enable caching of pulled images
-    #[serde(default = "default_cache_enabled")]
-    pub cache_enabled: bool,
-
     /// How often to revalidate mutable tag manifests against upstream (seconds).
     /// Set to 0 to always revalidate; large values reduce HEAD traffic.
     #[serde(default = "default_revalidation_ttl")]
@@ -73,10 +73,6 @@ pub struct DockerProxyConfig {
     /// Disable tag revalidation (not recommended; for air-gapped deployments only).
     #[serde(default)]
     pub skip_tag_revalidation: bool,
-}
-
-fn default_cache_enabled() -> bool {
-    true
 }
 
 fn default_revalidation_ttl() -> u64 {
@@ -93,7 +89,6 @@ pub struct DockerProxyAuth {
 pub struct ProxyUpstream {
     base: Url,
     client: Client,
-    cache_enabled: bool,
     revalidation_ttl: u64,
     skip_tag_revalidation: bool,
 }
@@ -108,7 +103,6 @@ impl ProxyUpstream {
         Ok(Self {
             base,
             client,
-            cache_enabled: config.cache_enabled,
             revalidation_ttl: config.revalidation_ttl_seconds,
             skip_tag_revalidation: config.skip_tag_revalidation,
         })
@@ -643,6 +637,34 @@ where
     f.await
 }
 
+fn docker_proxy_package_key(repository_name: &str) -> String {
+    docker_package_key(repository_name)
+}
+
+async fn record_docker_manifest_cache_hit(
+    indexer: Option<&dyn ProxyIndexing>,
+    repository_name: &str,
+    reference: &str,
+    cache_path: &StoragePath,
+    digest: &str,
+    size: u64,
+) -> Result<(), ProxyIndexingError> {
+    let Some(indexer) = indexer else {
+        return Ok(());
+    };
+    let meta = ProxyArtifactMeta::builder(
+        repository_name.to_string(),
+        docker_proxy_package_key(repository_name),
+        cache_path.to_string(),
+    )
+    .version(reference.to_string())
+    .upstream_digest(digest.to_string())
+    .size(size)
+    .fetched_at(Utc::now())
+    .build();
+    indexer.record_cached_artifact(meta).await
+}
+
 async fn stream_response_to_tempfile(response: Response) -> Result<StreamedDownload, DockerError> {
     let named = Builder::new().prefix("docker-proxy-").tempfile()?;
     let (std_file, path) = named.into_parts();
@@ -716,7 +738,6 @@ fn upstream_image_name(repository_name: &str, upstream: &ProxyUpstream) -> Strin
     segments.join("/")
 }
 
-#[derive(Debug)]
 pub struct DockerProxyInner {
     pub id: Uuid,
     pub name: String,
@@ -725,6 +746,18 @@ pub struct DockerProxyInner {
     pub storage: DynStorage,
     pub site: NitroRepo,
     pub upstream: ProxyUpstream,
+    pub indexer: Arc<dyn ProxyIndexing>,
+}
+
+impl fmt::Debug for DockerProxyInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DockerProxyInner")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("active", &self.active)
+            .field("visibility", &self.visibility.read())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -745,6 +778,7 @@ impl DockerProxy {
             repository_name,
             reference,
             accept,
+            Some(self.indexer().as_ref()),
         )
         .await?;
 
@@ -831,6 +865,8 @@ impl DockerProxy {
     ) -> Result<Self, RepositoryFactoryError> {
         let upstream = ProxyUpstream::new(&config)
             .map_err(|err| RepositoryFactoryError::InvalidConfig("docker", err.to_string()))?;
+        let indexer: Arc<dyn ProxyIndexing> =
+            Arc::new(DatabaseProxyIndexer::new(site.clone(), repository.id));
 
         Ok(Self(Arc::new(DockerProxyInner {
             id: repository.id,
@@ -840,11 +876,16 @@ impl DockerProxy {
             storage,
             site,
             upstream,
+            indexer,
         })))
     }
 
     fn upstream(&self) -> &ProxyUpstream {
         &self.0.upstream
+    }
+
+    pub(crate) fn indexer(&self) -> &Arc<dyn ProxyIndexing> {
+        &self.0.indexer
     }
 }
 
@@ -953,6 +994,7 @@ async fn download_manifest_from_upstream(
     reference: &str,
     accept: Option<&str>,
     manifest_path: &StoragePath,
+    indexer: Option<&dyn ProxyIndexing>,
 ) -> Result<CachedManifest, DockerError> {
     let upstream_repo = upstream_image_name(repository_name, upstream);
     let path = format!("/v2/{}/manifests/{}", upstream_repo, reference);
@@ -1024,34 +1066,52 @@ async fn download_manifest_from_upstream(
         });
     }
 
-    if upstream.cache_enabled {
+    ensure_manifest_cached(
+        storage,
+        repository_id,
+        manifest_path,
+        repository_name,
+        reference,
+        &streamed_download,
+        &computed_digest,
+    )
+    .await?;
+
+    record_docker_manifest_cache_hit(
+        indexer,
+        repository_name,
+        reference,
+        manifest_path,
+        &computed_digest,
+        streamed_download.size,
+    )
+    .await?;
+
+    if !reference.starts_with("sha256:") {
+        let digest_path = StoragePath::from(format!(
+            "v2/{}/manifests/{}",
+            repository_name, &computed_digest
+        ));
         ensure_manifest_cached(
             storage,
             repository_id,
-            manifest_path,
+            &digest_path,
             repository_name,
-            reference,
+            &computed_digest,
             &streamed_download,
             &computed_digest,
         )
         .await?;
 
-        if !reference.starts_with("sha256:") {
-            let digest_path = StoragePath::from(format!(
-                "v2/{}/manifests/{}",
-                repository_name, &computed_digest
-            ));
-            ensure_manifest_cached(
-                storage,
-                repository_id,
-                &digest_path,
-                repository_name,
-                &computed_digest,
-                &streamed_download,
-                &computed_digest,
-            )
-            .await?;
-        }
+        record_docker_manifest_cache_hit(
+            indexer,
+            repository_name,
+            &computed_digest,
+            &digest_path,
+            &computed_digest,
+            streamed_download.size,
+        )
+        .await?;
     }
 
     if !reference.starts_with("sha256:") {
@@ -1082,6 +1142,7 @@ async fn revalidate_manifest_tag(
     reference: &str,
     manifest_path: &StoragePath,
     cached: CachedManifest,
+    indexer: Option<&dyn ProxyIndexing>,
 ) -> Result<RevalidationOutcome, DockerError> {
     if upstream.skip_tag_revalidation || reference.starts_with("sha256:") {
         return Ok(RevalidationOutcome::Unchanged(cached));
@@ -1125,6 +1186,7 @@ async fn revalidate_manifest_tag(
         reference,
         Some(MODERN_UPSTREAM_ACCEPT),
         manifest_path,
+        indexer,
     )
     .await?;
 
@@ -1139,6 +1201,7 @@ pub(crate) async fn fetch_and_cache_manifest(
     repository_name: &str,
     reference: &str,
     accept: Option<&str>,
+    indexer: Option<&dyn ProxyIndexing>,
 ) -> Result<CachedManifest, DockerError> {
     let manifest_path =
         StoragePath::from(format!("v2/{}/manifests/{}", repository_name, reference));
@@ -1176,6 +1239,7 @@ pub(crate) async fn fetch_and_cache_manifest(
                     reference,
                     &manifest_path,
                     cached,
+                    indexer,
                 )
                 .await?
                 {
@@ -1202,6 +1266,7 @@ pub(crate) async fn fetch_and_cache_manifest(
                 reference,
                 override_accept,
                 &manifest_path,
+                indexer,
             )
             .await
             {
@@ -1225,6 +1290,7 @@ pub(crate) async fn fetch_and_cache_manifest(
             reference,
             Some(MODERN_UPSTREAM_ACCEPT),
             &manifest_path,
+            indexer,
         )
         .await
     })
@@ -1421,23 +1487,21 @@ async fn download_blob_from_upstream(
         });
     }
 
-    if upstream.cache_enabled {
-        if let Err(err) = storage
-            .save_file(
-                repository_id,
-                FileContent::Path(streamed.path.to_path_buf()),
-                blob_path,
-            )
-            .await
-        {
-            if matches!(err, nr_storage::StorageError::PathCollision(_)) {
-                warn!(
-                    ?blob_path,
-                    "Blob cache write hit path collision; another request likely wrote it first"
-                );
-            } else {
-                return Err(err.into());
-            }
+    if let Err(err) = storage
+        .save_file(
+            repository_id,
+            FileContent::Path(streamed.path.to_path_buf()),
+            blob_path,
+        )
+        .await
+    {
+        if matches!(err, nr_storage::StorageError::PathCollision(_)) {
+            warn!(
+                ?blob_path,
+                "Blob cache write hit path collision; another request likely wrote it first"
+            );
+        } else {
+            return Err(err.into());
         }
     }
 

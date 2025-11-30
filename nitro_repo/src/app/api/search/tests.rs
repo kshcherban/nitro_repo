@@ -1,272 +1,157 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
-use bytes::Bytes;
-use nr_storage::{FileContent, Storage};
 
-use super::query_parser::SearchQuery;
-use super::*;
-use crate::repository::test_helpers::test_storage;
+use std::{
+    collections::{HashMap, HashSet},
+    iter::FromIterator,
+};
 
-fn simple_query(term: &str) -> SearchQuery {
-    SearchQuery {
-        terms: vec![term.to_lowercase()],
+use async_trait::async_trait;
+use chrono::{FixedOffset, TimeZone, Utc};
+
+use super::{
+    RepositorySummary,
+    database::SearchBackend,
+    execute_repository_search,
+    query_parser::{Operator, SearchQuery},
+};
+use crate::search::query::DatabasePackageRow;
+use uuid::Uuid;
+
+struct StubBackend {
+    rows: HashMap<Uuid, Vec<DatabasePackageRow>>,
+    indexed: HashSet<Uuid>,
+}
+
+#[async_trait]
+impl SearchBackend for StubBackend {
+    async fn fetch_repository_rows(
+        &self,
+        repository_id: Uuid,
+        _query: &SearchQuery,
+        _limit: usize,
+    ) -> Result<Vec<DatabasePackageRow>, sqlx::Error> {
+        Ok(self.rows.get(&repository_id).cloned().unwrap_or_default())
+    }
+
+    async fn repository_has_index_rows(&self, repository_id: Uuid) -> Result<bool, sqlx::Error> {
+        Ok(self.indexed.contains(&repository_id))
+    }
+}
+
+fn deb_row(name: &str, version: &str) -> DatabasePackageRow {
+    DatabasePackageRow {
+        package_name: name.to_string(),
+        package_key: name.to_string(),
+        version: version.to_string(),
+        path: format!("{name}/{version}/artifact.tgz"),
+        extra: None,
+        updated_at: Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&FixedOffset::east_opt(0).unwrap()),
+    }
+}
+
+fn summary(id: Uuid, name: &str, repo_type: &str) -> RepositorySummary {
+    RepositorySummary {
+        repository_id: id,
+        repository_name: name.to_string(),
+        storage_name: "primary".into(),
+        repository_type: repo_type.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn execute_repository_search_gathers_results() {
+    let repo_a = Uuid::new_v4();
+    let repo_b = Uuid::new_v4();
+    let backend = StubBackend {
+        rows: HashMap::from([
+            (repo_a, vec![deb_row("pkg-a", "1.0.0")]),
+            (repo_b, vec![deb_row("pkg-b", "2.0.0")]),
+        ]),
+        indexed: HashSet::from_iter([repo_a, repo_b]),
+    };
+    let summaries = vec![
+        summary(repo_a, "alpha", "npm"),
+        summary(repo_b, "bravo", "npm"),
+    ];
+
+    let outcome = execute_repository_search(&backend, &summaries, &SearchQuery::default(), 10)
+        .await
+        .expect("search");
+
+    assert_eq!(outcome.results.len(), 2);
+    assert!(outcome.unindexed.is_empty());
+    assert_eq!(outcome.results[0].repository_name, "alpha");
+}
+
+#[tokio::test]
+async fn execute_repository_search_applies_limit() {
+    let repo_a = Uuid::new_v4();
+    let repo_b = Uuid::new_v4();
+    let backend = StubBackend {
+        rows: HashMap::from([
+            (repo_a, vec![deb_row("pkg-a", "1.0.0")]),
+            (repo_b, vec![deb_row("pkg-b", "2.0.0")]),
+        ]),
+        indexed: HashSet::from_iter([repo_a, repo_b]),
+    };
+    let summaries = vec![
+        summary(repo_a, "alpha", "npm"),
+        summary(repo_b, "bravo", "npm"),
+    ];
+
+    let outcome = execute_repository_search(&backend, &summaries, &SearchQuery::default(), 1)
+        .await
+        .expect("search");
+
+    assert_eq!(outcome.results.len(), 1);
+}
+
+#[tokio::test]
+async fn execute_repository_search_marks_unindexed_repositories() {
+    let repo = Uuid::new_v4();
+    let backend = StubBackend {
+        rows: HashMap::from([(repo, Vec::new())]),
+        indexed: HashSet::new(),
+    };
+    let summaries = vec![summary(repo, "gamma", "docker")];
+
+    let outcome = execute_repository_search(&backend, &summaries, &SearchQuery::default(), 5)
+        .await
+        .expect("search");
+
+    assert!(outcome.results.is_empty());
+    assert_eq!(outcome.unindexed, vec!["gamma".to_string()]);
+}
+
+#[tokio::test]
+async fn execute_repository_search_respects_repository_filters() {
+    let repo_a = Uuid::new_v4();
+    let repo_b = Uuid::new_v4();
+    let backend = StubBackend {
+        rows: HashMap::from([
+            (repo_a, vec![deb_row("pkg-a", "1.0.0")]),
+            (repo_b, vec![deb_row("pkg-b", "2.0.0")]),
+        ]),
+        indexed: HashSet::from_iter([repo_a, repo_b]),
+    };
+    let summaries = vec![
+        summary(repo_a, "alpha", "npm"),
+        summary(repo_b, "bravo", "docker"),
+    ];
+    let query = SearchQuery {
+        repository_filter: Some("alpha".into()),
+        package_filter: Some((Operator::Equals, "pkg-a".into())),
         ..SearchQuery::default()
-    }
-}
-
-#[tokio::test]
-async fn search_repository_storage_finds_packages() {
-    let storage = test_storage().await;
-    let repo_id = Uuid::new_v4();
-    let path = StoragePath::from(
-        "packages/bc/66/875d449b23194f45debb8a2b70c704217f0aa2700d967098b2e1b812dd44/parallel_ssh-2.12.0-py3-none-any.whl",
-    );
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from_static(b"data")),
-            &path,
-        )
-        .await
-        .unwrap();
-    let summary = RepositorySummary {
-        repository_id: repo_id,
-        repository_name: "py-proxy".into(),
-        storage_name: "test".into(),
-        repository_type: "python".into(),
     };
 
-    let results = super::search_repository_storage(
-        &storage,
-        &summary,
-        SearchStrategy::PackagesDirectory {
-            base: Some("packages"),
-        },
-        &simple_query("parallel"),
-        10,
-    )
-    .await
-    .unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].file_name, "parallel_ssh-2.12.0-py3-none-any.whl");
-}
-
-#[tokio::test]
-async fn search_repository_storage_handles_root_packages() {
-    let storage = test_storage().await;
-    let repo_id = Uuid::new_v4();
-    let path = StoragePath::from("left-pad/1.0.0/package.tgz");
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from_static(b"data")),
-            &path,
-        )
+    let outcome = execute_repository_search(&backend, &summaries, &query, 10)
         .await
-        .unwrap();
-    let summary = RepositorySummary {
-        repository_id: repo_id,
-        repository_name: "npm-hosted".into(),
-        storage_name: "test".into(),
-        repository_type: "npm".into(),
-    };
+        .expect("search");
 
-    let results = super::search_repository_storage(
-        &storage,
-        &summary,
-        SearchStrategy::PackagesDirectory { base: None },
-        &simple_query("left-pad"),
-        10,
-    )
-    .await
-    .unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].cache_path, "left-pad/1.0.0/package.tgz");
-}
-
-#[tokio::test]
-async fn search_repository_storage_ignores_metadata() {
-    let storage = test_storage().await;
-    let repo_id = Uuid::new_v4();
-    let base = "packages/a1/b2/";
-    let file_path = StoragePath::from(format!("{base}artifact-1.0.0.whl"));
-    let metadata_path = StoragePath::from(format!("{base}artifact-1.0.0.whl.metadata"));
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from_static(b"data")),
-            &file_path,
-        )
-        .await
-        .unwrap();
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from_static(b"meta")),
-            &metadata_path,
-        )
-        .await
-        .unwrap();
-    let summary = RepositorySummary {
-        repository_id: repo_id,
-        repository_name: "py-proxy".into(),
-        storage_name: "test".into(),
-        repository_type: "python".into(),
-    };
-
-    let results = super::search_repository_storage(
-        &storage,
-        &summary,
-        SearchStrategy::PackagesDirectory {
-            base: Some("packages"),
-        },
-        &simple_query("artifact"),
-        10,
-    )
-    .await
-    .unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].file_name, "artifact-1.0.0.whl");
-}
-
-#[tokio::test]
-async fn search_repository_storage_respects_limit() {
-    let storage = test_storage().await;
-    let repo_id = Uuid::new_v4();
-    for i in 0..3 {
-        let path = StoragePath::from(format!("packages/{:02}/pkg/package-{i}.whl", i));
-        storage
-            .save_file(
-                repo_id,
-                FileContent::Bytes(Bytes::from_static(b"data")),
-                &path,
-            )
-            .await
-            .unwrap();
-    }
-    let summary = RepositorySummary {
-        repository_id: repo_id,
-        repository_name: "py-proxy".into(),
-        storage_name: "test".into(),
-        repository_type: "python".into(),
-    };
-
-    let results = super::search_repository_storage(
-        &storage,
-        &summary,
-        SearchStrategy::PackagesDirectory {
-            base: Some("packages"),
-        },
-        &simple_query("package"),
-        2,
-    )
-    .await
-    .unwrap();
-    assert_eq!(results.len(), 2);
-}
-
-#[tokio::test]
-async fn search_repository_storage_finds_docker_images() {
-    let storage = test_storage().await;
-    let repo_id = Uuid::new_v4();
-    let manifest_path = StoragePath::from("v2/library/nginx/manifests/latest");
-    let manifest = r#"
-    {
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-        "config": {
-            "mediaType": "application/vnd.docker.container.image.v1+json",
-            "size": 7023,
-            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        },
-        "layers": [
-            {
-                "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-                "size": 32654,
-                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            }
-        ]
-    }
-    "#;
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from(manifest)),
-            &manifest_path,
-        )
-        .await
-        .unwrap();
-
-    let summary = RepositorySummary {
-        repository_id: repo_id,
-        repository_name: "docker-hosted".into(),
-        storage_name: "test".into(),
-        repository_type: "docker".into(),
-    };
-
-    let results = super::search_repository_storage(
-        &storage,
-        &summary,
-        SearchStrategy::Docker,
-        &simple_query("nginx"),
-        10,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].file_name, "library/nginx:latest");
-    assert_eq!(results[0].cache_path, "v2/library/nginx/manifests/latest");
-    assert_eq!(results[0].size, 7023 + 32654);
-}
-
-#[tokio::test]
-async fn search_repository_storage_skips_docker_tag_metadata() {
-    let storage = test_storage().await;
-    let repo_id = Uuid::new_v4();
-    let manifest_path = StoragePath::from("v2/local/docker-proxy/manifests/nightly");
-    let manifest = r#"{"schemaVersion": 2, "config": {"size": 1}, "layers": []}"#;
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from(manifest)),
-            &manifest_path,
-        )
-        .await
-        .unwrap();
-
-    let tag_meta_path =
-        StoragePath::from("v2/local/docker-proxy/manifests/nightly.nr-docker-tagmeta");
-    storage
-        .save_file(
-            repo_id,
-            FileContent::Bytes(Bytes::from_static(b"{}")),
-            &tag_meta_path,
-        )
-        .await
-        .unwrap();
-
-    let summary = RepositorySummary {
-        repository_id: repo_id,
-        repository_name: "docker-proxy".into(),
-        storage_name: "test".into(),
-        repository_type: "docker".into(),
-    };
-
-    let results = super::search_repository_storage(
-        &storage,
-        &summary,
-        SearchStrategy::Docker,
-        &simple_query("docker"),
-        10,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].file_name, "local/docker-proxy:nightly");
-    assert!(
-        results
-            .iter()
-            .all(|result| !result.file_name.ends_with(".nr-docker-tagmeta"))
-    );
+    assert_eq!(outcome.results.len(), 1);
+    assert_eq!(outcome.results[0].repository_name, "alpha");
 }

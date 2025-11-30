@@ -36,6 +36,7 @@
         <v-expand-transition>
           <div v-if="isProxy" class="mt-4">
             <MavenProxyConfig v-model="proxyConfig" />
+            <ProxyCacheNotice class="mt-4" />
           </div>
         </v-expand-transition>
       </v-card-text>
@@ -66,6 +67,7 @@ import TextInput from "@/components/form/text/TextInput.vue";
 import SubmitButton from "@/components/form/SubmitButton.vue";
 import MavenProxyConfig from "./MavenProxyConfig.vue";
 import http from "@/http";
+import ProxyCacheNotice from "@/components/nr/repository/ProxyCacheNotice.vue";
 import { defaultProxy, type MavenConfigType, type MavenProxyConfigType } from "./maven";
 
 const mavenTypes = [

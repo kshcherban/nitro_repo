@@ -39,6 +39,7 @@ use super::{
 };
 use crate::{
     app::authentication::AuthenticationError,
+    repository::proxy_indexing::ProxyIndexingError,
     utils::{IntoErrorResponse, ResponseBuilder, bad_request::BadRequestErrors},
 };
 
@@ -138,6 +139,7 @@ impl_from_error_for_other!(reqwest::Error);
 impl_from_error_for_other!(AuthenticationError);
 impl_from_error_for_other!(RepositoryHandlerError);
 impl_from_error_for_other!(nr_storage::StorageError);
+impl_from_error_for_other!(ProxyIndexingError);
 
 impl From<url::ParseError> for DockerError {
     fn from(err: url::ParseError) -> Self {

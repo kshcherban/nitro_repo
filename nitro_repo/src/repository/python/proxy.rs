@@ -1,9 +1,15 @@
 use std::sync::{Arc, LazyLock};
 
+use chrono::Utc;
 use http::StatusCode;
 use nr_core::{
     database::entities::repository::{DBRepository, DBRepositoryConfig},
-    repository::{Visibility, config::RepositoryConfigType, proxy_url::ProxyURL},
+    repository::{
+        Visibility,
+        config::RepositoryConfigType,
+        project::{ProxyArtifactKey, ProxyArtifactMeta},
+        proxy_url::ProxyURL,
+    },
     storage::StoragePath,
 };
 use nr_storage::{DynStorage, FileContent, Storage};
@@ -37,12 +43,13 @@ use crate::{
     app::NitroRepo,
     repository::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
-        RepositoryRequest, utils::can_read_repository_with_auth,
+        RepositoryRequest,
+        proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
+        utils::can_read_repository_with_auth,
     },
     utils::ResponseBuilder,
 };
 
-#[derive(Debug)]
 pub struct PythonProxyInner {
     pub id: Uuid,
     pub name: String,
@@ -53,6 +60,19 @@ pub struct PythonProxyInner {
     pub client: reqwest::Client,
     pub active: bool,
     pub storage_name: String,
+    pub indexer: Arc<dyn ProxyIndexing>,
+}
+
+impl std::fmt::Debug for PythonProxyInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PythonProxyInner")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("visibility", &self.visibility.read())
+            .field("storage_name", &self.storage_name)
+            .field("active", &self.active)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +95,8 @@ impl PythonProxy {
                 )
             })?;
         let storage_name = storage.storage_config().storage_config.storage_name.clone();
+        let indexer: Arc<dyn ProxyIndexing> =
+            Arc::new(DatabaseProxyIndexer::new(site.clone(), repository.id));
         Ok(Self(Arc::new(PythonProxyInner {
             id: repository.id,
             name: repository.name.to_string(),
@@ -85,6 +107,7 @@ impl PythonProxy {
             client,
             active: repository.active,
             storage_name,
+            indexer,
         })))
     }
 
@@ -116,6 +139,17 @@ impl PythonProxy {
             self.repository_slug()
         )
     }
+    fn indexer(&self) -> &Arc<dyn ProxyIndexing> {
+        &self.0.indexer
+    }
+
+    pub async fn handle_external_eviction(
+        &self,
+        path: &StoragePath,
+    ) -> Result<(), PythonRepositoryError> {
+        evict_python_proxy_cache_entry(self.indexer().as_ref(), path).await?;
+        Ok(())
+    }
 
     async fn download_and_cache(
         &self,
@@ -145,25 +179,37 @@ impl PythonProxy {
                             .save_file(self.id(), FileContent::Bytes(bytes.clone()), path)
                             .await?;
 
-                        if let Some(cache_path) = cache_path_for_python_proxy(path) {
-                            if cache_path != *path {
-                                if let Err(err) = self
-                                    .storage()
-                                    .save_file(
-                                        self.id(),
-                                        FileContent::Bytes(bytes.clone()),
-                                        &cache_path,
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        ?err,
-                                        ?cache_path,
-                                        "Failed to persist python proxy cache entry"
-                                    );
+                        let canonical_path =
+                            if let Some(cache_path) = cache_path_for_python_proxy(path) {
+                                if cache_path != *path {
+                                    if let Err(err) = self
+                                        .storage()
+                                        .save_file(
+                                            self.id(),
+                                            FileContent::Bytes(bytes.clone()),
+                                            &cache_path,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            ?err,
+                                            ?cache_path,
+                                            "Failed to persist python proxy cache entry"
+                                        );
+                                    }
                                 }
-                            }
-                        }
+                                cache_path
+                            } else {
+                                path.clone()
+                            };
+
+                        record_python_proxy_cache_hit(
+                            self.indexer().as_ref(),
+                            &canonical_path,
+                            bytes.len() as u64,
+                            Some(&url),
+                        )
+                        .await?;
                         debug!(%url, "Cached python proxy resource");
                         return Ok(true);
                     }
@@ -501,6 +547,117 @@ impl Repository for PythonProxy {
             ))
         }
     }
+}
+
+const PYTHON_PROXY_SUFFIXES: [&str; 7] = [
+    ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tar", ".zip", ".whl",
+];
+
+fn strip_python_suffix(file_name: &str) -> &str {
+    for suffix in PYTHON_PROXY_SUFFIXES {
+        if file_name.ends_with(suffix) {
+            return &file_name[..file_name.len() - suffix.len()];
+        }
+    }
+    file_name
+}
+
+fn python_proxy_name_version(file_name: &str) -> Option<(String, String)> {
+    let stem = strip_python_suffix(file_name);
+    let mut search = stem.match_indices('-').collect::<Vec<_>>();
+    search.sort_by_key(|(idx, _)| *idx);
+    for (idx, _) in search {
+        if idx + 1 >= stem.len() {
+            continue;
+        }
+        let remainder = &stem[idx + 1..];
+        let trimmed = if remainder.starts_with(['v', 'V']) {
+            &remainder[1..]
+        } else {
+            remainder
+        };
+        if trimmed.is_empty()
+            || !trimmed
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        let version_end = trimmed.find('-').unwrap_or(trimmed.len());
+        if version_end == 0 {
+            continue;
+        }
+        let version = trimmed[..version_end].to_string();
+        let name = stem[..idx].to_string();
+        if name.is_empty() || version.is_empty() {
+            continue;
+        }
+        return Some((name, version));
+    }
+    None
+}
+
+fn storage_file_name(path: &StoragePath) -> Option<String> {
+    path.clone().into_iter().last().map(String::from)
+}
+
+fn canonical_cache_path(path: &StoragePath) -> String {
+    path.to_string()
+}
+
+pub(super) fn python_proxy_meta_from_cache_path(
+    path: &StoragePath,
+    size: u64,
+    upstream_url: Option<&Url>,
+) -> Option<ProxyArtifactMeta> {
+    let file_name = storage_file_name(path)?;
+    let (package_name, version) = python_proxy_name_version(&file_name)?;
+    let mut builder = ProxyArtifactMeta::builder(
+        package_name.clone(),
+        normalize_package_name(&package_name),
+        canonical_cache_path(path),
+    )
+    .version(version)
+    .size(size)
+    .fetched_at(Utc::now());
+    if let Some(url) = upstream_url {
+        builder = builder.upstream_url(url.to_string());
+    }
+    Some(builder.build())
+}
+
+pub(super) fn python_proxy_key_from_cache_path(path: &StoragePath) -> Option<ProxyArtifactKey> {
+    let file_name = storage_file_name(path)?;
+    let (package_name, version) = python_proxy_name_version(&file_name)?;
+    Some(ProxyArtifactKey {
+        package_key: normalize_package_name(&package_name),
+        version: Some(version),
+        cache_path: Some(canonical_cache_path(path)),
+    })
+}
+
+pub(super) async fn record_python_proxy_cache_hit(
+    indexer: &dyn ProxyIndexing,
+    path: &StoragePath,
+    size: u64,
+    upstream_url: Option<&Url>,
+) -> Result<(), ProxyIndexingError> {
+    if let Some(meta) = python_proxy_meta_from_cache_path(path, size, upstream_url) {
+        indexer.record_cached_artifact(meta).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn evict_python_proxy_cache_entry(
+    indexer: &dyn ProxyIndexing,
+    path: &StoragePath,
+) -> Result<(), ProxyIndexingError> {
+    if let Some(key) = python_proxy_key_from_cache_path(path) {
+        indexer.evict_cached_artifact(key).await?;
+    }
+    Ok(())
 }
 
 fn cache_path_for_python_proxy(path: &StoragePath) -> Option<StoragePath> {
