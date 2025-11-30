@@ -12,6 +12,7 @@ use nr_core::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::future::Future;
 use tracing::{debug, error, info, instrument};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -34,6 +35,33 @@ pub fn management_routes() -> Router<NitroRepo> {
         .route("/{repository_id}/config/{key}", put(update_config))
         .route("/{repository_id}/config/{key}", get(get_config))
         .route("/{repository_id}", delete(delete_repository))
+}
+
+fn format_missing_storage_error(storage_id: Uuid, repository: Uuid) -> String {
+    format!(
+        "Storage backend {} not available for repository {}",
+        storage_id, repository
+    )
+}
+
+async fn delete_repository_sequence<DB, DBFut, DBE, ST, STFut, STE, R>(
+    delete_from_db: DB,
+    delete_from_storage: ST,
+    remove_from_memory: R,
+) -> Result<(), InternalError>
+where
+    DB: FnOnce() -> DBFut,
+    DBFut: Future<Output = Result<(), DBE>>,
+    DBE: Into<InternalError>,
+    ST: FnOnce() -> STFut,
+    STFut: Future<Output = Result<(), STE>>,
+    STE: Into<InternalError>,
+    R: FnOnce(),
+{
+    delete_from_db().await.map_err(Into::into)?;
+    delete_from_storage().await.map_err(Into::into)?;
+    remove_from_memory();
+    Ok(())
 }
 #[derive(Deserialize, ToSchema, Debug)]
 pub struct NewRepositoryRequest {
@@ -341,13 +369,23 @@ pub async fn delete_repository(
             storage_id = %db_repository.storage_id,
             "Storage not loaded for repository deletion"
         );
-        return Ok(ResponseBuilder::internal_server_error().body("Storage missing for repository"));
+        return Ok(
+            ResponseBuilder::internal_server_error().body(format_missing_storage_error(
+                db_repository.storage_id,
+                repository,
+            )),
+        );
     };
 
-    storage.delete_repository(repository).await?;
+    delete_repository_sequence(
+        || DBRepository::delete_by_id(repository, site.as_ref()),
+        || storage.delete_repository(repository),
+        || site.remove_repository(repository),
+    )
+    .await?;
 
-    DBRepository::delete_by_id(repository, site.as_ref()).await?;
-
-    site.remove_repository(repository);
     Ok(ResponseBuilder::no_content().empty())
 }
+
+#[cfg(test)]
+mod tests;

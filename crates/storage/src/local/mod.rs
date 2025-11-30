@@ -477,6 +477,27 @@ impl LocalStorage {
         });
         Ok(())
     }
+
+    /// Enumerate entries under `root` returning repository-relative paths.
+    /// Used for diagnostics when directory removal encounters transient errors.
+    pub(crate) async fn directory_entries(root: &Path) -> io::Result<Vec<PathBuf>> {
+        let root = root.to_path_buf();
+        spawn_blocking(move || {
+            let mut entries = Vec::new();
+            for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+                let path = entry.path();
+                if path == root {
+                    continue;
+                }
+                let relative = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
+                entries.push(relative);
+            }
+            entries.sort();
+            Ok(entries)
+        })
+        .await
+        .map_err(|err| io::Error::other(err.to_string()))?
+    }
 }
 impl Storage for LocalStorage {
     type Error = LocalStorageError;
@@ -849,6 +870,20 @@ impl Storage for LocalStorage {
             match result {
                 Ok(()) => break,
                 Err(err) if is_dir && err.kind() == ErrorKind::DirectoryNotEmpty && attempt < 3 => {
+                    match Self::directory_entries(&root).await {
+                        Ok(entries) => debug!(
+                            attempt,
+                            repository = %repository,
+                            remaining = ?entries,
+                            "Repository directory not empty; retrying removal"
+                        ),
+                        Err(snapshot_err) => debug!(
+                            attempt,
+                            repository = %repository,
+                            error = %snapshot_err,
+                            "Directory not empty; retrying removal (failed to snapshot contents)"
+                        ),
+                    }
                     sleep(Duration::from_millis(25 * attempt as u64)).await;
                 }
                 Err(err) => return Err(LocalStorageError::IOError(err)),

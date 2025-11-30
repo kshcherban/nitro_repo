@@ -248,3 +248,27 @@ async fn delete_repository_is_idempotent_for_missing_repo() -> anyhow::Result<()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn directory_entries_are_relative_and_sorted() -> anyhow::Result<()> {
+    let temp = tempdir()?;
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("alpha/beta"))?;
+    std::fs::write(root.join("alpha/file.txt"), b"data")?;
+    std::fs::write(root.join("root.bin"), b"payload")?;
+
+    let mut entries = super::LocalStorage::directory_entries(root).await?;
+
+    // ensure deterministic ordering for assertions
+    entries.sort();
+
+    let expected = vec![
+        std::path::PathBuf::from("alpha"),
+        std::path::PathBuf::from("alpha/beta"),
+        std::path::PathBuf::from("alpha/file.txt"),
+        std::path::PathBuf::from("root.bin"),
+    ];
+    assert_eq!(entries, expected);
+
+    Ok(())
+}

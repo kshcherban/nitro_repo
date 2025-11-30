@@ -67,3 +67,6 @@ tracing-appender.workspace = true
 nr-core = { workspace = true, features = ["testing"] }
 anyhow = { workspace = true }
 tempfile = "3"
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["full"] }
+http-body-util.workspace = true
