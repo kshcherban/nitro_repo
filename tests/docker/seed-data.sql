@@ -97,6 +97,23 @@ INSERT INTO repository_configs (repository_id, key, value) VALUES
     ('22222222-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 
+-- Docker Hosted Repository
+INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
+VALUES (
+    '33333333-0000-0000-0000-000000000002'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'docker-hosted',
+    'docker',
+    'Public',
+    true
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO repository_configs (repository_id, key, value) VALUES
+    ('33333333-0000-0000-0000-000000000002'::uuid, 'docker', '{"type": "Hosted"}'::jsonb),
+    ('33333333-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
+ON CONFLICT (repository_id, key) DO NOTHING;
+
 -- Docker Proxy Repository
 INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
 VALUES (
@@ -116,7 +133,7 @@ INSERT INTO repository_configs (repository_id, key, value) VALUES
         '{
             "type": "Proxy",
             "config": {
-                "upstream_url": "https://registry-1.docker.io",
+                "upstream_url": "https://registry-1.docker.io"
             }
         }'::jsonb
     ),

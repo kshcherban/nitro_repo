@@ -1002,9 +1002,22 @@ async fn download_manifest_from_upstream(
     let response = upstream.fetch(&path, upstream_accept.as_deref()).await?;
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
+        tracing::warn!(
+            %reference,
+            repository = repository_name,
+            upstream_path = %path,
+            "Upstream returned 404 for Docker manifest"
+        );
         return Err(DockerError::ManifestNotFound(reference.to_string()));
     }
     if !status.is_success() {
+        tracing::warn!(
+            %reference,
+            repository = repository_name,
+            upstream_path = %path,
+            %status,
+            "Upstream returned non-success status for Docker manifest"
+        );
         return Err(DockerError::InvalidManifest(format!(
             "Upstream returned status {}",
             status
@@ -1298,7 +1311,17 @@ pub(crate) async fn fetch_and_cache_manifest(
 }
 
 fn is_schema1_manifest(media_type: &str) -> bool {
-    media_type.to_ascii_lowercase().contains("manifest.v1+json")
+    let normalized = media_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "application/vnd.docker.distribution.manifest.v1+json"
+            | "application/vnd.docker.distribution.manifest.v1+prettyjws"
+    )
 }
 
 fn client_prefers_modern_manifest(accept: Option<&str>) -> bool {

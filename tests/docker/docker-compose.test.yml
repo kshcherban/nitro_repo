@@ -12,6 +12,8 @@ services:
       retries: 5
     volumes:
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - integration
 
   nitro-repo:
     image: nitro_repo:test
@@ -25,12 +27,13 @@ services:
       - RUST_LOG=debug
       - DATABASE_URL=postgresql://nitro:nitro@postgres:5432/nitro_repo_test
       - NITRO_CONFIG=/config/nitro_repo.test.toml
-    ports:
-      - "127.0.0.1:8888:8888"
     command: ["start", "--config", "/config/nitro_repo.test.toml"]
     volumes:
       - ./config/nitro_repo.test.toml:/config/nitro_repo.test.toml:ro
       - test-storage:/storage
+    networks:
+      - integration
+
   db-seeder:
     image: postgres:17
     depends_on:
@@ -42,6 +45,8 @@ services:
       - ./seed-database.sh:/seed-database.sh:ro
     command: /bin/bash /seed-database.sh
     restart: "on-failure"
+    networks:
+      - integration
 
   docker:
     image: docker:24-dind
@@ -59,6 +64,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - integration
 
   test-runner:
     build:
@@ -82,8 +89,13 @@ services:
       - ../fixtures:/fixtures:ro
       - test-results:/results
     command: /bin/bash -c "sleep infinity"
+    networks:
+      - integration
 
 volumes:
   test-storage:
   test-results:
   docker-graph:
+
+networks:
+  integration: {}

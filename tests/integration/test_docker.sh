@@ -1,6 +1,6 @@
 #!/bin/bash
 # Docker integration tests
-# Tests Docker proxy repository end-to-end
+# Verifies hosted registry push/pull flows and basic auth enforcement
 
 set -euo pipefail
 
@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 # Docker-specific configuration
-DOCKER_REPO_PATH="${TEST_STORAGE}/docker-proxy"
+DOCKER_REPOSITORY_NAME="${DOCKER_HOSTED_REPOSITORY:-docker-hosted}"
+DOCKER_REPO_PATH="${TEST_STORAGE}/${DOCKER_REPOSITORY_NAME}"
 FIXTURE_DIR="/fixtures/docker"
 IMAGE_NAME="nitro-test/testimg"
 IMAGE_TAG="1.0.0-$(random_string 6)"

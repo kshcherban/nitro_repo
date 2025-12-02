@@ -810,6 +810,26 @@ async fn blob_digest_mismatch_is_reported() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn schema1_detection_handles_known_media_types() {
+    assert!(super::is_schema1_manifest(
+        "application/vnd.docker.distribution.manifest.v1+json"
+    ));
+    assert!(super::is_schema1_manifest(
+        "application/vnd.docker.distribution.manifest.v1+prettyjws"
+    ));
+    assert!(super::is_schema1_manifest(
+        "application/vnd.docker.distribution.manifest.v1+json; charset=utf-8"
+    ));
+
+    assert!(!super::is_schema1_manifest(
+        "application/vnd.oci.image.manifest.v1+json"
+    ));
+    assert!(!super::is_schema1_manifest(
+        "application/vnd.docker.distribution.manifest.v2+json"
+    ));
+}
+
 #[tokio::test]
 async fn large_blob_is_streamed_without_buffering() -> anyhow::Result<()> {
     let chunk = Bytes::from(vec![b'x'; 1_024 * 1_024]); // 1MiB chunk

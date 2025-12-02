@@ -1101,16 +1101,16 @@ async fn delete_version_records_by_path_skips_executor_when_empty() {
 
 mod catalog_db_tests {
     use super::*;
+    use crate::repository::NewRepository;
     use once_cell::sync::Lazy;
     use sqlx::PgPool;
     use std::collections::HashMap;
-    use crate::repository::NewRepository;
+    use testcontainers::ImageExt;
     use testcontainers::{
+        ContainerAsync, GenericImage,
         core::{IntoContainerPort, WaitFor},
         runners::AsyncRunner,
-        ContainerAsync, GenericImage,
     };
-    use testcontainers::ImageExt;
 
     use nr_core::{
         database::entities::{
@@ -1256,13 +1256,10 @@ mod catalog_db_tests {
         version: &str,
         version_path: &str,
     ) {
-        let project = if let Some(existing) = DBProject::find_by_project_key(
-            project_key,
-            repository_id,
-            pool,
-        )
-        .await
-        .expect("query project")
+        let project = if let Some(existing) =
+            DBProject::find_by_project_key(project_key, repository_id, pool)
+                .await
+                .expect("query project")
         {
             existing
         } else {
@@ -1289,10 +1286,7 @@ mod catalog_db_tests {
             version_page: None,
             extra: VersionData::default(),
         };
-        new_version
-            .insert(pool)
-            .await
-            .expect("insert version");
+        new_version.insert(pool).await.expect("insert version");
     }
 
     #[tokio::test]
