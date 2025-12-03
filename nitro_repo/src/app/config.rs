@@ -86,6 +86,8 @@ pub struct WebServer {
     pub max_upload: MaxUpload,
     /// The TLS configuration for the web server.
     pub tls: Option<TlsConfig>,
+    /// Number of Tokio worker threads for the HTTP server. None -> use CPU cores.
+    pub worker_threads: Option<usize>,
 }
 impl Default for WebServer {
     fn default() -> Self {
@@ -94,6 +96,7 @@ impl Default for WebServer {
             open_api_routes: true,
             max_upload: Default::default(),
             tls: None,
+            worker_threads: None,
         }
     }
 }

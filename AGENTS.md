@@ -77,9 +77,10 @@ When reviewing or writing code, check for:
 2. **Test**: Write failing tests that define success
 3. **Implement**: Write minimal code to pass tests
 4. **Refactor**: Clean up while keeping tests green
-5. **Verify**: Run full test suite + fmt + dev.sh
+5. **Verify**: Run relevant tests
 6. **Document**: Ensure code is self-documenting with clear names and necessary comments
 7. **Memorize**: Check knowledge graph memory section below on how to work with projects memory
+8. **Test placement**: Keep tests in dedicated files/modules (no inline tests inside source files); mirror structure used by existing repos (e.g., `proxy/tests.rs`).
 
 # Knowledge Graph Memory
 

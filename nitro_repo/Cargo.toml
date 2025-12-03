@@ -89,6 +89,7 @@ strum.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 derive_more.workspace = true
+num_cpus.workspace = true
 # Badge Stuff
 
 pin-project = "1"

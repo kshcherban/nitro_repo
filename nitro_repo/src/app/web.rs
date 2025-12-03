@@ -15,6 +15,7 @@ use futures_util::pin_mut;
 use http::{HeaderName, HeaderValue};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use num_cpus;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::TcpListener, signal};
@@ -33,7 +34,18 @@ use crate::app::request_logging::AppTracingLayer;
 
 const POWERED_BY_HEADER: HeaderName = HeaderName::from_static("x-powered-by");
 const POWERED_BY_VALUE: HeaderValue = HeaderValue::from_static("Nitro Repo");
+/// Decide how many Tokio worker threads to start.
+pub(crate) fn resolve_worker_threads(web_server: &WebServer) -> usize {
+    let configured = web_server.worker_threads.unwrap_or_else(num_cpus::get);
+    if configured == 0 { 1 } else { configured }
+}
+#[allow(dead_code)] // Useful for callers that already hold a runtime
 pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = load_config(config_path)?;
+    start_with_config(config).await
+}
+
+pub(crate) async fn start_with_config(config: NitroRepoConfig) -> anyhow::Result<()> {
     let NitroRepoConfig {
         web_server,
         database,
@@ -46,12 +58,13 @@ pub(crate) async fn start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         security,
         email,
         suggested_local_storage_path,
-    } = load_config(config_path)?;
+    } = config;
     let WebServer {
         bind_address,
         max_upload,
         tls,
         open_api_routes,
+        ..
     } = web_server;
 
     let logger = crate::logging::init(log, opentelemetry)?;
@@ -236,3 +249,6 @@ fn rustls_server_config(
 
     Ok(Arc::new(config))
 }
+
+#[cfg(test)]
+mod tests;

@@ -25,6 +25,7 @@ use std::{
 };
 
 use anyhow::Context;
+use app::web::resolve_worker_threads;
 use app::{
     NitroRepo,
     config::{NitroRepoConfig, load_config},
@@ -177,11 +178,14 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn web_start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    let tokio = tokio::runtime::Builder::new_current_thread()
+    let config = load_config(config_path)?;
+    let worker_threads = resolve_worker_threads(&config.web_server);
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
         .thread_name_fn(thread_name)
         .enable_all()
         .build()?;
-    tokio.block_on(app::web::start(config_path))?;
+    tokio.block_on(app::web::start_with_config(config))?;
 
     Ok(())
 }

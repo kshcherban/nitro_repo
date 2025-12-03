@@ -7,6 +7,7 @@ use std::{
 use axum::{body::Body, response::Response};
 use bytes::Bytes;
 use chrono::Utc;
+use futures::StreamExt;
 use http::{
     StatusCode,
     header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED},
@@ -26,6 +27,8 @@ use nr_storage::{DynStorage, FileContent, Storage, StorageFile};
 use parking_lot::RwLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tempfile::Builder;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, instrument, warn};
 use uuid::Uuid;
 
@@ -61,6 +64,54 @@ pub struct MavenProxyRepositoryRoute {
     /// If Null then it will be the lowest priority
     pub priority: Option<i32>,
     // TODO: Credentials
+}
+
+#[derive(Debug)]
+struct StreamedDownload {
+    path: tempfile::TempPath,
+    size: u64,
+}
+
+fn snapshot_routes(config: &RwLock<MavenProxyConfig>) -> Vec<MavenProxyRepositoryRoute> {
+    config.read().routes.clone()
+}
+
+async fn stream_response_to_tempfile(
+    response: reqwest::Response,
+) -> Result<StreamedDownload, MavenError> {
+    let named = Builder::new().prefix("maven-proxy-").tempfile()?;
+    let (std_file, path) = named.into_parts();
+    let mut file = tokio::fs::File::from_std(std_file);
+
+    let mut total = 0u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        total += chunk.len() as u64;
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    file.sync_all().await?;
+
+    Ok(StreamedDownload { path, size: total })
+}
+
+async fn persist_streamed_download(
+    storage: &DynStorage,
+    repository_id: Uuid,
+    indexer: Option<&dyn ProxyIndexing>,
+    streamed: &StreamedDownload,
+    to: &StoragePath,
+) -> Result<(), MavenError> {
+    storage
+        .save_file(
+            repository_id,
+            FileContent::Path(streamed.path.to_path_buf()),
+            to,
+        )
+        .await?;
+    record_maven_proxy_cache_hit(indexer, to, streamed.size).await?;
+    Ok(())
 }
 fn project_download_files(pom: &Pom) -> Result<Vec<String>, MavenError> {
     let version = pom
@@ -122,14 +173,6 @@ impl MavenProxy {
         };
         Ok(Self(Arc::new(inner)))
     }
-    async fn save_bytes(&self, bytes: Bytes, to: &StoragePath) -> Result<(), MavenError> {
-        let size = bytes.len() as u64;
-        self.storage
-            .save_file(self.id, FileContent::Bytes(bytes), to)
-            .await?;
-        record_maven_proxy_cache_hit(Some(self.indexer().as_ref()), to, size).await?;
-        Ok(())
-    }
     #[instrument(skip(self), fields(nr.repository.id = %self.id, nr.repository.name = %self.name))]
     pub async fn proxy_project_download(
         &self,
@@ -151,8 +194,15 @@ impl MavenProxy {
             match http_client.get(&url).send().await {
                 Ok(ok) => {
                     if ok.status().is_success() {
-                        let bytes = ok.bytes().await?;
-                        self.save_bytes(bytes, &path).await?;
+                        let streamed = stream_response_to_tempfile(ok).await?;
+                        persist_streamed_download(
+                            &self.storage,
+                            self.id,
+                            Some(self.indexer().as_ref()),
+                            &streamed,
+                            &path,
+                        )
+                        .await?;
                     } else {
                         warn!(?url, ?file, ?ok, "Failed to download file");
                     }
@@ -175,11 +225,11 @@ impl MavenProxy {
         //  If a recent previous request was made with a similar path use that proxy config.
         //  Similar path being both starting with /dev/kingtux/tms/... They should be in the same proxy
         // TODO: Handle projects. When requesting a path such as /dev/kingtux/tms/1.0.0/tms-1.0.0.pom. Go ahead and download all files in that directory.
-        let proxy_config = self.config.read().clone();
+        let routes = snapshot_routes(&self.config);
         let http_client = reqwest::Client::builder()
             .user_agent("Nitro Repo")
             .build()?;
-        for route in proxy_config.routes {
+        for route in routes {
             let mut path_as_string = path.to_string();
             if path_as_string.starts_with("/") {
                 path_as_string = path_as_string[1..].into();
@@ -201,20 +251,28 @@ impl MavenProxy {
                 }
             };
             if response.status().is_success() {
-                let response_bytes = response.bytes().await?;
-                if path_as_string.ends_with(".pom") {
-                    let self_clone = self.clone();
-                    let path = path.clone();
-                    let pom = response_bytes.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) =
-                            self_clone.proxy_project_download(path, route, pom).await
-                        {
-                            error!(?error, "Failed to download project files");
-                        };
-                    });
+                let is_pom = path_as_string.ends_with(".pom");
+                let streamed = stream_response_to_tempfile(response).await?;
+                if is_pom {
+                    let pom_bytes = tokio::fs::read(&streamed.path).await?;
+                    self.proxy_project_download(
+                        path.clone(),
+                        route.clone(),
+                        Bytes::from(pom_bytes),
+                    )
+                    .await?;
                 }
-                self.save_bytes(response_bytes, &path).await?;
+                persist_streamed_download(
+                    &self.storage,
+                    self.id,
+                    Some(self.indexer().as_ref()),
+                    &streamed,
+                    &path,
+                )
+                .await?;
+                if path_as_string.ends_with(".pom") {
+                    // POM was already parsed and project files downloaded above
+                }
                 return Ok(self.storage.open_file(self.id, &path).await?);
             } else {
                 warn!(?response, ?url_string, "Failed to proxy request");
@@ -377,83 +435,7 @@ pub(super) async fn evict_maven_proxy_cache_entry(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use nr_core::repository::project::{ProxyArtifactKey, ProxyArtifactMeta};
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    #[derive(Clone, Default)]
-    struct RecordingIndexer {
-        recorded: Arc<Mutex<Vec<ProxyArtifactMeta>>>,
-        evicted: Arc<Mutex<Vec<ProxyArtifactKey>>>,
-    }
-
-    impl RecordingIndexer {
-        async fn recorded(&self) -> Vec<ProxyArtifactMeta> {
-            self.recorded.lock().await.clone()
-        }
-
-        async fn evicted(&self) -> Vec<ProxyArtifactKey> {
-            self.evicted.lock().await.clone()
-        }
-    }
-
-    #[async_trait]
-    impl ProxyIndexing for RecordingIndexer {
-        async fn record_cached_artifact(
-            &self,
-            meta: ProxyArtifactMeta,
-        ) -> Result<(), ProxyIndexingError> {
-            self.recorded.lock().await.push(meta);
-            Ok(())
-        }
-
-        async fn evict_cached_artifact(
-            &self,
-            key: ProxyArtifactKey,
-        ) -> Result<(), ProxyIndexingError> {
-            self.evicted.lock().await.push(key);
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn maven_proxy_meta_parses_coordinates() {
-        let path = StoragePath::from("com/example/app/1.2.3/app-1.2.3.jar");
-        let meta = maven_proxy_meta_from_cache_path(&path, 2048).expect("meta");
-        assert_eq!(meta.package_name, "app");
-        assert_eq!(meta.package_key, "com.example:app");
-        assert_eq!(meta.version.as_deref(), Some("1.2.3"));
-        assert_eq!(meta.cache_path, path.to_string());
-        assert_eq!(meta.size, Some(2048));
-    }
-
-    #[tokio::test]
-    async fn record_maven_proxy_cache_hit_invokes_indexer() {
-        let path = StoragePath::from("com/example/app/1.2.3/app-1.2.3.pom");
-        let indexer = Arc::new(RecordingIndexer::default());
-        record_maven_proxy_cache_hit(Some(indexer.clone().as_ref()), &path, 1024)
-            .await
-            .expect("recording succeeds");
-        let recorded = indexer.recorded().await;
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].version.as_deref(), Some("1.2.3"));
-    }
-
-    #[tokio::test]
-    async fn evict_maven_proxy_cache_entry_invokes_indexer() {
-        let path = StoragePath::from("com/example/app/1.2.3/app-1.2.3.pom");
-        let indexer = Arc::new(RecordingIndexer::default());
-        evict_maven_proxy_cache_entry(Some(indexer.clone().as_ref()), &path)
-            .await
-            .expect("eviction succeeds");
-        let evicted = indexer.evicted().await;
-        assert_eq!(evicted.len(), 1);
-        assert_eq!(evicted[0].version.as_deref(), Some("1.2.3"));
-    }
-}
+mod tests;
 
 impl Repository for MavenProxy {
     type Error = MavenError;

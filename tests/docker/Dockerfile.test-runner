@@ -24,14 +24,22 @@ RUN apt-get update && apt-get install -y \
     openjdk-11-jdk \
     && rm -rf /var/lib/apt/lists/*
 
+# Set architecture-aware JAVA_HOME and provide stable default-java symlink
+RUN arch="$(dpkg --print-architecture)" \
+    && JAVA_HOME_CAND="/usr/lib/jvm/java-11-openjdk-${arch}" \
+    && if [ ! -d "${JAVA_HOME_CAND}" ]; then echo "Missing ${JAVA_HOME_CAND}" >&2; exit 1; fi \
+    && ln -sfn "${JAVA_HOME_CAND}" /usr/lib/jvm/default-java \
+    && echo "export JAVA_HOME=${JAVA_HOME_CAND}" >/etc/profile.d/java_home.sh \
+    && echo "JAVA_HOME=${JAVA_HOME_CAND}" >> /etc/environment
+
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
 # Install Maven 3.9.6 (for HTTP headers support needed for Bearer token auth)
 RUN wget https://archive.apache.org/dist/maven/maven-3/3.9.6/binaries/apache-maven-3.9.6-bin.tar.gz \
     && tar -C /opt -xzf apache-maven-3.9.6-bin.tar.gz \
     && rm apache-maven-3.9.6-bin.tar.gz \
     && ln -s /opt/apache-maven-3.9.6/bin/mvn /usr/local/bin/mvn
-
-ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Install Node.js and NPM
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
