@@ -26,6 +26,8 @@ opentelemetry_sdk = { version = "0.30", features = [
     "trace",
     "metrics",
     "logs",
+    "testing",
+    "experimental_metrics_custom_reader",
 ] }
 opentelemetry-otlp = { version = "0.30", default-features = true, features = [
     "grpc-tonic",

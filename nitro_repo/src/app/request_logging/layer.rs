@@ -1,8 +1,8 @@
 use std::{
     future::Future,
-    mem,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use axum::{
@@ -17,9 +17,43 @@ use tracing::error;
 
 use super::{X_REQUEST_ID, response_body::TraceResponseBody};
 use crate::{
-    app::NitroRepo,
+    app::{AppMetrics, NitroRepo},
     utils::request_logging::{request_id::RequestId, request_span::RequestSpan},
 };
+
+/// Tracks active requests using an up-down counter. Ensures we always decrement
+/// even when a request ends in error or the body is dropped early.
+#[derive(Clone)]
+pub(crate) struct ActiveRequestGuard {
+    metrics: AppMetrics,
+    attributes: Vec<KeyValue>,
+    finished: bool,
+}
+
+impl ActiveRequestGuard {
+    pub fn start(metrics: &AppMetrics, attributes: Vec<KeyValue>) -> Self {
+        metrics.active_requests.add(1, &attributes);
+        Self {
+            metrics: metrics.clone(),
+            attributes,
+            finished: false,
+        }
+    }
+
+    pub fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.metrics.active_requests.add(-1, &self.attributes);
+        self.finished = true;
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
 
 /// Middleware that handles the authentication of the user
 #[derive(Debug, Clone)]
@@ -52,10 +86,12 @@ where
         let attributes = vec![
             KeyValue::new("http.route", path.to_owned()),
             KeyValue::new("http.request.method", req.method().as_str().to_string()),
-            KeyValue::new("request_id", request_id.to_string()),
         ];
         let site: NitroRepo = self.site.clone();
         let body_size = req.body().size_hint().lower();
+
+        // Track active request immediately; guard will decrement at end of stream or on error.
+        let active_request = ActiveRequestGuard::start(&site.metrics, attributes.clone());
 
         // Continue the request
         let mut inner = self.inner.clone();
@@ -77,6 +113,7 @@ where
             request_body_size: body_size,
             attributes,
             request_id,
+            active_request: Some(active_request),
         }
     }
 }
@@ -92,6 +129,7 @@ pub struct TraceResponseFuture<F> {
     request_body_size: u64,
 
     request_id: RequestId,
+    active_request: Option<ActiveRequestGuard>,
 }
 
 impl<F, E> Future for TraceResponseFuture<F>
@@ -118,6 +156,7 @@ where
         let duration = this.instant.elapsed();
         let state = this.state.clone();
         let request_body_size = *this.request_body_size;
+        let attributes = this.attributes;
         match result {
             Ok(mut response) => {
                 let request_id_header: Result<HeaderValue, InvalidHeaderValue> =
@@ -130,9 +169,10 @@ where
                         error!("Failed to set request id header: {}", e);
                     }
                 }
-                this.attributes.push(KeyValue::new(
+                let status_code = response.status().as_u16();
+                attributes.push(KeyValue::new(
                     "http.response.status_code",
-                    response.status().as_u16().to_string(),
+                    status_code as i64,
                 ));
 
                 super::on_response(&response, duration, &span, Some(request_body_size));
@@ -140,16 +180,24 @@ where
                     super::on_failure(&response.status(), duration, &span);
                 }
 
-                final_metrics(&state, duration, request_body_size, this.attributes);
+                record_http_metrics(
+                    &state.metrics,
+                    duration,
+                    request_body_size,
+                    Some(status_code),
+                    attributes,
+                );
 
                 let span = span.clone();
-                let attributes = mem::take(this.attributes);
+                let attributes = std::mem::take(attributes);
+                let active_request = this.active_request.take();
                 let res: Response<TraceResponseBody> = response.map(|body| TraceResponseBody {
                     inner: body,
                     start: *this.instant,
                     span,
                     state: state.clone(),
                     attributes,
+                    active_request,
                     total_bytes: 0,
                 });
 
@@ -157,7 +205,15 @@ where
             }
             Err(err) => {
                 super::on_failure(&err, duration, &span);
-                final_metrics(&state, duration, request_body_size, this.attributes);
+                record_http_metrics(
+                    &state.metrics,
+                    duration,
+                    request_body_size,
+                    None,
+                    attributes,
+                );
+                // Drop guard to ensure the active request counter is decremented for failed calls.
+                drop(this.active_request.take());
 
                 Poll::Ready(Err(err))
             }
@@ -165,16 +221,27 @@ where
     }
 }
 
-fn final_metrics(
-    state: &NitroRepo,
-    duration: std::time::Duration,
+fn record_http_metrics(
+    metrics: &AppMetrics,
+    duration: Duration,
     body_size: u64,
-    attrs: &[KeyValue],
+    status_code: Option<u16>,
+    attrs: &mut Vec<KeyValue>,
 ) {
-    state.metrics.request_size_bytes.record(body_size, attrs);
-    let duration = duration.as_millis();
-    state
-        .metrics
+    let status = status_code.unwrap_or(500);
+    if !attrs
+        .iter()
+        .any(|attr| attr.key.as_str() == "http.response.status_code")
+    {
+        attrs.push(KeyValue::new("http.response.status_code", status as i64));
+    }
+
+    metrics.request_size_bytes.record(body_size, attrs);
+    metrics
         .request_duration
-        .record(duration as f64 / 1000f64, attrs);
+        .record(duration.as_secs_f64(), attrs);
+    metrics.request_count.add(1, attrs);
 }
+
+#[cfg(test)]
+mod tests;

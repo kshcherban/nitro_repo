@@ -32,7 +32,7 @@ use nr_core::{storage::FileHashes, utils::base64_utils};
 use nr_storage::{DynStorage, STORAGE_FACTORIES, Storage, StorageConfig, StorageFactory};
 use opentelemetry::{
     InstrumentationScope, global,
-    metrics::{Histogram, Meter, UpDownCounter},
+    metrics::{Counter, Histogram, Meter, MeterProvider, UpDownCounter},
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -373,15 +373,30 @@ pub struct AppMetrics {
     pub response_size_bytes: Histogram<u64>,
     pub request_duration: Histogram<f64>,
     pub active_sessions: UpDownCounter<i64>,
+    pub active_requests: UpDownCounter<i64>,
+    pub request_count: Counter<u64>,
 }
 impl Default for AppMetrics {
     fn default() -> Self {
-        let scope = InstrumentationScope::builder("nitro-repo")
-        .with_schema_url("https://github.com/open-telemetry/semantic-conventions/blob/v1.29.0/docs/http/http-metrics.md")
-        .with_version(env!("CARGO_PKG_VERSION")).build();
-        let meter = global::meter_with_scope(scope);
+        let meter = global::meter_with_scope(Self::scope());
+        Self::from_meter(meter)
+    }
+}
+impl AppMetrics {
+    fn scope() -> InstrumentationScope {
+        InstrumentationScope::builder("nitro-repo")
+            .with_schema_url("https://github.com/open-telemetry/semantic-conventions/blob/v1.29.0/docs/http/http-metrics.md")
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .build()
+    }
 
-        Self {
+    pub fn with_meter_provider(provider: &impl MeterProvider) -> Self {
+        let meter = provider.meter_with_scope(Self::scope());
+        Self::from_meter(meter)
+    }
+
+    fn from_meter(meter: Meter) -> Self {
+        AppMetrics {
             active_sessions: meter
                 .i64_up_down_counter("http.server.active_sessions")
                 .with_description("The number of active sessions")
@@ -401,6 +416,14 @@ impl Default for AppMetrics {
                     10f64,
                 ])
                 .with_unit("s")
+                .build(),
+            active_requests: meter
+                .i64_up_down_counter("http.server.active_requests")
+                .with_description("Number of in-flight HTTP requests")
+                .build(),
+            request_count: meter
+                .u64_counter("http.server.requests")
+                .with_description("Count of completed HTTP requests")
                 .build(),
             meter,
         }

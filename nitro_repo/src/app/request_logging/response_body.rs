@@ -6,13 +6,13 @@ use std::{
 
 use http_body::{Body, Frame};
 use opentelemetry::KeyValue;
-use pin_project::pin_project;
+use pin_project::{pin_project, pinned_drop};
 use tracing::Span;
 
-use super::request_span;
+use super::{layer::ActiveRequestGuard, request_span};
 use crate::app::NitroRepo;
 
-#[pin_project]
+#[pin_project(PinnedDrop)]
 pub struct TraceResponseBody {
     #[pin]
     pub(crate) inner: axum::body::Body,
@@ -20,6 +20,7 @@ pub struct TraceResponseBody {
     pub(crate) span: Span,
     pub(crate) state: NitroRepo,
     pub(crate) attributes: Vec<KeyValue>,
+    pub(crate) active_request: Option<ActiveRequestGuard>,
     pub(crate) total_bytes: u64,
 }
 
@@ -61,6 +62,9 @@ impl Body for TraceResponseBody {
                     .response_size_bytes
                     .record(*this.total_bytes, this.attributes);
                 request_span::on_end_of_stream(*this.total_bytes, this.span);
+                if let Some(mut guard) = this.active_request.take() {
+                    guard.finish();
+                }
                 Poll::Ready(None)
             }
         }
@@ -72,5 +76,15 @@ impl Body for TraceResponseBody {
 
     fn size_hint(&self) -> http_body::SizeHint {
         self.inner.size_hint()
+    }
+}
+
+#[pinned_drop]
+impl PinnedDrop for TraceResponseBody {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        if let Some(mut guard) = this.active_request.take() {
+            guard.finish();
+        }
     }
 }
