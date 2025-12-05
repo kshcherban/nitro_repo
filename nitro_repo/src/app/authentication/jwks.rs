@@ -99,6 +99,8 @@ impl<F: JwksFetcher + JwksResolver + Clone> JwksManager<F> {
         let mut validation = Validation::new(header.alg);
         validation.set_audience(&[provider.audience.as_str()]);
         validation.set_issuer(&[provider.issuer.as_str()]);
+        // CRITICAL: Enforce that these claims MUST be present in the token
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
 
         let token_data =
             decode::<serde_json::Map<String, serde_json::Value>>(token, &decoding_key, &validation)
