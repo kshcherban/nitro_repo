@@ -14,7 +14,8 @@ use axum_extra::{
     headers::UserAgent,
 };
 use chrono::{DateTime, Duration, Utc};
-use jsonwebtoken::dangerous::insecure_decode;
+use crate::app::authentication::jwks::{JwksManager, ReqwestJwksFetcher};
+use crate::app::config::{OidcProviderConfig, TokenSource};
 use nr_core::database::entities::user::{UserSafeData, UserType};
 use nr_core::user::permissions::UpdatePermissions;
 use oauth2::AuthorizationCode;
@@ -377,6 +378,10 @@ pub async fn callback(
         }
     };
 
+    let Some(oauth_settings) = site.oauth2_settings_raw() else {
+        return Ok(ResponseBuilder::not_found().body("OAuth2 configuration missing"));
+    };
+
     let id_token = match exchange.token_response.extra_fields().id_token.as_ref() {
         Some(token) => token,
         None => {
@@ -390,12 +395,13 @@ pub async fn callback(
         }
     };
 
-    let claims = match insecure_decode::<IdTokenClaims>(id_token) {
-        Ok(token_data) => token_data.claims,
+    // Create a JWKS manager for OIDC token verification
+    let fetcher = match ReqwestJwksFetcher::new() {
+        Ok(fetcher) => fetcher,
         Err(err) => {
-            error!(%err, "Failed to decode id_token claims");
+            error!(%err, "Failed to create JWKS fetcher");
             let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
-                message: "Unable to decode identity token".into(),
+                message: "Unable to verify identity token".into(),
                 details: None,
                 error: None,
             };
@@ -403,8 +409,74 @@ pub async fn callback(
         }
     };
 
-    let Some(oauth_settings) = site.oauth2_settings_raw() else {
-        return Ok(ResponseBuilder::not_found().body("OAuth2 configuration missing"));
+    let jwks_manager = JwksManager::new(fetcher, std::time::Duration::from_secs(3600));
+
+    // Create OIDC provider config based on the provider
+    let provider_config = match exchange.provider {
+        OAuth2ProviderKind::Google => OidcProviderConfig {
+            name: "google-oauth2".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            audience: oauth_settings
+                .google
+                .as_ref()
+                .map(|g| g.client_id.clone())
+                .unwrap_or_default(),
+            jwks_url: Some("https://www.googleapis.com/oauth2/v3/certs".to_string()),
+            token_source: TokenSource::Header {
+                name: "Authorization".to_string(),
+                prefix: Some("Bearer ".to_string()),
+            },
+            subject_claim: None,
+            email_claim: None,
+            display_name_claim: None,
+            role_claims: Vec::new(),
+        },
+        OAuth2ProviderKind::Microsoft => OidcProviderConfig {
+            name: "microsoft-oauth2".to_string(),
+            issuer: "https://login.microsoftonline.com/common/v2.0".to_string(),
+            audience: oauth_settings
+                .microsoft
+                .as_ref()
+                .map(|m| m.client_id.clone())
+                .unwrap_or_default(),
+            jwks_url: Some("https://login.microsoftonline.com/common/discovery/v2.0/keys".to_string()),
+            token_source: TokenSource::Header {
+                name: "Authorization".to_string(),
+                prefix: Some("Bearer ".to_string()),
+            },
+            subject_claim: None,
+            email_claim: None,
+            display_name_claim: None,
+            role_claims: Vec::new(),
+        },
+    };
+
+    // Verify the ID token using JWKS
+    let claims_map = match jwks_manager.verify(id_token, &provider_config).await {
+        Ok(claims) => claims,
+        Err(err) => {
+            error!(%err, "Failed to verify id_token signature");
+            let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
+                message: "Invalid identity token signature".into(),
+                details: None,
+                error: None,
+            };
+            return Ok(ResponseBuilder::unauthorized().json(&api_error));
+        }
+    };
+
+    // Extract the claims we need from the verified token
+    let claims = match serde_json::from_value::<IdTokenClaims>(serde_json::Value::Object(claims_map)) {
+        Ok(claims) => claims,
+        Err(err) => {
+            error!(%err, "Failed to parse verified id_token claims");
+            let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
+                message: "Unable to parse identity token claims".into(),
+                details: None,
+                error: None,
+            };
+            return Ok(ResponseBuilder::internal_server_error().json(&api_error));
+        }
     };
 
     let claim_groups = extract_roles(exchange.provider, &claims);
