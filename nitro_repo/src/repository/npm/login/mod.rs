@@ -5,10 +5,18 @@ use axum::{
 use couch_db::CouchDBLoginResponse;
 use derive_more::derive::From;
 use http::StatusCode;
+use nr_core::storage::StoragePath;
 
 use crate::repository::RepoResponse;
 pub mod couch_db;
 pub mod web_login;
+
+/// Returns true if the path corresponds to an npm login endpoint that should accept
+/// credential-bearing requests without prior authentication (CouchDB style or web login).
+pub fn is_npm_login_path(path: &StoragePath) -> bool {
+    let path = path.to_string();
+    path.starts_with("-/user/org.couchdb.user:") || path == "-/v1/login"
+}
 
 #[derive(Debug, From)]
 pub enum LoginResponse {

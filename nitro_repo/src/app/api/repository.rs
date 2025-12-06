@@ -46,6 +46,8 @@ mod config;
 mod management;
 pub mod packages;
 mod page;
+mod r#virtual;
+use self::r#virtual as virtual_api;
 mod types;
 #[derive(OpenApi)]
 #[openapi(
@@ -66,6 +68,9 @@ mod types;
         management::delete_repository,
         browse::browse,
         packages::list_cached_packages,
+        virtual_api::list_members,
+        virtual_api::update_members,
+        virtual_api::update_resolution_order,
     ),
     components(schemas(
         DBRepository,
@@ -82,6 +87,7 @@ mod types;
         RepositoryListEntry,
         packages::PackageDeleteRequest,
         packages::PackageDeleteResponse
+        , virtual_api::VirtualConfigView, virtual_api::VirtualMemberView, virtual_api::UpdateMembersRequest, virtual_api::UpdateResolutionOrderRequest
     )),
     nest(
         (path = "/page", api = RepositoryPageRoutes, tags=["repository", "page"]),
@@ -103,6 +109,7 @@ pub fn repository_routes() -> axum::Router<NitroRepo> {
         .merge(packages::package_routes())
         .merge(management::management_routes())
         .merge(config::config_routes())
+        .merge(virtual_api::virtual_routes())
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -421,6 +428,7 @@ impl ProxyKindClassifier for crate::repository::npm::NPMRegistryConfig {
         match self {
             Self::Hosted => Some("hosted"),
             Self::Proxy(_) => Some("proxy"),
+            Self::Virtual(_) => Some("virtual"),
         }
     }
 }
@@ -441,7 +449,10 @@ mod repository_kind_tests {
         docker::{DockerRegistryConfig, proxy::DockerProxyConfig},
         go::{GoProxyConfig, GoRepositoryConfig},
         maven::{MavenRepositoryConfig, proxy::MavenProxyConfig},
-        npm::{NPMRegistryConfig, NpmProxyConfig},
+        npm::{
+            NPMRegistryConfig, NpmProxyConfig,
+            npm_virtual::{NpmVirtualConfig, VirtualResolutionOrder},
+        },
         python::{PythonProxyConfig, PythonRepositoryConfig},
     };
 
@@ -500,6 +511,17 @@ mod repository_kind_tests {
     fn npm_hosted_reports_hosted_kind() {
         let config = NPMRegistryConfig::Hosted;
         assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
+
+    #[test]
+    fn npm_virtual_reports_virtual_kind() {
+        let config = NPMRegistryConfig::Virtual(NpmVirtualConfig {
+            member_repositories: Vec::new(),
+            resolution_order: VirtualResolutionOrder::Priority,
+            cache_ttl_seconds: 60,
+            publish_to: None,
+        });
+        assert_eq!(config.proxy_kind_label(), Some("virtual"));
     }
 
     #[test]

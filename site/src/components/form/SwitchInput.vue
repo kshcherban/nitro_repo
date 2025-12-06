@@ -3,10 +3,13 @@
     <v-switch
       :id="id"
       v-model="value"
+      :aria-label="ariaLabel"
       color="primary"
       hide-details>
       <template #label>
-        <div class="switch-label-content">
+        <div
+          v-if="!hideLabel"
+          class="switch-label-content">
           <span class="switch-label-text">
             <slot />
           </span>
@@ -25,6 +28,14 @@ defineProps({
   id: {
     type: String,
     required: true,
+  },
+  hideLabel: {
+    type: Boolean,
+    default: false,
+  },
+  ariaLabel: {
+    type: String,
+    default: undefined,
   },
 });
 

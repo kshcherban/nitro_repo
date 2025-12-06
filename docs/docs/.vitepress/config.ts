@@ -187,6 +187,10 @@ function repositoryTypesBar() {
           text: "Common Issues",
           link: "/repositoryTypes/npm/errors",
         },
+        {
+          text: "Virtual Repositories",
+          link: "/repositoryTypes/npm/virtual",
+        },
       ],
     },
     {

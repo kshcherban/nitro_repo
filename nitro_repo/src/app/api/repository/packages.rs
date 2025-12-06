@@ -358,6 +358,9 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             crate::repository::npm::NPMRegistry::Proxy(_) => PackageStrategy::PackagesDirectory {
                 base: Some("packages/"),
             },
+            crate::repository::npm::NPMRegistry::Virtual(_) => {
+                PackageStrategy::PackagesDirectory { base: None }
+            }
         },
         DynRepository::Docker(_) => PackageStrategy::Docker,
         DynRepository::Cargo(_) => PackageStrategy::Cargo,
@@ -383,6 +386,7 @@ fn catalog_deletion_mode(repository: &DynRepository) -> CatalogDeletionMode {
         },
         DynRepository::NPM(npm_repo) => match npm_repo {
             crate::repository::npm::NPMRegistry::Hosted(_) => CatalogDeletionMode::StripLastSegment,
+            crate::repository::npm::NPMRegistry::Virtual(_) => CatalogDeletionMode::None,
             _ => CatalogDeletionMode::None,
         },
         DynRepository::Php(_) => CatalogDeletionMode::StripLastSegment,

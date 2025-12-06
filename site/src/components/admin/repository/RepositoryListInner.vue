@@ -139,20 +139,26 @@ function sortList(a: RepositoryWithStorageName, b: RepositoryWithStorageName) {
 }
 
 function repositoryKindLabel(repo: RepositoryWithStorageName) {
-  return (repo.repository_kind ?? "hosted").toLowerCase() === "proxy" ? "Proxy" : "Hosted";
+  const kind = (repo.repository_kind ?? "hosted").toLowerCase();
+  if (kind === "proxy") return "Proxy";
+  if (kind === "virtual") return "Virtual";
+  return "Hosted";
 }
 
 function repositoryTypeLabel(repo: RepositoryWithStorageName) {
   const kind = repositoryKindLabel(repo).toLowerCase();
   const type = repo.repository_type.toLowerCase();
-  if (type === "docker" || kind === "proxy") {
+  if (type === "docker" || kind === "proxy" || kind === "virtual") {
     return `${type} (${kind})`;
   }
   return repo.repository_type;
 }
 
 function kindColor(repo: RepositoryWithStorageName) {
-  return repositoryKindLabel(repo) === "Proxy" ? "primary" : "default";
+  const kind = repositoryKindLabel(repo);
+  if (kind === "Proxy") return "primary";
+  if (kind === "Virtual") return "#b388ff";
+  return "default";
 }
 const filteredTable = computed(() => {
   if (props.repositories == undefined) {

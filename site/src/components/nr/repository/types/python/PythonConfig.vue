@@ -4,6 +4,7 @@
       v-model="selectedType"
       :options="typeOptions"
       :disabled="!isCreate"
+      class="full-width"
       required
     >Repository Type</DropDown>
 
@@ -19,8 +20,8 @@
         <TextInput v-model="route.name" placeholder="Optional label">Display Name</TextInput>
         <v-btn
           color="error"
-          variant="text"
-          class="text-none"
+          variant="flat"
+          class="route-action text-none danger-hover"
           type="button"
           prepend-icon="mdi-delete"
           @click="removeRoute(index)"
@@ -178,6 +179,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 1rem;
 }
+.full-width {
+  width: 100%;
+}
 .proxy-routes {
   display: flex;
   flex-direction: column;
@@ -185,12 +189,20 @@ onMounted(() => {
 }
 .route-row {
   display: grid;
-  gap: 0.5rem;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  align-items: end;
+  column-gap: 0.75rem;
+  row-gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: stretch;
 
-  :deep(.v-btn) {
-    justify-self: flex-start;
+  :deep(.route-action) {
+    --v-btn-height: 48px;
+    margin: 0;
+    width: 100%;
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    align-self: start;
+    justify-self: stretch;
   }
 }
 </style>

@@ -75,7 +75,11 @@
                 <span>{{ (repo.repository_type || "").toUpperCase() }}</span>
                 <v-chip
                   size="x-small"
-                  :color="repo.repository_kind?.toLowerCase() === 'proxy' ? 'primary' : 'default'"
+                  :color="repo.repository_kind?.toLowerCase() === 'proxy'
+                    ? 'primary'
+                    : repo.repository_kind?.toLowerCase() === 'virtual'
+                      ? '#b388ff'
+                      : 'default'"
                   variant="tonal">
                   {{ repositoryKindLabel(repo) }}
                 </v-chip>
@@ -173,7 +177,10 @@ const alerts = useAlertsStore();
 const user = computed(() => session.user);
 const isAdmin = computed(() => Boolean(user.value?.admin));
 function repositoryKindLabel(repo: RepositoryWithStorageName) {
-  return (repo.repository_kind ?? "hosted").toLowerCase() === "proxy" ? "Proxy" : "Hosted";
+  const kind = (repo.repository_kind ?? "hosted").toLowerCase();
+  if (kind === "proxy") return "Proxy";
+  if (kind === "virtual") return "Virtual";
+  return "Hosted";
 }
 
 interface PackageSearchResponse {

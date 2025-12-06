@@ -256,6 +256,9 @@ pub async fn handle_docker_v2_any_path(
 #[derive(Debug, From)]
 pub struct RepositoryRequestBody(Body);
 impl RepositoryRequestBody {
+    pub fn empty() -> Self {
+        RepositoryRequestBody(Body::empty())
+    }
     #[instrument]
     pub async fn body_as_bytes(self) -> Result<Bytes, RepositoryHandlerError> {
         // I am not sure if this error is user fault or server fault. I am going to assume it is a user fault for now
@@ -628,7 +631,7 @@ async fn handle_repo_request_core(
     let request = RepositoryRequest {
         parts,
         body: RepositoryRequestBody(body),
-        path,
+        path: path.clone(),
         authentication,
         auth_config: auth_config.clone(),
         trace: trace.clone(),
@@ -645,7 +648,13 @@ async fn handle_repo_request_core(
     );
 
     let is_read_operation = matches!(method, Method::GET | Method::HEAD);
-    let requires_auth = if auth_config.enabled {
+    let is_npm_login = matches!(repository, DynRepository::NPM(_))
+        && crate::repository::npm::login::is_npm_login_path(&path);
+
+    let requires_auth = if is_npm_login {
+        // npm CLI login (POST/PUT) must be allowed without prior auth
+        false
+    } else if auth_config.enabled {
         // Auth enabled: all operations require authentication
         true
     } else {

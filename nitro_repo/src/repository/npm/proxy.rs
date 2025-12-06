@@ -1,4 +1,7 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+};
 
 use chrono::Utc;
 use http::StatusCode;
@@ -14,6 +17,7 @@ use nr_core::{
 };
 use nr_storage::{DynStorage, FileContent, Storage};
 use parking_lot::{RwLock, RwLockReadGuard};
+use serde::Deserialize;
 use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
@@ -169,48 +173,74 @@ impl NpmProxyRegistry {
                             Err(other) => return Err(other.into()),
                         }
 
-                        let canonical_path =
-                            if let Some(cache_path) = cache_path_for_npm_proxy(path) {
-                                if cache_path != *path {
-                                    if let Err(err) = self
-                                        .storage()
-                                        .save_file(
-                                            self.0.id,
-                                            FileContent::Bytes(bytes.clone()),
-                                            &cache_path,
-                                        )
-                                        .await
-                                    {
-                                        match err {
-                                            nr_storage::StorageError::PathCollision(_) => {
-                                                debug!(
-                                                    ?cache_path,
-                                                    "Cache file already exists, skipping overwrite"
-                                                );
-                                            }
-                                            other => {
-                                                warn!(
-                                                    ?other,
-                                                    ?cache_path,
-                                                    "Failed to persist npm proxy cache entry"
-                                                );
-                                                return Err(other.into());
-                                            }
+                        let cache_path = cache_path_for_npm_proxy(path);
+                        let canonical_path = if let Some(cache_path) = &cache_path {
+                            if cache_path != path {
+                                if let Err(err) = self
+                                    .storage()
+                                    .save_file(
+                                        self.0.id,
+                                        FileContent::Bytes(bytes.clone()),
+                                        cache_path,
+                                    )
+                                    .await
+                                {
+                                    match err {
+                                        nr_storage::StorageError::PathCollision(_) => {
+                                            debug!(
+                                                ?cache_path,
+                                                "Cache file already exists, skipping overwrite"
+                                            );
+                                        }
+                                        other => {
+                                            warn!(
+                                                ?other,
+                                                ?cache_path,
+                                                "Failed to persist npm proxy cache entry"
+                                            );
+                                            return Err(other.into());
                                         }
                                     }
                                 }
-                                cache_path
-                            } else {
-                                path.clone()
-                            };
+                            }
+                            cache_path.clone()
+                        } else {
+                            path.clone()
+                        };
 
-                        record_npm_proxy_cache_hit(
-                            self.indexer().as_ref(),
-                            &canonical_path,
-                            bytes.len() as u64,
-                            Some(&url),
-                        )
-                        .await?;
+                        if cache_path.is_some() {
+                            record_npm_proxy_cache_hit(
+                                self.indexer().as_ref(),
+                                &canonical_path,
+                                bytes.len() as u64,
+                                Some(&url),
+                            )
+                            .await?;
+                        } else {
+                            let tarballs =
+                                record_npm_metadata_cache_hit(self.indexer().as_ref(), &bytes)
+                                    .await?;
+                            for (tarball_url, tarball_path) in tarballs {
+                                if self
+                                    .storage()
+                                    .get_file_information(self.id(), &tarball_path)
+                                    .await?
+                                    .is_some()
+                                {
+                                    continue;
+                                }
+                                if let Err(err) =
+                                    self.cache_tarball(&tarball_url, &tarball_path).await
+                                {
+                                    warn!(
+                                        ?err,
+                                        %tarball_url,
+                                        cache_path = %tarball_path,
+                                        "Failed to prefetch npm tarball"
+                                    );
+                                }
+                            }
+                        }
                         debug!(%url, "Cached npm proxy resource");
                         return Ok(true);
                     }
@@ -229,6 +259,52 @@ impl NpmProxyRegistry {
             }
         }
         Ok(false)
+    }
+
+    async fn cache_tarball(
+        &self,
+        url: &Url,
+        cache_path: &StoragePath,
+    ) -> Result<(), NPMRegistryError> {
+        let response = self.0.client.get(url.clone()).send().await.map_err(|err| {
+            NPMRegistryError::ProxyFetch {
+                url: url.to_string(),
+                error: err.to_string(),
+            }
+        })?;
+
+        if !response.status().is_success() {
+            return Err(NPMRegistryError::ProxyFetch {
+                url: url.to_string(),
+                error: format!("status {}", response.status()),
+            });
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| NPMRegistryError::ProxyFetch {
+                url: url.to_string(),
+                error: err.to_string(),
+            })?;
+
+        match self
+            .storage()
+            .save_file(self.0.id, FileContent::Bytes(bytes.clone()), cache_path)
+            .await
+        {
+            Ok(_) | Err(nr_storage::StorageError::PathCollision(_)) => {
+                record_npm_proxy_cache_hit(
+                    self.indexer().as_ref(),
+                    cache_path,
+                    bytes.len() as u64,
+                    Some(url),
+                )
+                .await?;
+                Ok(())
+            }
+            Err(other) => Err(other.into()),
+        }
     }
 
     async fn proxy_passthrough(
@@ -621,6 +697,101 @@ pub(super) fn npm_proxy_key_from_cache_path(path: &StoragePath) -> Option<ProxyA
         version: Some(version),
         cache_path: Some(path.to_string()),
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmPackageDocument {
+    name: Option<String>,
+    #[serde(default)]
+    versions: HashMap<String, NpmVersionDocument>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmVersionDocument {
+    version: Option<String>,
+    #[serde(default)]
+    dist: Option<NpmDistMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmDistMetadata {
+    tarball: Option<String>,
+    integrity: Option<String>,
+    shasum: Option<String>,
+    #[serde(default, rename = "unpackedSize")]
+    unpacked_size: Option<u64>,
+}
+
+fn meta_from_version_entry(
+    package_name: &str,
+    declared_version: &str,
+    version: &NpmVersionDocument,
+) -> Option<(ProxyArtifactMeta, Url)> {
+    let dist = version.dist.as_ref()?;
+    let tarball = dist.tarball.as_ref()?;
+    let url = Url::parse(tarball).ok()?;
+    let path = StoragePath::from(url.path());
+    let canonical_path = cache_path_for_npm_proxy(&path)?;
+    let version = version
+        .version
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .unwrap_or(declared_version);
+
+    let mut builder = ProxyArtifactMeta::builder(
+        package_name.to_string(),
+        package_name.to_string(),
+        canonical_path.to_string(),
+    )
+    .version(version.to_string())
+    .upstream_url(url.to_string());
+
+    if let Some(digest) = dist.integrity.as_ref().or(dist.shasum.as_ref()) {
+        if !digest.is_empty() {
+            builder = builder.upstream_digest(digest.clone());
+        }
+    }
+    if let Some(size) = dist.unpacked_size {
+        builder = builder.size(size);
+    }
+
+    Some((builder.build(), url))
+}
+
+pub(super) async fn record_npm_metadata_cache_hit(
+    indexer: &dyn ProxyIndexing,
+    metadata: &[u8],
+) -> Result<Vec<(Url, StoragePath)>, ProxyIndexingError> {
+    let doc: NpmPackageDocument = match serde_json::from_slice(metadata) {
+        Ok(doc) => doc,
+        Err(err) => {
+            warn!(?err, "Failed to parse npm metadata for indexing");
+            return Ok(Vec::new());
+        }
+    };
+
+    let Some(package_name) = doc
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+    else {
+        warn!("NPM metadata missing package name, skipping indexing");
+        return Ok(Vec::new());
+    };
+
+    let mut tarballs = Vec::new();
+    for (declared_version, version_doc) in doc.versions {
+        if let Some((meta, url)) =
+            meta_from_version_entry(&package_name, &declared_version, &version_doc)
+        {
+            tarballs.push((url, StoragePath::from(meta.cache_path.clone())));
+            indexer.record_cached_artifact(meta).await?;
+        }
+    }
+
+    Ok(tarballs)
 }
 
 pub(super) async fn record_npm_proxy_cache_hit(

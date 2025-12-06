@@ -37,11 +37,11 @@
             <v-btn
               color="error"
               variant="flat"
+              class="danger-hover ml-2"
               prepend-icon="mdi-delete"
               :disabled="selectedCount === 0 || isDeleting"
               :loading="isDeleting"
-              @click="deleteSelected"
-              class="ml-2">
+              @click="deleteSelected">
               Delete Selected
             </v-btn>
           </div>

@@ -6,12 +6,15 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::{npm_virtual::NpmVirtualConfig, validate_virtual_config};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(tag = "type", content = "config")]
 pub enum NPMRegistryConfig {
     #[default]
     Hosted,
     Proxy(NpmProxyConfig),
+    Virtual(NpmVirtualConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
@@ -44,7 +47,11 @@ impl RepositoryConfigType for NPMRegistryConfigType {
         Some(schema_for!(NPMRegistryConfig))
     }
     fn validate_config(&self, config: Value) -> Result<(), RepositoryConfigError> {
-        serde_json::from_value::<NPMRegistryConfig>(config)?;
+        let parsed = serde_json::from_value::<NPMRegistryConfig>(config)?;
+        if let NPMRegistryConfig::Virtual(virtual_cfg) = &parsed {
+            validate_virtual_config(virtual_cfg)
+                .map_err(|_| RepositoryConfigError::InvalidConfig("Invalid virtual config"))?;
+        }
         Ok(())
     }
     fn validate_change(&self, _old: Value, new: Value) -> Result<(), RepositoryConfigError> {

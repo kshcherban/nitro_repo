@@ -98,6 +98,74 @@ async fn evict_npm_proxy_cache_entry_invokes_indexer() {
     assert_eq!(evicted[0].version.as_deref(), Some("1.2.3"));
 }
 
+#[tokio::test]
+async fn metadata_cache_hit_indexes_versions() {
+    let metadata = r#"{
+        "name": "left-pad",
+        "versions": {
+            "1.0.0": {
+                "version": "1.0.0",
+                "dist": {
+                    "tarball": "https://registry.npmjs.org/left-pad/-/left-pad-1.0.0.tgz",
+                    "integrity": "sha512-deadbeef"
+                }
+            },
+            "2.0.0": {
+                "version": "2.0.0",
+                "dist": {
+                    "tarball": "https://registry.npmjs.org/left-pad/-/left-pad-2.0.0.tgz"
+                }
+            }
+        }
+    }"#;
+
+    let indexer = RecordingIndexer::default();
+
+    let mut tarballs = super::record_npm_metadata_cache_hit(&indexer, metadata.as_bytes())
+        .await
+        .expect("metadata indexed");
+    tarballs.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+
+    let mut recorded = indexer.recorded().await;
+    recorded.sort_by(|a, b| a.version.cmp(&b.version));
+
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].package_key, "left-pad");
+    assert_eq!(recorded[0].version.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        recorded[0].cache_path,
+        "packages/left-pad/left-pad-1.0.0.tgz"
+    );
+    assert_eq!(
+        recorded[0].upstream_url.as_deref(),
+        Some("https://registry.npmjs.org/left-pad/-/left-pad-1.0.0.tgz")
+    );
+    assert_eq!(
+        recorded[0].upstream_digest.as_deref(),
+        Some("sha512-deadbeef")
+    );
+
+    assert_eq!(recorded[1].version.as_deref(), Some("2.0.0"));
+    assert_eq!(
+        recorded[1].cache_path,
+        "packages/left-pad/left-pad-2.0.0.tgz"
+    );
+
+    assert_eq!(tarballs.len(), 2);
+    assert_eq!(
+        tarballs[0].0.as_str(),
+        "https://registry.npmjs.org/left-pad/-/left-pad-1.0.0.tgz"
+    );
+    assert_eq!(
+        tarballs[0].1.to_string(),
+        "packages/left-pad/left-pad-1.0.0.tgz"
+    );
+    assert_eq!(
+        tarballs[1].1.to_string(),
+        "packages/left-pad/left-pad-2.0.0.tgz"
+    );
+}
+
 #[derive(Clone, Default)]
 struct RecordingIndexer {
     recorded: Arc<Mutex<Vec<ProxyArtifactMeta>>>,

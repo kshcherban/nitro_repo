@@ -61,12 +61,12 @@
               icon="mdi-toggle-switch" />
             {{ toggleButton.label }}
           </v-btn>
-          <v-btn
-            color="error"
-            variant="flat"
-            class="text-none"
-            data-testid="repository-delete"
-            @click="openDeleteDialog">
+        <v-btn
+          color="error"
+          variant="flat"
+          class="text-none danger-hover"
+          data-testid="repository-delete"
+          @click="openDeleteDialog">
             <v-icon
               class="mr-2"
               icon="mdi-delete-outline" />

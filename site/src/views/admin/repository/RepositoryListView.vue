@@ -59,7 +59,7 @@
             <template v-slot:item.repository_kind="{ value }">
               <v-chip
                 size="small"
-                :color="value === 'Proxy' ? 'primary' : 'default'"
+                :color="value === 'Proxy' ? 'primary' : value === 'Virtual' ? '#b388ff' : 'default'"
                 variant="tonal">
                 {{ value }}
               </v-chip>
@@ -187,17 +187,21 @@ const headers: DataTableHeader[] = [
 
 // Convert repositories to v-data-table format
 const tableItems = computed(() => {
-  return repositories.value.map((repo) => ({
-    id: repo.id,
-    name: repo.name,
-    storage_name: repo.storage_name,
-    repository_type: repo.repository_type,
-    repository_kind: (repo.repository_kind ?? "hosted").toLowerCase() === "proxy" ? "Proxy" : "Hosted",
-    auth_enabled: repo.auth_enabled,
-    storage_usage_bytes: repo.storage_usage_bytes,
-    active: repo.active,
-    storage_usage_updated_at: repo.storage_usage_updated_at,
-  }));
+  return repositories.value.map((repo) => {
+    const kind = (repo.repository_kind ?? "hosted").toLowerCase();
+    const repository_kind = kind === "proxy" ? "Proxy" : kind === "virtual" ? "Virtual" : "Hosted";
+    return {
+      id: repo.id,
+      name: repo.name,
+      storage_name: repo.storage_name,
+      repository_type: repo.repository_type,
+      repository_kind,
+      auth_enabled: repo.auth_enabled,
+      storage_usage_bytes: repo.storage_usage_bytes,
+      active: repo.active,
+      storage_usage_updated_at: repo.storage_usage_updated_at,
+    };
+  });
 });
 
 async function fetchRepositories(options: { refresh?: boolean } = {}) {

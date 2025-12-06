@@ -171,9 +171,10 @@ function sortList(a: RepositoryWithStorageName, b: RepositoryWithStorageName) {
 }
 
 function repositoryKindLabel(repo: RepositoryWithStorageName) {
-  return (repo.repository_kind ?? "hosted").toString().toLowerCase() === "proxy"
-    ? "Proxy"
-    : "Hosted";
+  const kind = (repo.repository_kind ?? "hosted").toString().toLowerCase();
+  if (kind === "proxy") return "Proxy";
+  if (kind === "virtual") return "Virtual";
+  return "Hosted";
 }
 
 function repositoryTypeLabel(repo: RepositoryWithStorageName) {

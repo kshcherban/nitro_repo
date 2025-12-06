@@ -8,6 +8,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 mod hostname;
 pub use hostname::*;
+mod virtual_member;
+pub use virtual_member::*;
 
 use crate::{
     database::prelude::*,

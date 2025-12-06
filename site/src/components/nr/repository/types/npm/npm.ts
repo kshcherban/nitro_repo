@@ -11,6 +11,20 @@ export interface NpmProxyConfigType {
   routes: NpmProxyRoute[];
 }
 
+export interface NpmVirtualMemberConfig {
+  repository_id: string;
+  repository_name: string;
+  priority: number;
+  enabled: boolean;
+}
+
+export interface NpmVirtualConfigType {
+  member_repositories: NpmVirtualMemberConfig[];
+  resolution_order: "Priority";
+  cache_ttl_seconds?: number;
+  publish_to?: string | null;
+}
+
 export type NPMConfigType =
   | {
       type: "Hosted";
@@ -18,6 +32,10 @@ export type NPMConfigType =
   | {
       type: "Proxy";
       config: NpmProxyConfigType;
+    }
+  | {
+      type: "Virtual";
+      config: NpmVirtualConfigType;
     };
 
 export function defaultProxy(): NpmProxyConfigType {
@@ -28,6 +46,15 @@ export function defaultProxy(): NpmProxyConfigType {
         name: "npmjs",
       },
     ],
+  };
+}
+
+export function defaultVirtual(): NpmVirtualConfigType {
+  return {
+    member_repositories: [],
+    resolution_order: "Priority",
+    cache_ttl_seconds: 60,
+    publish_to: null,
   };
 }
 

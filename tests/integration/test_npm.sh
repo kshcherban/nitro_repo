@@ -10,6 +10,7 @@ source "${SCRIPT_DIR}/common.sh"
 # NPM-specific configuration
 NPM_HOSTED_REPO="${TEST_STORAGE}/npm-hosted"
 NPM_PROXY_REPO="${TEST_STORAGE}/npm-proxy"
+NPM_VIRTUAL_REPO="${TEST_STORAGE}/npm-virtual"
 FIXTURE_DIR="/fixtures/npm/hello-pkg"
 PACKAGE_NAME="@nitro-test/hello-pkg"
 VERSION_1="1.0.0"
@@ -227,6 +228,102 @@ if run_cmd npm install lodash@4.17.21 && \
     pass
 else
     fail "Failed to retrieve cached package"
+fi
+
+# Virtual repository setup
+print_test "Ensure npm-virtual repository exists with hosted+proxy members"
+REPO_LIST=$(api_get "/api/repository/list" || echo "[]")
+record_output "$REPO_LIST"
+HOSTED_ID=$(echo "$REPO_LIST" | jq -r '.[] | select(.name=="npm-hosted") | .id')
+PROXY_ID=$(echo "$REPO_LIST" | jq -r '.[] | select(.name=="npm-proxy") | .id')
+VIRTUAL_ID=$(echo "$REPO_LIST" | jq -r '.[] | select(.name=="npm-virtual") | .id')
+STORAGE_ID=$(echo "$REPO_LIST" | jq -r '.[] | select(.name=="npm-hosted") | .storage_id')
+
+if [ -z "$HOSTED_ID" ] || [ -z "$PROXY_ID" ] || [ "$HOSTED_ID" = "null" ] || [ "$PROXY_ID" = "null" ]; then
+    fail "Hosted or proxy repository missing"
+fi
+
+if [ -z "$VIRTUAL_ID" ] || [ "$VIRTUAL_ID" = "null" ]; then
+    VIRTUAL_PAYLOAD=$(cat <<JSON
+{
+  "name": "npm-virtual",
+  "storage": "$STORAGE_ID",
+  "configs": {
+    "npm": {
+      "type": "Virtual",
+      "config": {
+        "member_repositories": [
+          {"repository_id": "$HOSTED_ID", "repository_name": "npm-hosted", "priority": 1, "enabled": true},
+          {"repository_id": "$PROXY_ID", "repository_name": "npm-proxy", "priority": 10, "enabled": true}
+        ],
+        "resolution_order": "Priority"
+      }
+    },
+    "auth": {"enabled": false}
+  }
+}
+JSON
+)
+    CREATE_RESPONSE=$(api_post "/api/repository/new/npm" -H "Content-Type: application/json" -d "$VIRTUAL_PAYLOAD" || echo "")
+    record_output "$CREATE_RESPONSE"
+    VIRTUAL_ID=$(echo "$CREATE_RESPONSE" | jq -r '.id')
+fi
+
+if [ -z "$VIRTUAL_ID" ] || [ "$VIRTUAL_ID" = "null" ]; then
+    fail "Failed to create or resolve npm-virtual repository"
+fi
+
+MEMBERS=$(api_get "/api/repository/${VIRTUAL_ID}/virtual/members" || echo "[]")
+record_output "$MEMBERS"
+MEMBER_COUNT=$(echo "$MEMBERS" | jq 'length')
+if [ "$MEMBER_COUNT" -ge 2 ]; then
+    clear_last_log
+    pass
+else
+    fail "Virtual members not configured"
+fi
+
+# Test virtual repository resolves hosted packages
+print_test "Virtual: install hosted package via npm-virtual"
+VIRTUAL_INSTALL_DIR="$WORKSPACE/virtual-hosted"
+mkdir -p "$VIRTUAL_INSTALL_DIR"
+cd "$VIRTUAL_INSTALL_DIR"
+
+cat > "$VIRTUAL_INSTALL_DIR/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_VIRTUAL_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_VIRTUAL_REPO}/
+always-auth=true
+EOF
+
+if run_cmd npm install "$PACKAGE_NAME@${VERSION_2}" && \
+   [ -d "node_modules/@nitro-test/hello-pkg" ]; then
+    INSTALLED_VERSION=$(jq -r .version node_modules/@nitro-test/hello-pkg/package.json)
+    if [ "$INSTALLED_VERSION" = "$VERSION_2" ]; then
+        pass
+    else
+        fail "Virtual repo installed wrong version: $INSTALLED_VERSION"
+    fi
+else
+    fail "Virtual repo failed to install hosted package"
+fi
+
+# Test virtual repository resolves proxy packages
+print_test "Virtual: install proxied package via npm-virtual"
+VIRTUAL_PROXY_DIR="$WORKSPACE/virtual-proxy"
+mkdir -p "$VIRTUAL_PROXY_DIR"
+cd "$VIRTUAL_PROXY_DIR"
+
+cat > "$VIRTUAL_PROXY_DIR/.npmrc" <<EOF
+//${NITRO_REGISTRY_HOST}/repositories/${NPM_VIRTUAL_REPO}/:_authToken=${TEST_TOKEN}
+registry=${NITRO_URL}/repositories/${NPM_VIRTUAL_REPO}/
+always-auth=true
+EOF
+
+if run_cmd npm install lodash@4.17.21 && \
+   [ -d "node_modules/lodash" ]; then
+    pass
+else
+    fail "Virtual repo failed to proxy lodash"
 fi
 
 # Test 12: Authentication required for publish

@@ -13,7 +13,7 @@
         :key="`${route.url}-${index}`"
         class="maven-proxy__route">
         <v-row dense>
-          <v-col cols="12" md="7">
+          <v-col cols="12" md="4">
             <TextInput
               v-model="route.url"
               required
@@ -30,61 +30,35 @@
           </v-col>
           <v-col
             cols="12"
-            md="1"
+            md="4"
             class="d-flex align-end justify-end">
             <v-btn
-              color="error"
-              variant="text"
-              class="text-none"
-              :disabled="value.routes.length <= 1"
-              prepend-icon="mdi-delete"
-              @click="removeRoute(index)">
-              Remove
-            </v-btn>
+            color="error"
+            variant="flat"
+            class="route-action text-none danger-hover h-56"
+            :disabled="value.routes.length <= 1"
+            prepend-icon="mdi-delete"
+            @click="removeRoute(index)">
+            Remove
+          </v-btn>
           </v-col>
         </v-row>
       </div>
     </div>
 
-    <div class="maven-proxy__add mt-4">
-      <v-row dense>
-        <v-col cols="12" md="7">
-          <TextInput
-            v-model="draft.url"
-            placeholder="https://repo1.maven.org/maven2/"
-            required>
-            Upstream URL
-          </TextInput>
-        </v-col>
-        <v-col cols="12" md="4">
-          <TextInput
-            v-model="draft.name"
-            placeholder="Maven Central">
-            Display Name
-          </TextInput>
-        </v-col>
-        <v-col
-          cols="12"
-          md="1"
-          class="d-flex align-end justify-end">
-          <v-btn
-            color="primary"
-            variant="tonal"
-            class="text-none"
-            :disabled="!draft.url.trim()"
-            prepend-icon="mdi-plus"
-            @click="addRoute">
-            Add
-          </v-btn>
-        </v-col>
-      </v-row>
-    </div>
+    <v-btn
+      color="primary"
+      variant="tonal"
+      class="route-add text-none align-self-start mt-2"
+      prepend-icon="mdi-plus"
+      @click="addRoute">
+      Add Route
+    </v-btn>
   </section>
 </template>
 
 <script setup lang="ts">
 import { reactive } from "vue";
-import { useAlertsStore } from "@/stores/alerts";
 import TextInput from "@/components/form/text/TextInput.vue";
 import { defaultProxy, type MavenProxyRoute, type MavenProxyConfigType } from "./maven";
 
@@ -98,12 +72,6 @@ if (!value.value || !Array.isArray(value.value.routes)) {
   value.value = defaultProxy();
 }
 
-const draft = reactive<MavenProxyRoute>({
-  url: "",
-  name: "",
-});
-const alerts = useAlertsStore();
-
 function removeRoute(index: number) {
   if (index < 0 || index >= value.value.routes.length) {
     return;
@@ -115,30 +83,16 @@ function removeRoute(index: number) {
 }
 
 function addRoute() {
-  const trimmedUrl = draft.url.trim();
-  if (!trimmedUrl) {
-    return;
-  }
-  try {
-    // Validate URL format
-    new URL(trimmedUrl);
-  } catch (error) {
-    console.error("Invalid Maven proxy URL", error);
-    alerts.error("Invalid URL", "Provide a valid upstream Maven repository URL.");
-    return;
-  }
   value.value = {
     ...value.value,
     routes: [
       ...value.value.routes,
       {
-        url: trimmedUrl,
-        name: (draft.name ?? "").trim() || undefined,
+        url: "",
+        name: "",
       },
     ],
   };
-  draft.url = "";
-  draft.name = "";
 }
 </script>
 
@@ -161,6 +115,24 @@ function addRoute() {
     background-color: transparent;
     border: none;
     box-shadow: none;
+  }
+
+  :deep(.h-56) {
+    min-height: 56px;
+  }
+
+  :deep(.route-action) {
+    --v-btn-height: 48px;
+    margin: 0;
+    width: 100%;
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    align-self: flex-start;
+  }
+
+  .route-add {
+    align-self: flex-start;
   }
 }
 </style>

@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-use derive_more::derive::From;
 use nr_core::{
     database::entities::user::auth_token::NewRepositoryToken, user::permissions::RepositoryActions,
 };
@@ -40,9 +39,24 @@ impl Debug for CouchDBLoginRequest {
             .finish()
     }
 }
-#[derive(Debug, Serialize, Deserialize, From)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct CouchDBLoginResponse {
+    pub ok: bool,
+    pub id: String,
+    pub name: String,
     pub token: String,
+}
+
+impl CouchDBLoginResponse {
+    pub fn new(token: String, username: &str) -> Self {
+        let id = format!("org.couchdb.user:{username}");
+        Self {
+            ok: true,
+            id,
+            name: username.to_string(),
+            token,
+        }
+    }
 }
 /// Handles the login request for CouchDB
 /// Required route is `/-/user/org.couchdb.user:<username>`
@@ -74,5 +88,27 @@ pub async fn perform_login(
         NewRepositoryToken::new(user.id, source, repository.id(), RepositoryActions::all())
             .insert(repository.site().as_ref())
             .await?;
-    return Ok(LoginResponse::ValidCouchDBLogin(CouchDBLoginResponse::from(token)).into());
+    let response = CouchDBLoginResponse::new(token, &user_name);
+    return Ok(LoginResponse::ValidCouchDBLogin(response).into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CouchDBLoginResponse;
+    use serde_json::json;
+
+    #[test]
+    fn couch_login_response_matches_npm_cli_shape() {
+        let resp = CouchDBLoginResponse::new("tok123".into(), "alice");
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(
+            json,
+            json!({
+                "ok": true,
+                "id": "org.couchdb.user:alice",
+                "name": "alice",
+                "token": "tok123"
+            })
+        );
+    }
 }

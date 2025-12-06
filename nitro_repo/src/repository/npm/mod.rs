@@ -13,6 +13,7 @@ use hosted::NPMHostedRegistry;
 use nr_core::database::entities::repository::{DBRepository, DBRepositoryConfig};
 use nr_macros::DynRepositoryHandler;
 use nr_storage::DynStorage;
+use std::collections::HashSet;
 use tracing::debug;
 use types::InvalidNPMPackageName;
 
@@ -21,12 +22,14 @@ pub mod login;
 pub mod proxy;
 pub mod types;
 pub mod utils;
+pub mod r#virtual;
 pub use super::prelude::*;
 use crate::{
     app::authentication::AuthenticationError,
     error::OtherInternalError,
     utils::{IntoErrorResponse, bad_request::BadRequestErrors},
 };
+pub use r#virtual as npm_virtual;
 mod configs;
 pub use configs::*;
 
@@ -34,6 +37,7 @@ use super::{
     DynRepository, NewRepository, RepositoryAuthConfigType, RepositoryType,
     RepositoryTypeDescription,
 };
+use npm_virtual::NpmVirtualRepository;
 use proxy::NpmProxyRegistry;
 
 #[derive(Debug, Clone, DynRepositoryHandler)]
@@ -41,6 +45,7 @@ use proxy::NpmProxyRegistry;
 pub enum NPMRegistry {
     Hosted(hosted::NPMHostedRegistry),
     Proxy(NpmProxyRegistry),
+    Virtual(npm_virtual::NpmVirtualRepository),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +121,42 @@ impl From<NPMRegistryError> for DynRepositoryHandlerError {
     }
 }
 
+pub(crate) fn validate_virtual_config(
+    config: &npm_virtual::NpmVirtualConfig,
+) -> Result<(), RepositoryFactoryError> {
+    if config.member_repositories.is_empty() {
+        return Err(RepositoryFactoryError::InvalidConfig(
+            NPMRegistryConfigType::get_type_static(),
+            "Virtual repository requires at least one member".to_string(),
+        ));
+    }
+
+    let mut seen = HashSet::new();
+    for member in &config.member_repositories {
+        if !seen.insert(member.repository_id) {
+            return Err(RepositoryFactoryError::InvalidConfig(
+                NPMRegistryConfigType::get_type_static(),
+                format!("Duplicate member repository {}", member.repository_id),
+            ));
+        }
+        if member.repository_name.trim().is_empty() {
+            return Err(RepositoryFactoryError::InvalidConfig(
+                NPMRegistryConfigType::get_type_static(),
+                "Member repository name cannot be empty".to_string(),
+            ));
+        }
+    }
+
+    if config.cache_ttl_seconds == 0 {
+        return Err(RepositoryFactoryError::InvalidConfig(
+            NPMRegistryConfigType::get_type_static(),
+            "cache_ttl_seconds must be greater than zero".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 impl IntoResponse for NPMRegistryError {
     fn into_response(self) -> Response {
         match self {
@@ -182,7 +223,7 @@ impl RepositoryType for NpmRegistryType {
                     NPMRegistryConfigType::get_type_static(),
                 ))?
                 .clone();
-            let _registry_config: NPMRegistryConfig = match serde_json::from_value(sub_type) {
+            let registry_config: NPMRegistryConfig = match serde_json::from_value(sub_type) {
                 Ok(ok) => ok,
                 Err(err) => {
                     return Err(RepositoryFactoryError::InvalidConfig(
@@ -191,6 +232,9 @@ impl RepositoryType for NpmRegistryType {
                     ));
                 }
             };
+            if let NPMRegistryConfig::Virtual(config) = &registry_config {
+                validate_virtual_config(config)?;
+            }
             Ok(NewRepository {
                 name,
                 uuid,
@@ -224,6 +268,11 @@ impl RepositoryType for NpmRegistryType {
                     let proxy =
                         NpmProxyRegistry::load(website, storage, repo, proxy_config).await?;
                     Ok(NPMRegistry::Proxy(proxy).into())
+                }
+                NPMRegistryConfig::Virtual(virtual_config) => {
+                    let virtual_repo =
+                        NpmVirtualRepository::load(website, storage, repo, virtual_config).await?;
+                    Ok(NPMRegistry::Virtual(virtual_repo).into())
                 }
             }
         })

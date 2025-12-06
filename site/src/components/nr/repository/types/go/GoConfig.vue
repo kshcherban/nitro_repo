@@ -5,7 +5,7 @@
       :options="typeOptions"
       :required="true"
       :disabled="!isCreate"
-      class="form-field--medium"
+      class="full-width"
     >
       Repository Type
     </DropDown>
@@ -30,15 +30,6 @@
             <h5>Upstream Proxy Routes</h5>
             <p class="routes-description">Configure upstream Go module proxies in priority order</p>
           </div>
-          <v-btn
-            color="primary"
-            variant="tonal"
-            class="text-none"
-            type="button"
-            prepend-icon="mdi-plus"
-            @click="addRoute">
-            Add Route
-          </v-btn>
         </div>
 
         <div v-if="proxyConfig.routes.length === 0" class="no-routes">
@@ -79,8 +70,8 @@
 
           <v-btn
             color="error"
-            variant="text"
-            class="text-none"
+            variant="flat"
+            class="route-action text-none danger-hover"
             type="button"
             prepend-icon="mdi-delete"
             @click="removeRoute(index)"
@@ -88,6 +79,16 @@
             Remove
           </v-btn>
         </div>
+
+        <v-btn
+          color="primary"
+          variant="tonal"
+          class="text-none route-add align-self-start"
+          type="button"
+          prepend-icon="mdi-plus"
+          @click="addRoute">
+          Add Route
+        </v-btn>
       </div>
 
       <div class="proxy-info">
@@ -313,8 +314,7 @@ onMounted(() => {
   max-width: none;
 }
 
-:deep(.form-field--medium) {
-  max-width: 320px;
+.full-width {
   width: 100%;
 }
 
@@ -341,13 +341,9 @@ onMounted(() => {
 
 .routes-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   margin-bottom: 0.5rem;
-
-  :deep(.v-btn) {
-    min-height: 40px;
-  }
 
   div {
     h5 {
@@ -380,8 +376,8 @@ onMounted(() => {
 .route-row {
   display: grid;
   gap: 1rem;
-  grid-template-columns: 2fr 1fr 120px 120px;
-  align-items: end;
+  grid-template-columns: minmax(260px, 2fr) minmax(200px, 1.2fr) 140px 140px;
+  align-items: stretch;
   padding: 1rem;
   background-color: var(--color-background-secondary);
   border-radius: var(--border-radius);
@@ -390,11 +386,11 @@ onMounted(() => {
   width: 100%;
 
   @media (max-width: 1200px) {
-    grid-template-columns: 1.5fr 1fr 120px 120px;
+    grid-template-columns: minmax(220px, 1.5fr) minmax(180px, 1fr) 140px 140px;
   }
 
   @media (max-width: 1024px) {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
     gap: 0.75rem;
   }
 
@@ -449,9 +445,24 @@ onMounted(() => {
   }
 
   :deep(.v-btn) {
-    min-height: 40px;
+    &.route-action {
+      --v-btn-height: 48px;
+      margin: 0;
+      width: 100%;
+      height: 48px;
+      min-height: 48px;
+      max-height: 48px;
+      align-self: start;
+      justify-content: center;
+    }
+    min-height: 56px;
     white-space: nowrap;
+    align-self: end;
   }
+}
+
+.route-add {
+  margin-top: 0.25rem;
 }
 
 .go-config__submit {

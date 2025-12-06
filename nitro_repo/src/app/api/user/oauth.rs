@@ -1,5 +1,7 @@
 use std::{io, net::SocketAddr, str::FromStr};
 
+use crate::app::authentication::jwks::{JwksManager, ReqwestJwksFetcher};
+use crate::app::config::{OidcProviderConfig, TokenSource};
 use axum::{
     extract::{ConnectInfo, Path, Query, State},
     http::{
@@ -14,8 +16,6 @@ use axum_extra::{
     headers::UserAgent,
 };
 use chrono::{DateTime, Duration, Utc};
-use crate::app::authentication::jwks::{JwksManager, ReqwestJwksFetcher};
-use crate::app::config::{OidcProviderConfig, TokenSource};
 use nr_core::database::entities::user::{UserSafeData, UserType};
 use nr_core::user::permissions::UpdatePermissions;
 use oauth2::AuthorizationCode;
@@ -439,7 +439,9 @@ pub async fn callback(
                 .as_ref()
                 .map(|m| m.client_id.clone())
                 .unwrap_or_default(),
-            jwks_url: Some("https://login.microsoftonline.com/common/discovery/v2.0/keys".to_string()),
+            jwks_url: Some(
+                "https://login.microsoftonline.com/common/discovery/v2.0/keys".to_string(),
+            ),
             token_source: TokenSource::Header {
                 name: "Authorization".to_string(),
                 prefix: Some("Bearer ".to_string()),
@@ -466,18 +468,19 @@ pub async fn callback(
     };
 
     // Extract the claims we need from the verified token
-    let claims = match serde_json::from_value::<IdTokenClaims>(serde_json::Value::Object(claims_map)) {
-        Ok(claims) => claims,
-        Err(err) => {
-            error!(%err, "Failed to parse verified id_token claims");
-            let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
-                message: "Unable to parse identity token claims".into(),
-                details: None,
-                error: None,
-            };
-            return Ok(ResponseBuilder::internal_server_error().json(&api_error));
-        }
-    };
+    let claims =
+        match serde_json::from_value::<IdTokenClaims>(serde_json::Value::Object(claims_map)) {
+            Ok(claims) => claims,
+            Err(err) => {
+                error!(%err, "Failed to parse verified id_token claims");
+                let api_error: APIErrorResponse<(), ()> = APIErrorResponse {
+                    message: "Unable to parse identity token claims".into(),
+                    details: None,
+                    error: None,
+                };
+                return Ok(ResponseBuilder::internal_server_error().json(&api_error));
+            }
+        };
 
     let claim_groups = extract_roles(exchange.provider, &claims);
     let mapped_roles = map_roles_from_claims(

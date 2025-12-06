@@ -28,3 +28,13 @@ $accent-90: rgba(3, 169, 244, 0.46);
 $valid-value: #43a047;
 
 $invalid-form-field: #e53935;
+
+.danger-hover {
+  transition: filter 120ms ease, box-shadow 120ms ease;
+  &:hover {
+    filter: brightness(0.9);
+  }
+  &:focus-visible {
+    box-shadow: 0 0 0 2px rgba(229, 57, 53, 0.35);
+  }
+}
