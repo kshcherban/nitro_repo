@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
-use super::*;
+use super::{SessionManager, SessionManagerConfig, cleanup_interval_to_std};
+use crate::app::config::Mode;
+use chrono::Duration;
 use tempfile::tempdir;
 
 #[test]

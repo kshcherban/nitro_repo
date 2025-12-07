@@ -40,6 +40,7 @@ use crate::{
     app::NitroRepo,
     repository::{
         Repository, RepositoryAuthConfigType,
+        proxy::base_proxy::{evict_proxy_cache_entry, record_proxy_cache_hit},
         proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
     },
 };
@@ -415,10 +416,8 @@ pub(super) async fn record_maven_proxy_cache_hit(
     let Some(indexer) = indexer else {
         return Ok(());
     };
-    if let Some(meta) = maven_proxy_meta_from_cache_path(path, size) {
-        indexer.record_cached_artifact(meta).await?;
-    }
-    Ok(())
+    let meta = maven_proxy_meta_from_cache_path(path, size);
+    record_proxy_cache_hit(indexer, meta).await
 }
 
 pub(super) async fn evict_maven_proxy_cache_entry(
@@ -428,10 +427,8 @@ pub(super) async fn evict_maven_proxy_cache_entry(
     let Some(indexer) = indexer else {
         return Ok(());
     };
-    if let Some(key) = maven_proxy_key_from_cache_path(path) {
-        indexer.evict_cached_artifact(key).await?;
-    }
-    Ok(())
+    let key = maven_proxy_key_from_cache_path(path);
+    evict_proxy_cache_entry(indexer, key).await
 }
 
 #[cfg(test)]
@@ -503,7 +500,7 @@ impl Repository for MavenProxy {
     async fn handle_get(
         &self,
         RepositoryRequest {
-            parts,
+            parts: _,
             path,
             authentication,
             ..
@@ -512,7 +509,7 @@ impl Repository for MavenProxy {
         if let Some(err) = self.check_read(&authentication).await? {
             return Ok(err);
         }
-        let visibility = self.visibility();
+        let _visibility = self.visibility();
         let Some(file) = self.0.storage.open_file(self.id, &path).await? else {
             debug!(?path, "File not found in storage. Proxying request");
             return match self.get_from_proxy(path).await {
@@ -532,13 +529,13 @@ impl Repository for MavenProxy {
     async fn handle_head(
         &self,
         RepositoryRequest {
-            parts,
+            parts: _,
             path,
             authentication,
             ..
         }: RepositoryRequest,
     ) -> Result<RepoResponse, MavenError> {
-        let visibility = self.visibility();
+        let _visibility = self.visibility();
         // TODO: Proxy HEAD request
         if let Some(err) = self.check_read(&authentication).await? {
             return Ok(err);

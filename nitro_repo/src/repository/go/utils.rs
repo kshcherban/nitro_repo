@@ -299,7 +299,7 @@ impl TryFrom<AxumPath<String>> for GoModuleRequest {
 
 /// Generate Go module info JSON content
 pub fn generate_go_module_info(
-    module_path: &GoModulePath,
+    _module_path: &GoModulePath,
     version: &GoVersion,
     time: chrono::DateTime<chrono::Utc>,
 ) -> Result<String, GoModuleError> {

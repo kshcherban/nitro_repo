@@ -51,7 +51,7 @@ pub trait NpmRegistryExt: Repository {
         project: &DBProject,
         release: &PublishVersion,
     ) -> Result<(), NPMRegistryError> {
-        if let Some(version) = DBProjectVersion::find_by_version_and_project(
+        if let Some(_version) = DBProjectVersion::find_by_version_and_project(
             &release.version,
             project.id,
             &self.site().database,

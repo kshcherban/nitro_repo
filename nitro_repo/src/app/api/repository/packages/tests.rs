@@ -232,8 +232,7 @@ async fn go_package_pagination_respects_page_window() -> Result<()> {
     }
 
     let response =
-        super::collect_go_package_page(&storage, repository, "go-proxy-cache/", 2, 1, None)
-            .await?;
+        super::collect_go_package_page(&storage, repository, "go-proxy-cache/", 2, 1, None).await?;
 
     assert_eq!(response.total_packages, 3);
     assert_eq!(response.items.len(), 1);
@@ -269,8 +268,7 @@ async fn build_maven_proxy_package_list_exposes_cached_files() -> Result<()> {
         )
         .await?;
 
-    let response =
-        super::build_maven_proxy_package_list(&storage, repository, 1, 50, None).await?;
+    let response = super::build_maven_proxy_package_list(&storage, repository, 1, 50, None).await?;
     assert_eq!(response.total_packages, 1);
     assert_eq!(response.items.len(), 2);
 

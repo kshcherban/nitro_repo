@@ -73,7 +73,7 @@ impl NPMHostedRegistry {
             name,
             attachments,
             versions,
-            other,
+            other: _,
         }: PublishRequest = serde_json::from_str(&body)?;
         if versions.len() != 1 {
             return Err(NPMRegistryError::OnlyOneReleaseOrAttachmentAtATime);
@@ -202,7 +202,7 @@ impl Repository for NPMHostedRegistry {
                     if let Some(extra) = version.extra.0.extra {
                         let extra: PublishVersion = match serde_json::from_value(extra) {
                             Ok(ok) => ok,
-                            Err(err) => {
+                            Err(_err) => {
                                 warn!("Invalid NPM Project");
                                 continue;
                             }
@@ -304,7 +304,7 @@ impl Repository for NPMHostedRegistry {
         } else if path_as_string.eq("-/v1/login") {
             return super::login::web_login::perform_login(self, request).await;
         }
-        let Some(user) = request
+        let Some(_user) = request
             .authentication
             .get_user_if_has_action(RepositoryActions::Write, self.id, self.site.as_ref())
             .await?

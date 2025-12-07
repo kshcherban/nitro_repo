@@ -406,7 +406,7 @@ impl RepoResponse {
     pub fn into_response_default(self) -> Response {
         match self {
             Self::FileResponse(file) => match *file {
-                StorageFile::Directory { meta, files } => ResponseBuilder::default()
+                StorageFile::Directory { .. } => ResponseBuilder::default()
                     .status(StatusCode::NOT_IMPLEMENTED)
                     .header(CONTENT_TYPE, mime::TEXT_HTML.to_string())
                     .body("Build HTML Page listing"),

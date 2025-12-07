@@ -44,6 +44,7 @@ use crate::{
     repository::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
         RepositoryRequest,
+        proxy::base_proxy::{evict_proxy_cache_entry, record_proxy_cache_hit},
         proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
         utils::can_read_repository_with_auth,
     },
@@ -644,20 +645,16 @@ pub(super) async fn record_python_proxy_cache_hit(
     size: u64,
     upstream_url: Option<&Url>,
 ) -> Result<(), ProxyIndexingError> {
-    if let Some(meta) = python_proxy_meta_from_cache_path(path, size, upstream_url) {
-        indexer.record_cached_artifact(meta).await?;
-    }
-    Ok(())
+    let meta = python_proxy_meta_from_cache_path(path, size, upstream_url);
+    record_proxy_cache_hit(indexer, meta).await
 }
 
 pub(super) async fn evict_python_proxy_cache_entry(
     indexer: &dyn ProxyIndexing,
     path: &StoragePath,
 ) -> Result<(), ProxyIndexingError> {
-    if let Some(key) = python_proxy_key_from_cache_path(path) {
-        indexer.evict_cached_artifact(key).await?;
-    }
-    Ok(())
+    let key = python_proxy_key_from_cache_path(path);
+    evict_proxy_cache_entry(indexer, key).await
 }
 
 fn cache_path_for_python_proxy(path: &StoragePath) -> Option<StoragePath> {

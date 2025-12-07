@@ -1,7 +1,17 @@
 //! Docker proxy (pull-through cache) support.
 //!
-//! The proxy repository is read-only and forwards GET/HEAD requests to an
-//! upstream Docker registry, caching responses locally.
+//! This module implements a read-only proxy repository that forwards
+//! Docker Registry API GET/HEAD requests to an upstream registry and
+//! caches responses locally.
+//!
+//! High-level responsibilities:
+//! - Translate Docker client requests into upstream registry calls.
+//! - Cache manifests and blobs in Nitro storage to avoid repeated
+//!   upstream fetches.
+//! - Keep the package catalog in sync via the `ProxyIndexing` API so
+//!   Docker images appear in the shared search/index tables.
+//! - Handle bearer-token challenges for authenticated upstreams and
+//!   retry with short, bounded backoff.
 
 use std::{
     fmt,
@@ -55,7 +65,11 @@ use crate::{
     utils::ResponseBuilder,
 };
 
-/// Docker proxy configuration for upstream registries
+/// Docker proxy configuration for upstream registries.
+///
+/// This configuration controls where the proxy forwards requests,
+/// how often it revalidates tag manifests, and whether upstream
+/// authentication is used when talking to the remote registry.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DockerProxyConfig {
     /// Upstream registry URL (e.g., "https://registry-1.docker.io")
@@ -81,7 +95,9 @@ fn default_revalidation_ttl() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DockerProxyAuth {
+    /// Username used to authenticate against the upstream registry.
     pub username: String,
+    /// Password or token used to authenticate against the upstream registry.
     pub password: String,
 }
 

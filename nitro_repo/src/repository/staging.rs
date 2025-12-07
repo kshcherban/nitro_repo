@@ -1,4 +1,4 @@
-use std::{fmt::Debug, path::PathBuf, sync::Arc};
+use std::{env, fmt::Debug, path::PathBuf, sync::Arc};
 
 use axum::response::IntoResponse;
 use bytes::Bytes;
@@ -11,7 +11,7 @@ use thiserror::Error;
 use tracing::{debug, error, instrument};
 use uuid::Uuid;
 
-use crate::app::{NitroRepo, config::get_current_directory};
+use crate::app::NitroRepo;
 #[derive(Debug, Error)]
 pub enum StagingManagerError {
     #[error("Database Error")]
@@ -36,10 +36,14 @@ pub struct StagingConfig {
 impl Default for StagingConfig {
     fn default() -> Self {
         Self {
-            staging_dir: get_current_directory().join("staging"),
+            staging_dir: default_staging_directory(),
             time_till_cleanup: Duration::hours(1),
         }
     }
+}
+
+fn default_staging_directory() -> PathBuf {
+    env::current_dir().unwrap_or_else(|_| PathBuf::new()).join("staging")
 }
 pub struct StagingManagerInner {
     repository: Uuid,

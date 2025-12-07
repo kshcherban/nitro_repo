@@ -1,7 +1,5 @@
-use std::{env, fs::read_to_string, path::PathBuf};
-
-use nr_core::database::DatabaseConfig;
 use serde::{Deserialize, Serialize};
+use std::{env, path::PathBuf};
 use strum::EnumIs;
 use tuxs_config_types::size_config::InvalidSizeError;
 use utoipa::ToSchema;
@@ -9,12 +7,6 @@ mod max_upload;
 mod security;
 pub use max_upload::*;
 pub use security::*;
-
-use super::{authentication::session::SessionManagerConfig, email::EmailSetting};
-use crate::{
-    logging::config::{LoggingConfig, OtelConfig},
-    repository::StagingConfig,
-};
 pub const CONFIG_PREFIX: &str = "NITRO";
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -46,36 +38,6 @@ pub fn get_current_directory() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::new())
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(default)]
-pub struct NitroRepoConfig {
-    pub mode: Mode,
-    pub web_server: WebServer,
-    pub suggested_local_storage_path: Option<PathBuf>,
-    pub database: DatabaseConfig,
-    pub log: LoggingConfig,
-    pub opentelemetry: OtelConfig,
-    pub sessions: SessionManagerConfig,
-    pub site: SiteSetting,
-    pub security: SecuritySettings,
-    pub staging: StagingConfig,
-    pub email: Option<EmailSetting>,
-}
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(default)]
-pub struct ReadConfigType {
-    pub mode: Option<Mode>,
-    pub suggested_local_storage_path: Option<PathBuf>,
-    pub web_server: Option<WebServer>,
-    pub database: Option<DatabaseConfig>,
-    pub log: Option<LoggingConfig>,
-    pub opentelemetry: Option<OtelConfig>,
-    pub sessions: Option<SessionManagerConfig>,
-    pub email: Option<EmailSetting>,
-    pub site: Option<SiteSetting>,
-    pub security: Option<SecuritySettings>,
-    pub staging: Option<StagingConfig>,
-}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WebServer {
@@ -157,53 +119,5 @@ macro_rules! env_or_file_or_none {
         )
     }
 }
-/// Load the configuration from the environment or a configuration file.
-///
-/// path: may not exist if it doesn't it will use the environment variables.
-///
-/// Config File gets precedence over environment variables.
-pub fn load_config(path: Option<PathBuf>) -> anyhow::Result<NitroRepoConfig> {
-    let environment: ReadConfigType = serde_env::from_env_with_prefix(CONFIG_PREFIX)?;
-    let config_from_file = if let Some(path) = path.filter(|path| path.exists() && path.is_file()) {
-        let contents = read_to_string(path)?;
-        toml::from_str(&contents)?
-    } else {
-        ReadConfigType::default()
-    };
-    // Merge the environment variables with the configuration file. If neither exists the default values are used.
-    // Environment variables take precedence for most fields, but opentelemetry.enabled has special handling.
-    let (mode, web_server, database, log, opentelemetry, sessions, site, security, staging) = env_or_file_or_default!(
-        config_from_file,
-        environment,
-        mode,
-        web_server,
-        database,
-        log,
-        opentelemetry,
-        sessions,
-        site,
-        security,
-        staging
-    );
-    let email = env_or_file_or_none!(config_from_file, environment, email);
-    let suggested_local_storage_path =
-        env_or_file_or_none!(config_from_file, environment, suggested_local_storage_path);
-
-    // Apply environment variable fallback logic for OpenTelemetry configuration
-    // Config file takes precedence over environment variables for opentelemetry.enabled
-    let opentelemetry = opentelemetry.apply_env_fallback();
-
-    Ok(NitroRepoConfig {
-        mode,
-        web_server,
-        database,
-        log,
-        opentelemetry,
-        sessions,
-        site,
-        security,
-        staging,
-        email,
-        suggested_local_storage_path,
-    })
-}
+pub(crate) use env_or_file_or_default;
+pub(crate) use env_or_file_or_none;

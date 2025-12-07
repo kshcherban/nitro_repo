@@ -794,7 +794,7 @@ impl HelmHosted {
                 digest,
                 canonical_path,
                 size_bytes: _,
-                provenance,
+                provenance: _,
                 ..
             } = stored;
             let version_entry = ChartMuseumVersion {

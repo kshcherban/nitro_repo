@@ -101,7 +101,7 @@ impl RepositoryConfigType for GoRepositoryConfigType {
                 }
 
                 // Validate each route
-                for (i, route) in proxy_config.routes.iter().enumerate() {
+                for (_index, route) in proxy_config.routes.iter().enumerate() {
                     // Validate URL format
                     let url_str = route.url.as_str();
                     if url_str.is_empty() {

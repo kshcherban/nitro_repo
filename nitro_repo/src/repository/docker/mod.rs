@@ -248,7 +248,7 @@ impl RepositoryType for DockerRepositoryType {
         name: String,
         uuid: uuid::Uuid,
         configs: HashMap<String, serde_json::Value>,
-        storage: DynStorage,
+        _storage: DynStorage,
     ) -> BoxFuture<'static, Result<NewRepository, RepositoryFactoryError>> {
         Box::pin(async move {
             let sub_type = configs
@@ -258,7 +258,7 @@ impl RepositoryType for DockerRepositoryType {
                 ))?
                 .clone();
 
-            let docker_config: DockerRegistryConfig = match serde_json::from_value(sub_type) {
+            let _docker_config: DockerRegistryConfig = match serde_json::from_value(sub_type) {
                 Ok(ok) => ok,
                 Err(err) => {
                     return Err(RepositoryFactoryError::InvalidConfig(

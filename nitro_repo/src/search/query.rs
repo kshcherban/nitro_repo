@@ -1,3 +1,11 @@
+//! Database-backed package search over the `project_versions` catalog.
+//!
+//! This module owns the low-level SQL used by the search API
+//! (`app::api::search`) to fetch packages for a single repository.
+//! Callers supply a `SearchQuery` and repository id; results are
+//! ordered by most recently updated version and instrumented with
+//! simple OpenTelemetry metrics.
+
 use std::time::Instant;
 
 use chrono::{DateTime, FixedOffset};

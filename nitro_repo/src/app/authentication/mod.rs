@@ -37,6 +37,7 @@ pub mod layer;
 pub mod oauth;
 pub mod session;
 pub mod ws;
+pub mod providers;
 
 #[derive(Error, Debug)]
 pub enum AuthenticationError {

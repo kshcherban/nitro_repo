@@ -60,7 +60,7 @@ impl MavenHosted {
     pub async fn standard_maven_deploy(
         &self,
         RepositoryRequest {
-            parts,
+            parts: _,
             body,
             path,
             authentication,
@@ -113,7 +113,7 @@ impl MavenHosted {
         } else {
             None
         };
-        let (size, created) = self.storage.save_file(self.id, body.into(), &path).await?;
+        let (_size, created) = self.storage.save_file(self.id, body.into(), &path).await?;
         // Trigger Push Event if it is the .pom file
         let save_path = format!(
             "/repositories/{}/{}/{}",
@@ -220,7 +220,7 @@ impl Repository for MavenHosted {
     async fn handle_get(
         &self,
         RepositoryRequest {
-            parts,
+            parts: _,
             path,
             authentication,
             trace,
@@ -230,7 +230,6 @@ impl Repository for MavenHosted {
         if let Some(err) = self.check_read(&authentication).await? {
             return Ok(err);
         }
-        let visibility = self.visibility();
         let file = self.0.storage.open_file(self.id, &path).await?;
         if let Some(StorageFile::File { meta, .. }) = &file {
             trace.metrics.project_access_bytes(meta.file_type.file_size);
@@ -262,13 +261,12 @@ impl Repository for MavenHosted {
     async fn handle_head(
         &self,
         RepositoryRequest {
-            parts,
+            parts: _,
             path,
             authentication,
             ..
         }: RepositoryRequest,
     ) -> Result<RepoResponse, MavenError> {
-        let visibility = self.visibility();
         if let Some(err) = self.check_read(&authentication).await? {
             return Ok(err);
         }

@@ -29,15 +29,15 @@ use super::{
 
 use crate::{
     app::NitroRepo,
-    repository::utils::can_read_repository_with_auth,
     repository::{
         RepoResponse, Repository, RepositoryFactoryError, RepositoryHandlerError,
         RepositoryRequest,
+        proxy::base_proxy::{evict_proxy_cache_entry, record_proxy_cache_hit},
         proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
+        utils::can_read_repository_with_auth,
     },
+    repository::{RepositoryAuthConfigType, go::GoRepositoryError},
 };
-
-use crate::repository::{RepositoryAuthConfigType, go::GoRepositoryError};
 
 use nr_core::repository::config::repository_page::RepositoryPageType;
 
@@ -1034,20 +1034,16 @@ pub(super) async fn record_go_proxy_cache_hit(
     path: &StoragePath,
     size: u64,
 ) -> Result<(), ProxyIndexingError> {
-    if let Some(meta) = go_proxy_meta_from_cache_path(path, size) {
-        indexer.record_cached_artifact(meta).await?;
-    }
-    Ok(())
+    let meta = go_proxy_meta_from_cache_path(path, size);
+    record_proxy_cache_hit(indexer, meta).await
 }
 
 pub(super) async fn evict_go_proxy_cache_entry(
     indexer: &dyn ProxyIndexing,
     path: &StoragePath,
 ) -> Result<(), ProxyIndexingError> {
-    if let Some(key) = go_proxy_key_from_cache_path(path) {
-        indexer.evict_cached_artifact(key).await?;
-    }
-    Ok(())
+    let key = go_proxy_key_from_cache_path(path);
+    evict_proxy_cache_entry(indexer, key).await
 }
 
 #[cfg(test)]

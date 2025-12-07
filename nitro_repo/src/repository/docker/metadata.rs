@@ -75,10 +75,7 @@ pub async fn collect_manifest_entries(
 
         for entry in files {
             let nr_storage::StorageFileMeta {
-                name,
-                file_type,
-                modified,
-                ..
+                name, file_type, ..
             } = entry;
 
             match file_type {

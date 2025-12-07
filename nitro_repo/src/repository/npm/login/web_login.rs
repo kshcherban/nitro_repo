@@ -11,8 +11,8 @@ pub struct WebLoginResponse {
     pub login_url: String,
 }
 pub async fn perform_login(
-    repository: &impl NpmRegistryExt,
-    request: RepositoryRequest,
+    _repository: &impl NpmRegistryExt,
+    _request: RepositoryRequest,
 ) -> Result<RepoResponse, NPMRegistryError> {
     // TODO: Implement Web Login
     Ok(LoginResponse::UnsupportedLogin.into())

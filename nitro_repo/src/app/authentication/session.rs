@@ -30,6 +30,9 @@ use crate::{
     },
     utils::{IntoErrorResponse, ResponseBuilder},
 };
+
+mod storage;
+pub use storage::SessionStorage;
 #[derive(Debug, Error)]
 pub enum SessionError {
     #[error("Session not found")]

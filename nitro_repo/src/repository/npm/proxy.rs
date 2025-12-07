@@ -1,3 +1,14 @@
+//! NPM proxy (upstream metadata and tarball cache).
+//!
+//! This module implements a read-only NPM proxy that:
+//! - Proxies package metadata and tarballs from an upstream NPM registry.
+//! - Caches responses under the repository storage so repeated installs
+//!   do not hit the upstream every time.
+//! - Rewrites metadata `dist.tarball` URLs so clients download tarballs
+//!   from Nitro rather than directly from the upstream.
+//! - Keeps the shared package catalog up to date via the `ProxyIndexing`
+//!   interface so proxied packages participate in global search.
+
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock},
@@ -32,12 +43,18 @@ use crate::{
     repository::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
         RepositoryRequest,
+        proxy::base_proxy::{evict_proxy_cache_entry, record_proxy_cache_hit},
         proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
         utils::can_read_repository,
     },
     utils::ResponseBuilder,
 };
 
+/// Inner state for the NPM proxy repository.
+///
+/// This type holds configuration, routing and client state. It is wrapped
+/// in an [`Arc`] by [`NpmProxyRegistry`] and should not be used directly
+/// by callers.
 pub struct NpmProxyInner {
     pub id: Uuid,
     pub name: String,
@@ -813,20 +830,16 @@ pub(super) async fn record_npm_proxy_cache_hit(
     size: u64,
     upstream_url: Option<&Url>,
 ) -> Result<(), ProxyIndexingError> {
-    if let Some(meta) = npm_proxy_meta_from_cache_path(path, size, upstream_url) {
-        indexer.record_cached_artifact(meta).await?;
-    }
-    Ok(())
+    let meta = npm_proxy_meta_from_cache_path(path, size, upstream_url);
+    record_proxy_cache_hit(indexer, meta).await
 }
 
 pub(super) async fn evict_npm_proxy_cache_entry(
     indexer: &dyn ProxyIndexing,
     path: &StoragePath,
 ) -> Result<(), ProxyIndexingError> {
-    if let Some(key) = npm_proxy_key_from_cache_path(path) {
-        indexer.evict_cached_artifact(key).await?;
-    }
-    Ok(())
+    let key = npm_proxy_key_from_cache_path(path);
+    evict_proxy_cache_entry(indexer, key).await
 }
 
 async fn rewrite_metadata_tarballs(

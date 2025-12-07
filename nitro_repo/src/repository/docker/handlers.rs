@@ -407,7 +407,7 @@ async fn write_local_stream<S>(
     upload_path: &StoragePath,
     stream: S,
     site: &NitroRepo,
-    upload_id: &str,
+    _upload_id: &str,
     state_handle: BlobUploadStateHandle,
 ) -> Result<u64, DockerError>
 where

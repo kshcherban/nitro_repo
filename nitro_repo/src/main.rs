@@ -24,17 +24,16 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use crate::config::{NitroRepoConfig, load_config};
 use anyhow::Context;
+use app::NitroRepo;
 use app::web::resolve_worker_threads;
-use app::{
-    NitroRepo,
-    config::{NitroRepoConfig, load_config},
-};
 use clap::{Parser, Subcommand};
 use config_editor::ConfigSection;
 use search::reindex::{self, ReindexKind};
 use uuid::Uuid;
 pub mod app;
+pub mod config;
 mod config_editor;
 pub mod error;
 mod exporter;
@@ -198,7 +197,7 @@ fn save_config(config_path: PathBuf, add_defaults: bool) -> anyhow::Result<()> {
     if config_path.is_dir() {
         anyhow::bail!("Config file is a directory. Please pass a file path.");
     }
-    let config = if config_path.exists() {
+    let config: NitroRepoConfig = if config_path.exists() {
         let config = std::fs::read_to_string(&config_path)?;
         toml::from_str(&config)?
     } else {

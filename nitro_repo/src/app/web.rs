@@ -7,12 +7,8 @@ use std::{
 };
 
 use anyhow::Context;
-use axum::{
-    Router,
-    extract::{DefaultBodyLimit, Request},
-};
+use axum::{Router, extract::Request};
 use futures_util::pin_mut;
-use http::{HeaderName, HeaderValue};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use num_cpus;
@@ -20,20 +16,13 @@ use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::TcpListener, signal};
 use tokio_rustls::TlsAcceptor;
-use tower_http::set_header::SetResponseHeaderLayer;
 use tower_service::Service;
 use tracing::{debug, error, info, warn};
 
-use super::{
-    NitroRepo, api,
-    authentication::layer::AuthenticationLayer,
-    config::{NitroRepoConfig, WebServer, load_config},
-    open_api,
-};
-use crate::app::request_logging::AppTracingLayer;
-
-const POWERED_BY_HEADER: HeaderName = HeaderName::from_static("x-powered-by");
-const POWERED_BY_VALUE: HeaderValue = HeaderValue::from_static("Nitro Repo");
+use super::NitroRepo;
+use super::routes;
+use crate::app::config::WebServer;
+use crate::config::{NitroRepoConfig, load_config};
 /// Decide how many Tokio worker threads to start.
 pub(crate) fn resolve_worker_threads(web_server: &WebServer) -> usize {
     let configured = web_server.worker_threads.unwrap_or_else(num_cpus::get);
@@ -85,57 +74,7 @@ pub(crate) async fn start_with_config(config: NitroRepoConfig) -> anyhow::Result
     site.start_session_cleaner();
 
     let cloned_site = site.clone();
-    let auth_layer = AuthenticationLayer::from(site.clone());
-
-    // Docker V2 API compatibility routes added directly (not nested) to handle trailing slashes properly
-    info!("Docker V2 routes will be added at /v2");
-
-    let mut app = Router::new()
-        // Docker Registry V2 API compatibility route
-        // Handle both /v2 and /v2/ explicitly to work around Axum nesting trailing slash behavior
-        .route(
-            "/v2",
-            axum::routing::any(crate::repository::handle_docker_v2_base_public),
-        )
-        .route(
-            "/v2/",
-            axum::routing::any(crate::repository::handle_docker_v2_base_public),
-        )
-        .route(
-            "/v2/token",
-            axum::routing::get(crate::repository::docker::auth::handle_docker_token),
-        )
-        // Nest the full Docker router for all other V2 paths
-        .route(
-            "/v2/{*path}",
-            axum::routing::any(crate::repository::handle_docker_v2_any_path),
-        )
-        .nest("/repositories", crate::repository::repository_router())
-        .nest("/storages", crate::repository::repository_router())
-        // Serve the SPA root explicitly before falling back for other routes
-        .route("/", axum::routing::any(super::frontend::frontend_request))
-        .nest("/api", api::api_routes())
-        // Direct repository routes for patterns like /{storage}/{repository}/{*path}
-        .route(
-            "/{storage}/{repository}/{*path}",
-            axum::routing::any(crate::repository::handle_repo_request),
-        )
-        .fallback(super::frontend::frontend_request)
-        .with_state(site.clone());
-
-    if open_api_routes {
-        info!("OpenAPI routes enabled");
-        app = app.merge(open_api::build_router())
-    }
-    let body_limit: DefaultBodyLimit = max_upload.into();
-    let app = app
-        .layer(auth_layer)
-        .layer(SetResponseHeaderLayer::if_not_present(
-            POWERED_BY_HEADER,
-            POWERED_BY_VALUE,
-        ))
-        .layer(AppTracingLayer(site.clone()))
-        .layer(body_limit);
+    let app = routes::build_app_router(site, max_upload, open_api_routes);
 
     if let Some(tls) = tls {
         debug!("Starting TLS server");
