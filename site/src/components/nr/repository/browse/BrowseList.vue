@@ -115,6 +115,8 @@ watch(
   background: var(--nr-background-tertiary, #f8f9fa);
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   position: relative;
+  overflow: visible;
+  padding-right: 1.25rem;
 }
 
 .browse__header-cell--meta {

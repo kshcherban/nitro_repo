@@ -60,7 +60,7 @@ use nr_core::{
     storage::StoragePath,
 };
 
-#[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
+#[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PackageListQuery {
     #[serde(default = "default_page")]
@@ -69,6 +69,9 @@ pub struct PackageListQuery {
     #[serde(default = "default_per_page")]
     #[param(default = 50)]
     pub per_page: usize,
+    /// Optional search term applied server-side across all repository packages.
+    #[serde(default)]
+    pub q: Option<String>,
 }
 
 const fn default_page() -> usize {
@@ -76,6 +79,12 @@ const fn default_page() -> usize {
 }
 const fn default_per_page() -> usize {
     50
+}
+
+fn normalize_search_term(term: &Option<String>) -> Option<String> {
+    term.as_ref()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
 }
 
 const GO_FILE_SUFFIXES: [&str; 3] = [".zip", ".mod", ".info"];
@@ -114,6 +123,7 @@ fn build_package_page_from_objects(
     base: Option<&str>,
     page: usize,
     per_page: usize,
+    search: Option<&str>,
 ) -> PackageListResponse {
     let per_page = per_page.clamp(1, 200);
     let current_page = page.max(1);
@@ -121,6 +131,7 @@ fn build_package_page_from_objects(
     let end = start + per_page;
 
     let base_prefix = base.unwrap_or("");
+    let search_term = search.map(|term| term.to_lowercase());
 
     let mut total_packages = 0usize;
     let mut page_items: Vec<PackageFileEntry> = Vec::new();
@@ -131,8 +142,21 @@ fn build_package_page_from_objects(
                             total_packages: &mut usize,
                             page_items: &mut Vec<PackageFileEntry>| {
         if let Some((_, files)) = pkg.take() {
+            let filtered: Vec<PackageFileEntry> = if let Some(term) = &search_term {
+                files
+                    .into_iter()
+                    .filter(|entry| matches_search(entry, term))
+                    .collect()
+            } else {
+                files
+            };
+
+            if filtered.is_empty() {
+                return;
+            }
+
             if *total_packages >= start && *total_packages < end {
-                page_items.extend(files);
+                page_items.extend(filtered);
             }
             *total_packages += 1;
         }
@@ -210,12 +234,24 @@ fn build_package_page_from_objects(
     }
 }
 
+fn matches_search(entry: &PackageFileEntry, term: &str) -> bool {
+    let needle = term.to_lowercase();
+    let haystack = format!(
+        "{} {} {}",
+        entry.package.to_lowercase(),
+        entry.name.to_lowercase(),
+        entry.cache_path.to_lowercase()
+    );
+    haystack.contains(&needle)
+}
+
 async fn collect_directory_package_page(
     storage: &DynStorage,
     repository_id: Uuid,
     base: Option<&str>,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<PackageListResponse, nr_storage::StorageError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
@@ -227,12 +263,22 @@ async fn collect_directory_package_page(
     let mut items = Vec::new();
 
     while let Some(visit) = walker.next().await? {
+        let mut entries = build_package_entries_from_directory(
+            &visit.entry.display_name,
+            &visit.files,
+            &visit.entry.directory_path,
+        );
+
+        if let Some(term) = search {
+            entries.retain(|entry| matches_search(entry, term));
+        }
+
+        if entries.is_empty() {
+            continue;
+        }
+
         if total_packages >= start && total_packages < end {
-            items.extend(build_package_entries_from_directory(
-                &visit.entry.display_name,
-                &visit.files,
-                &visit.entry.directory_path,
-            ));
+            items.extend(entries);
         }
         total_packages += 1;
     }
@@ -257,6 +303,7 @@ async fn collect_go_package_page(
     base: &str,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<PackageListResponse, nr_storage::StorageError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
@@ -266,13 +313,18 @@ async fn collect_go_package_page(
     let mut walker = PackageDirectoryWalker::new(storage, repository_id, Some(base));
     let mut total_versions = 0usize;
     let mut items = Vec::new();
+    let normalized_search = search.map(|term| term.to_lowercase());
 
     while let Some(visit) = walker.next().await? {
-        let entries = build_go_entries_from_directory(
+        let mut entries = build_go_entries_from_directory(
             &visit.entry.display_name,
             &visit.files,
             &visit.entry.directory_path,
         );
+
+        if let Some(term) = &normalized_search {
+            entries.retain(|entry| matches_search(entry, term));
+        }
 
         for entry in entries.into_iter() {
             if total_versions >= start && total_versions < end {
@@ -512,6 +564,7 @@ pub async fn list_cached_packages(
     let Some(repository) = site.get_repository(repository_id) else {
         return Ok(RepositoryNotFound::Uuid(repository_id).into_response());
     };
+    let search_term = normalize_search_term(&query.q);
     let auth_config = site.get_repository_auth_config(repository.id()).await?;
     if !can_read_repository_with_auth(
         &auth,
@@ -537,20 +590,49 @@ pub async fn list_cached_packages(
                     query.page,
                     query.per_page,
                     base,
+                    search_term.as_deref(),
                 )
                 .await
             } else {
-                list_directory_packages(repository, query.page, query.per_page, base).await
+                list_directory_packages(
+                    repository,
+                    query.page,
+                    query.per_page,
+                    base,
+                    search_term.as_deref(),
+                )
+                .await
             }
         }
         PackageStrategy::NpmProxy => {
-            list_npm_proxy_packages(site, repository, query.page, query.per_page).await
+            list_npm_proxy_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::MavenHosted => {
-            list_maven_hosted_packages(site, repository, query.page, query.per_page).await
+            list_maven_hosted_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::MavenProxy => {
-            list_maven_proxy_packages(site, repository, query.page, query.per_page).await
+            list_maven_proxy_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::PythonHosted => {
             let storage = repository.get_storage();
@@ -561,29 +643,78 @@ pub async fn list_cached_packages(
                     query.page,
                     query.per_page,
                     None,
+                    search_term.as_deref(),
                 )
                 .await
             } else {
-                list_directory_packages(repository, query.page, query.per_page, None).await
+                list_directory_packages(
+                    repository,
+                    query.page,
+                    query.per_page,
+                    None,
+                    search_term.as_deref(),
+                )
+                .await
             }
         }
         PackageStrategy::Docker => {
-            list_docker_packages(repository, query.page, query.per_page).await
+            list_docker_packages(
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::Helm => {
-            list_helm_packages(site, repository, query.page, query.per_page).await
+            list_helm_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::GoHosted => {
-            list_go_packages(repository, "", query.page, query.per_page).await
+            list_go_packages(
+                repository,
+                "",
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::GoProxy => {
-            list_go_packages(repository, "go-proxy-cache/", query.page, query.per_page).await
+            list_go_packages(
+                repository,
+                "go-proxy-cache/",
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::Cargo => {
-            list_cargo_packages(site, repository, query.page, query.per_page).await
+            list_cargo_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
         PackageStrategy::DebHosted => {
-            list_deb_packages(site, repository, query.page, query.per_page).await
+            list_deb_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
         }
     }?;
 
@@ -637,10 +768,12 @@ async fn list_directory_packages(
     page: usize,
     per_page_raw: usize,
     base: Option<&str>,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
     let response =
-        collect_directory_package_page(&storage, repository.id(), base, page, per_page_raw).await?;
+        collect_directory_package_page(&storage, repository.id(), base, page, per_page_raw, search)
+            .await?;
     Ok(ResponseBuilder::ok().json(&response))
 }
 
@@ -650,6 +783,7 @@ async fn list_directory_packages_s3(
     page: usize,
     per_page_raw: usize,
     base: Option<&str>,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let objects = storage
         .list_repository_objects(repository_id, base)
@@ -670,7 +804,7 @@ async fn list_directory_packages_s3(
     // Ensure deterministic ordering independent of S3 pagination
     objects.sort_by(|a, b| a.key.cmp(&b.key));
 
-    let response = build_package_page_from_objects(objects, base, page, per_page_raw);
+    let response = build_package_page_from_objects(objects, base, page, per_page_raw, search);
 
     Ok(ResponseBuilder::ok().json(&response))
 }
@@ -764,7 +898,39 @@ async fn fetch_maven_catalog_page(
     repository_id: Uuid,
     per_page: usize,
     offset: i64,
+    search: Option<&str>,
 ) -> Result<Vec<MavenVersionRow>, sqlx::Error> {
+    if let Some(term) = search {
+        let pattern = format!("%{}%", term.to_lowercase());
+        return sqlx::query_as::<_, MavenVersionRow>(
+            r#"
+            SELECT
+                p.key AS project_key,
+                pv.version AS version,
+                pv.path AS version_path,
+                pv.extra AS version_data,
+                pv.updated_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            ORDER BY LOWER(p.key) COLLATE "C", LOWER(pv.version) COLLATE "C"
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(repository_id)
+        .bind(pattern)
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(database)
+        .await;
+    }
+
     sqlx::query_as::<_, MavenVersionRow>(
         r#"
         SELECT
@@ -792,7 +958,35 @@ async fn fetch_npm_proxy_catalog_page(
     repository_id: Uuid,
     per_page: usize,
     offset: i64,
+    search: Option<&str>,
 ) -> Result<Vec<ProxyVersionRow>, sqlx::Error> {
+    if let Some(term) = search {
+        let pattern = format!("%{}%", term.to_lowercase());
+        return sqlx::query_as::<_, ProxyVersionRow>(
+            r#"
+            SELECT
+                p.key AS project_key,
+                pv.extra AS version_data
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2
+              )
+            ORDER BY LOWER(p.key) COLLATE "C", LOWER(pv.version) COLLATE "C"
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(repository_id)
+        .bind(pattern)
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(database)
+        .await;
+    }
+
     sqlx::query_as::<_, ProxyVersionRow>(
         r#"
         SELECT
@@ -1127,10 +1321,12 @@ async fn list_go_packages(
     base: &str,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
     let response =
-        collect_go_package_page(&storage, repository.id(), base, page, per_page_raw).await?;
+        collect_go_package_page(&storage, repository.id(), base, page, per_page_raw, search)
+            .await?;
     Ok(ResponseBuilder::ok().json(&response))
 }
 
@@ -1139,22 +1335,44 @@ async fn list_helm_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
 
-    let total_versions: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        "#,
-    )
-    .bind(repository.id())
-    .fetch_one(&site.database)
-    .await?;
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository.id())
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            "#,
+        )
+        .bind(repository.id())
+        .fetch_one(&site.database)
+        .await?
+    };
 
     if total_versions == 0 {
         let empty = PackageListResponse {
@@ -1176,26 +1394,55 @@ async fn list_helm_packages(
         return Ok(ResponseBuilder::ok().json(&empty));
     }
 
-    let rows = sqlx::query(
-        r#"
-        SELECT
-            p.name AS chart_name,
-            pv.version,
-            pv.path,
-            pv.extra,
-            pv.updated_at
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        ORDER BY p.name ASC, pv.version ASC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(repository.id())
-    .bind(per_page as i64)
-    .bind(offset)
-    .fetch_all(&site.database)
-    .await?;
+    let rows = if let Some(pattern) = &search_pattern {
+        sqlx::query(
+            r#"
+            SELECT
+                p.name AS chart_name,
+                pv.version,
+                pv.path,
+                pv.extra,
+                pv.updated_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            ORDER BY p.name ASC, pv.version ASC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(repository.id())
+        .bind(pattern)
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&site.database)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT
+                p.name AS chart_name,
+                pv.version,
+                pv.path,
+                pv.extra,
+                pv.updated_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            ORDER BY p.name ASC, pv.version ASC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(repository.id())
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&site.database)
+        .await?
+    };
 
     let mut items = Vec::with_capacity(rows.len());
 
@@ -1243,22 +1490,45 @@ async fn list_cargo_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
 
-    let total_versions: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        "#,
-    )
-    .bind(repository.id())
-    .fetch_one(&site.database)
-    .await?;
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository.id())
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            "#,
+        )
+        .bind(repository.id())
+        .fetch_one(&site.database)
+        .await?
+    };
 
     if total_versions == 0 {
         let empty = PackageListResponse {
@@ -1280,26 +1550,56 @@ async fn list_cargo_packages(
         return Ok(ResponseBuilder::ok().json(&empty));
     }
 
-    let rows = sqlx::query(
-        r#"
-        SELECT
-            p.name AS crate_name,
-            p.key AS project_key,
-            pv.version AS version,
-            pv.extra AS extra,
-            pv.updated_at
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        ORDER BY p.name ASC, pv.version ASC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(repository.id())
-    .bind(per_page as i64)
-    .bind(offset)
-    .fetch_all(&site.database)
-    .await?;
+    let rows = if let Some(pattern) = &search_pattern {
+        sqlx::query(
+            r#"
+            SELECT
+                p.name AS crate_name,
+                p.key AS project_key,
+                pv.version AS version,
+                pv.extra AS extra,
+                pv.updated_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            ORDER BY p.name ASC, pv.version ASC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(repository.id())
+        .bind(pattern)
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&site.database)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT
+                p.name AS crate_name,
+                p.key AS project_key,
+                pv.version AS version,
+                pv.extra AS extra,
+                pv.updated_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            ORDER BY p.name ASC, pv.version ASC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(repository.id())
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&site.database)
+        .await?
+    };
 
     let mut items = Vec::with_capacity(rows.len());
 
@@ -1367,22 +1667,44 @@ async fn list_npm_proxy_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
 
-    let total_versions: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM project_versions pv
-        WHERE pv.repository_id = $1
-        "#,
-    )
-    .bind(repository_id)
-    .fetch_one(&site.database)
-    .await?;
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE pv.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository_id)
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            WHERE pv.repository_id = $1
+            "#,
+        )
+        .bind(repository_id)
+        .fetch_one(&site.database)
+        .await?
+    };
 
     if total_versions == 0 {
         let response = PackageListResponse {
@@ -1405,7 +1727,8 @@ async fn list_npm_proxy_packages(
     }
 
     let rows =
-        fetch_npm_proxy_catalog_page(&site.database, repository_id, per_page, offset).await?;
+        fetch_npm_proxy_catalog_page(&site.database, repository_id, per_page, offset, search)
+            .await?;
 
     let items: Vec<PackageFileEntry> = rows.iter().filter_map(proxy_entry_from_row).collect();
 
@@ -1423,23 +1746,46 @@ async fn list_maven_hosted_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
 
-    let total_versions: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        "#,
-    )
-    .bind(repository_id)
-    .fetch_one(&site.database)
-    .await?;
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository_id)
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            "#,
+        )
+        .bind(repository_id)
+        .fetch_one(&site.database)
+        .await?
+    };
 
     if total_versions == 0 {
         let empty = PackageListResponse {
@@ -1461,7 +1807,8 @@ async fn list_maven_hosted_packages(
         return Ok(ResponseBuilder::ok().json(&empty));
     }
 
-    let rows = fetch_maven_catalog_page(&site.database, repository_id, per_page, offset).await?;
+    let rows =
+        fetch_maven_catalog_page(&site.database, repository_id, per_page, offset, search).await?;
 
     let storage = repository.get_storage();
     let version_chunks = map_ordered_concurrent(rows, MAX_STORAGE_CONCURRENCY, move |row| {
@@ -1590,22 +1937,45 @@ async fn list_deb_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
 
-    let total_versions: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        "#,
-    )
-    .bind(repository.id())
-    .fetch_one(&site.database)
-    .await?;
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2 OR
+                LOWER(COALESCE(pv.extra::text, '')) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository.id())
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            "#,
+        )
+        .bind(repository.id())
+        .fetch_one(&site.database)
+        .await?
+    };
 
     if total_versions == 0 {
         let response = PackageListResponse {
@@ -1627,25 +1997,54 @@ async fn list_deb_packages(
         return Ok(ResponseBuilder::ok().json(&response));
     }
 
-    let rows = sqlx::query_as::<_, DebPackageRow>(
-        r#"
-        SELECT
-            p.name AS project_name,
-            pv.version,
-            pv.extra,
-            pv.created_at
-        FROM project_versions pv
-        INNER JOIN projects p ON pv.project_id = p.id
-        WHERE p.repository_id = $1
-        ORDER BY pv.created_at DESC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(repository.id())
-    .bind(per_page as i64)
-    .bind(offset)
-    .fetch_all(&site.database)
-    .await?;
+    let rows = if let Some(pattern) = &search_pattern {
+        sqlx::query_as::<_, DebPackageRow>(
+            r#"
+            SELECT
+                p.name AS project_name,
+                pv.version,
+                pv.extra,
+                pv.created_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2 OR
+                LOWER(COALESCE(pv.extra::text, '')) COLLATE "C" LIKE $2
+              )
+            ORDER BY pv.created_at DESC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(repository.id())
+        .bind(pattern)
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&site.database)
+        .await?
+    } else {
+        sqlx::query_as::<_, DebPackageRow>(
+            r#"
+            SELECT
+                p.name AS project_name,
+                pv.version,
+                pv.extra,
+                pv.created_at
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            ORDER BY pv.created_at DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(repository.id())
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&site.database)
+        .await?
+    };
 
     let mut items = Vec::new();
     for row in rows {
@@ -1674,27 +2073,51 @@ async fn list_maven_proxy_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
 
-    let total_versions: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM project_versions pv
-        WHERE pv.repository_id = $1
-        "#,
-    )
-    .bind(repository_id)
-    .fetch_one(&site.database)
-    .await?;
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE pv.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository_id)
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            WHERE pv.repository_id = $1
+            "#,
+        )
+        .bind(repository_id)
+        .fetch_one(&site.database)
+        .await?
+    };
 
     if total_versions == 0 {
         let storage = repository.get_storage();
         let response =
-            build_maven_proxy_package_list(&storage, repository_id, page, per_page_raw).await?;
+            build_maven_proxy_package_list(&storage, repository_id, page, per_page_raw, search)
+                .await?;
         return Ok(ResponseBuilder::ok().json(&response));
     }
 
@@ -1708,7 +2131,8 @@ async fn list_maven_proxy_packages(
         return Ok(ResponseBuilder::ok().json(&empty));
     }
 
-    let rows = fetch_maven_catalog_page(&site.database, repository_id, per_page, offset).await?;
+    let rows =
+        fetch_maven_catalog_page(&site.database, repository_id, per_page, offset, search).await?;
     let storage = repository.get_storage();
     let version_chunks = map_ordered_concurrent(rows, MAX_STORAGE_CONCURRENCY, move |row| {
         let storage = storage.clone();
@@ -1732,14 +2156,16 @@ async fn build_maven_proxy_package_list(
     repository_id: Uuid,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<PackageListResponse, InternalError> {
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
+    let search_term = search.map(|value| value.to_lowercase());
 
     let mut directories = gather_package_dirs(storage, repository_id, None).await?;
     directories.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut version_dirs = Vec::new();
+    let mut package_entries: Vec<Vec<PackageFileEntry>> = Vec::new();
 
     for (_, relative) in directories.into_iter() {
         let Some(package_label) = derive_maven_package_label(&relative) else {
@@ -1757,44 +2183,12 @@ async fn build_maven_proxy_package_list(
         if !has_pom {
             continue;
         }
-        version_dirs.push((relative, package_label));
-    }
-
-    let total_versions = version_dirs.len();
-    if total_versions == 0 {
-        return Ok(PackageListResponse {
-            page: current_page,
-            per_page,
-            total_packages: 0,
-            items: Vec::new(),
-        });
-    }
-
-    let start = (current_page - 1) * per_page;
-    if start >= total_versions {
-        return Ok(PackageListResponse {
-            page: current_page,
-            per_page,
-            total_packages: total_versions,
-            items: Vec::new(),
-        });
-    }
-
-    let end = min(start + per_page, total_versions);
-    let mut items = Vec::new();
-
-    for (relative, package_label) in version_dirs[start..end].iter() {
-        let storage_path = nr_core::storage::StoragePath::from(ensure_trailing_slash(relative));
-        let Some(StorageFile::Directory { files, .. }) =
-            storage.open_file(repository_id, &storage_path).await?
-        else {
-            continue;
-        };
 
         let cache_prefix = relative.trim_matches('/');
         let mut file_entries: Vec<_> = files.iter().collect();
         file_entries.sort_by(|a, b| a.name().cmp(b.name()));
 
+        let mut package_files = Vec::new();
         for entry in file_entries {
             if should_ignore(entry.name()) {
                 continue;
@@ -1805,21 +2199,58 @@ async fn build_maven_proxy_package_list(
                 } else {
                     format!("{cache_prefix}/{}", entry.name())
                 };
-                items.push(PackageFileEntry {
+                let file_entry = PackageFileEntry {
                     package: package_label.clone(),
                     name: entry.name().to_string(),
                     cache_path,
                     size: file_meta.file_size,
                     modified: entry.modified().clone(),
-                });
+                };
+                if let Some(term) = &search_term {
+                    if !matches_search(&file_entry, term) {
+                        continue;
+                    }
+                }
+                package_files.push(file_entry);
             }
         }
+
+        if package_files.is_empty() {
+            continue;
+        }
+        package_entries.push(package_files);
+    }
+
+    let total_packages = package_entries.len();
+    if total_packages == 0 {
+        return Ok(PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        });
+    }
+
+    let start = (current_page - 1) * per_page;
+    if start >= total_packages {
+        return Ok(PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages,
+            items: Vec::new(),
+        });
+    }
+
+    let end = min(start + per_page, total_packages);
+    let mut items = Vec::new();
+    for package in package_entries[start..end].iter() {
+        items.extend(package.clone());
     }
 
     Ok(PackageListResponse {
         page: current_page,
         per_page,
-        total_packages: total_versions,
+        total_packages,
         items,
     })
 }
@@ -1863,11 +2294,65 @@ async fn list_docker_packages(
     repository: DynRepository,
     page: usize,
     per_page_raw: usize,
+    search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
     let per_page = per_page_raw.clamp(1, 200);
     let current_page = page.max(1);
     let start = (current_page - 1) * per_page;
+    let search_term = search.map(|value| value.to_lowercase());
+
+    if search_term.is_some() {
+        let mut manifests = collect_manifest_entries(&storage, repository.id())
+            .await
+            .map_err(InternalError::from)?;
+
+        manifests.sort_by(|a, b| {
+            a.repository
+                .cmp(&b.repository)
+                .then(a.reference.cmp(&b.reference))
+        });
+
+        let mut entries: Vec<PackageFileEntry> = manifests
+            .into_iter()
+            .filter_map(|entry| {
+                let pkg = PackageFileEntry {
+                    package: entry.repository.clone(),
+                    name: entry.reference.clone(),
+                    cache_path: entry.cache_path.clone(),
+                    size: entry.size,
+                    modified: entry.modified,
+                };
+                if let Some(term) = &search_term {
+                    if !matches_search(&pkg, term) {
+                        return None;
+                    }
+                }
+                Some(pkg)
+            })
+            .collect();
+
+        let total_packages = entries.len();
+        if total_packages == 0 || start >= total_packages {
+            let empty = PackageListResponse {
+                page: current_page,
+                per_page,
+                total_packages,
+                items: Vec::new(),
+            };
+            return Ok(ResponseBuilder::ok().json(&empty));
+        }
+
+        let end = min(start + per_page, total_packages);
+        let items = entries.drain(start..end).collect();
+        let response = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages,
+            items,
+        };
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
 
     if let DynStorage::S3(s3_storage) = storage.clone() {
         let (manifests, total_packages) = s3_storage

@@ -205,7 +205,7 @@ async fn directory_package_pagination_respects_page_window() -> Result<()> {
     }
 
     let response =
-        super::collect_directory_package_page(&storage, repository, Some("packages/"), 2, 1)
+        super::collect_directory_package_page(&storage, repository, Some("packages/"), 2, 1, None)
             .await?;
 
     assert_eq!(response.total_packages, 3);
@@ -232,7 +232,8 @@ async fn go_package_pagination_respects_page_window() -> Result<()> {
     }
 
     let response =
-        super::collect_go_package_page(&storage, repository, "go-proxy-cache/", 2, 1).await?;
+        super::collect_go_package_page(&storage, repository, "go-proxy-cache/", 2, 1, None)
+            .await?;
 
     assert_eq!(response.total_packages, 3);
     assert_eq!(response.items.len(), 1);
@@ -268,7 +269,8 @@ async fn build_maven_proxy_package_list_exposes_cached_files() -> Result<()> {
         )
         .await?;
 
-    let response = super::build_maven_proxy_package_list(&storage, repository, 1, 50).await?;
+    let response =
+        super::build_maven_proxy_package_list(&storage, repository, 1, 50, None).await?;
     assert_eq!(response.total_packages, 1);
     assert_eq!(response.items.len(), 2);
 
@@ -318,7 +320,8 @@ async fn build_maven_proxy_package_list_paginates_versions() -> Result<()> {
             .await?;
     }
 
-    let first_page = super::build_maven_proxy_package_list(&storage, repository, 1, 1).await?;
+    let first_page =
+        super::build_maven_proxy_package_list(&storage, repository, 1, 1, None).await?;
     assert_eq!(first_page.total_packages, 2);
     assert!(
         first_page
@@ -327,7 +330,8 @@ async fn build_maven_proxy_package_list_paginates_versions() -> Result<()> {
             .all(|item| item.package.ends_with(":1.0.0"))
     );
 
-    let second_page = super::build_maven_proxy_package_list(&storage, repository, 2, 1).await?;
+    let second_page =
+        super::build_maven_proxy_package_list(&storage, repository, 2, 1, None).await?;
     assert_eq!(second_page.total_packages, 2);
     assert!(
         second_page
@@ -1000,7 +1004,7 @@ fn build_package_page_groups_by_directory_and_ignores_meta() {
         pkg_obj("packages/example/example-1.0.0.whl", 10),
     ];
 
-    let response = super::build_package_page_from_objects(objects, Some("packages/"), 1, 50);
+    let response = super::build_package_page_from_objects(objects, Some("packages/"), 1, 50, None);
 
     assert_eq!(response.total_packages, 2);
     // Package ordering follows lexicographic directory order
@@ -1021,12 +1025,29 @@ fn build_package_page_respects_pagination() {
         pkg_obj("packages/charlie/c-1.tgz", 1),
     ];
 
-    let response = super::build_package_page_from_objects(objects, Some("packages/"), 2, 1);
+    let response = super::build_package_page_from_objects(objects, Some("packages/"), 2, 1, None);
 
     assert_eq!(response.total_packages, 3);
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].package, "bravo");
     assert_eq!(response.items[0].name, "b-1.tgz");
+}
+
+#[test]
+fn build_package_page_filters_with_search_term() {
+    let objects = vec![
+        pkg_obj("packages/alpha/a-1.tgz", 1),
+        pkg_obj("packages/bravo/b-1.tgz", 1),
+        pkg_obj("packages/charlie/c-1.tgz", 1),
+    ];
+
+    let response =
+        super::build_package_page_from_objects(objects, Some("packages/"), 1, 2, Some("char"));
+
+    assert_eq!(response.total_packages, 1);
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(response.items[0].package, "charlie");
+    assert_eq!(response.items[0].name, "c-1.tgz");
 }
 
 #[test]
@@ -1036,7 +1057,8 @@ fn build_package_page_trims_go_proxy_suffix() {
         123,
     )];
 
-    let response = super::build_package_page_from_objects(objects, Some("go-proxy-cache/"), 1, 10);
+    let response =
+        super::build_package_page_from_objects(objects, Some("go-proxy-cache/"), 1, 10, None);
 
     assert_eq!(response.total_packages, 1);
     assert_eq!(response.items.len(), 1);
@@ -1350,14 +1372,14 @@ mod catalog_db_tests {
         )
         .await;
 
-        let first_page = super::fetch_maven_catalog_page(db.pool(), repository_id, 2, 0)
+        let first_page = super::fetch_maven_catalog_page(db.pool(), repository_id, 2, 0, None)
             .await
             .expect("fetch catalog page");
         assert_eq!(first_page.len(), 2);
         assert_eq!(first_page[0].version, "1.0.0");
         assert_eq!(first_page[1].version, "2.0.0");
 
-        let second_page = super::fetch_maven_catalog_page(db.pool(), repository_id, 2, 2)
+        let second_page = super::fetch_maven_catalog_page(db.pool(), repository_id, 2, 2, None)
             .await
             .expect("fetch second page");
         assert_eq!(second_page.len(), 1);
@@ -1412,7 +1434,7 @@ mod catalog_db_tests {
         )
         .await;
 
-        let first_page = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 0)
+        let first_page = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 0, None)
             .await
             .expect("fetch first page");
         assert_eq!(first_page.len(), 2);
@@ -1436,7 +1458,7 @@ mod catalog_db_tests {
             Some("2.0.0")
         );
 
-        let second_page = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 2)
+        let second_page = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 2, None)
             .await
             .expect("fetch second page");
         assert_eq!(second_page.len(), 1);
@@ -1450,6 +1472,69 @@ mod catalog_db_tests {
                 .as_deref(),
             Some("4.17.21")
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_npm_proxy_catalog_page_filters_by_search_term() {
+        let _guard = DB_LOCK.lock().await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
+
+        let storage_id = insert_storage(db.pool()).await;
+        let repository_id = insert_npm_repository(db.pool(), storage_id).await;
+        let fetched = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "left-pad",
+            "left-pad",
+            "1.0.0",
+            "packages/left-pad/left-pad-1.0.0.tgz",
+            1_111,
+            fetched,
+        )
+        .await;
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "lodash",
+            "lodash",
+            "4.17.21",
+            "packages/lodash/lodash-4.17.21.tgz",
+            3_333,
+            fetched,
+        )
+        .await;
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "left-pad",
+            "left-pad",
+            "2.0.0",
+            "packages/left-pad/left-pad-2.0.0.tgz",
+            2_222,
+            fetched,
+        )
+        .await;
+
+        let rows = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 5, 0, Some("pad"))
+            .await
+            .expect("filtered page");
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.project_key == "left-pad"));
+
+        let lodash_rows =
+            super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 0, Some("lod"))
+                .await
+                .expect("lodash only");
+
+        assert_eq!(lodash_rows.len(), 1);
+        assert_eq!(lodash_rows[0].project_key, "lodash");
     }
 
     #[tokio::test]
@@ -1477,7 +1562,7 @@ mod catalog_db_tests {
         )
         .await;
 
-        let rows = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 1, 0)
+        let rows = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 1, 0, None)
             .await
             .expect("fetch rows");
         assert_eq!(rows.len(), 1);

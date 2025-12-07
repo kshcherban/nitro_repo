@@ -5,7 +5,7 @@
         <span class="text-h6">{{ headerTitle }}</span>
         <v-spacer />
         <v-text-field
-          v-if="!isLoading && totalPackages > 0"
+          v-if="totalPackages > 0"
           v-model="searchTerm"
           :placeholder="`Search ${headerTitle.toLowerCase()}…`"
           prepend-inner-icon="mdi-magnify"
@@ -73,19 +73,21 @@
         </div>
       </v-card-text>
 
-      <v-data-table
+      <v-data-table-server
         v-if="!isLoading && !error && totalPackages > 0 && visiblePackages.length > 0"
         :headers="headers"
         :items="tableItems"
-        :search="searchTerm"
         :loading="isDeleting"
         item-value="cachePath"
         v-model="selected"
         show-select
         class="elevation-0"
+        :page="currentPage"
         :items-per-page="perPage"
+        :items-length="totalPackages"
         :items-per-page-options="perPageOptions"
-        :item-length="totalPackages"
+        hide-default-footer
+        @update:page="handlePageChange"
         @update:items-per-page="handleItemsPerPageChange">
 
         <template v-slot:item.size="{ value }">
@@ -107,7 +109,7 @@
             No packages match your search. Try different search terms.
           </div>
         </template>
-      </v-data-table>
+      </v-data-table-server>
 
       <v-card-text v-else-if="isLoading" class="text-center py-8">
         <v-progress-circular indeterminate color="primary" size="48" />
@@ -129,14 +131,29 @@
         <div class="text-medium-emphasis">No packages match your search on this page. Try a different page or clear the filters.</div>
       </v-card-text>
 
-      <v-card-actions v-if="totalPackages > 0" class="pa-4">
-        <v-spacer />
+      <v-card-actions v-if="totalPackages > 0" class="pa-4 packages__footer">
+        <div class="d-flex align-center gap-3">
+          <span class="text-body-2 text-medium-emphasis">Items per page:</span>
+          <v-select
+            v-model="perPage"
+            :items="perPageOptions"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="max-width: 120px"
+            @update:model-value="handleItemsPerPageChange" />
+        </div>
+
+        <div class="text-body-2 text-medium-emphasis packages__range" aria-live="polite">
+          {{ itemRangeLabel }}
+        </div>
+
         <v-pagination
           v-model="currentPage"
           :length="totalPages"
-          :disabled="isDeleting" />
-        <v-spacer />
-
+          :disabled="isDeleting"
+          :total-visible="7"
+          density="comfortable" />
       </v-card-actions>
     </v-card>
   </section>
@@ -144,7 +161,7 @@
 
 <script setup lang="ts">
 import http from "@/http";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch, nextTick } from "vue";
 import { useAlertsStore } from "@/stores/alerts";
 import { useResizableColumns } from "@/composables/useResizableColumns";
 
@@ -176,6 +193,9 @@ const searchTerm = ref("");
 const pendingDeletionPaths = ref<string[]>([]);
 const pendingDeletionCount = ref(0);
 const alerts = useAlertsStore();
+const resizers = useResizableColumns('.v-data-table');
+
+const normalizedSearchTerm = computed(() => searchTerm.value.trim());
 
 function clearSearch() {
   searchTerm.value = "";
@@ -184,7 +204,7 @@ function clearSearch() {
 onMounted(() => {
   loadPackages();
   // Enable resizable columns for v-data-table
-  useResizableColumns('.v-data-table th');
+  resizers.initResizable();
 });
 watch(
   () => props.repositoryId,
@@ -206,6 +226,23 @@ watch([currentPage, perPage], () => {
   }
   selected.value = [];
   loadPackages();
+});
+
+watch(normalizedSearchTerm, () => {
+  if (!props.repositoryId) {
+    return;
+  }
+  selected.value = [];
+  if (currentPage.value !== 1) {
+    currentPage.value = 1;
+    return;
+  }
+  loadPackages();
+});
+
+watch(packages, async () => {
+  await nextTick();
+  resizers.initResizable();
 });
 
 // Define table headers based on repository type
@@ -256,18 +293,16 @@ const totalPages = computed(() => {
   return Math.max(1, Math.ceil(totalPackages.value / perPage.value));
 });
 
-const normalizedSearchTerm = computed(() => searchTerm.value.trim().toLowerCase());
-
-const visiblePackages = computed(() => {
-  const term = normalizedSearchTerm.value;
-  if (!term) {
-    return packages.value;
+const itemRangeLabel = computed(() => {
+  if (totalPackages.value === 0 || packages.value.length === 0) {
+    return "0 of 0";
   }
-  return packages.value.filter((pkg) => {
-    const haystack = [pkg.package, pkg.name, pkg.cachePath].join(" ").toLowerCase();
-    return haystack.includes(term);
-  });
+  const start = (currentPage.value - 1) * perPage.value + 1;
+  const end = Math.min(start + packages.value.length - 1, totalPackages.value);
+  return `${start}-${end} of ${totalPackages.value}`;
 });
+
+const visiblePackages = computed(() => packages.value);
 
 const selectedCount = computed(() => selected.value.length);
 
@@ -347,8 +382,16 @@ async function loadPackages() {
   error.value = null;
   indexingWarning.value = null;
   try {
+    const params: Record<string, any> = {
+      page: currentPage.value,
+      per_page: perPage.value,
+    };
+    const term = normalizedSearchTerm.value;
+    if (term) {
+      params.q = term;
+    }
     const response = await http.get(`/api/repository/${props.repositoryId}/packages`, {
-      params: { page: currentPage.value, per_page: perPage.value },
+      params,
     });
     const data = response.data ?? {};
     const warning = response.headers?.["x-nitro-warning"];
@@ -378,6 +421,8 @@ async function loadPackages() {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     isLoading.value = false;
+    await nextTick();
+    resizers.initResizable();
   }
 }
 
@@ -441,6 +486,16 @@ function handleItemsPerPageChange(value: number) {
   currentPage.value = 1;
 }
 
+function handlePageChange(value: number) {
+  if (typeof value !== "number") {
+    return;
+  }
+  if (value === currentPage.value) {
+    return;
+  }
+  currentPage.value = value;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) {
     return "0 B";
@@ -465,6 +520,9 @@ function formatBytes(bytes: number): string {
     background-color: var(--nr-table-header-background);
     font-weight: 500;
     transition: all 0.2s ease;
+    overflow: visible;
+    position: relative;
+    padding-right: 16px;
   }
 
   .v-data-table__td {
@@ -479,6 +537,17 @@ function formatBytes(bytes: number): string {
       background-color: var(--nr-table-row-hover);
       transform: scale(1.001);
     }
+  }
+
+  .column-resizer {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    width: 8px;
+    height: 100%;
+    cursor: col-resize;
+    user-select: none;
+    z-index: 3;
   }
 
   // Responsive improvements
@@ -514,5 +583,21 @@ function formatBytes(bytes: number): string {
   background: rgba(76, 110, 245, 0.08);
   border-radius: 4px;
   font-size: 0.9rem;
+}
+
+.packages__footer {
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.packages__range {
+  min-width: 140px;
+  text-align: center;
+}
+
+:deep(.v-table__wrapper) {
+  overflow-x: hidden;
 }
 </style>

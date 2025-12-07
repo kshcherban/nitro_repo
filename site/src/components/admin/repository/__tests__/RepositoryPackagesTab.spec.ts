@@ -35,7 +35,10 @@ vi.mock("@/stores/alerts", () => ({
 }));
 
 vi.mock("@/composables/useResizableColumns", () => ({
-  useResizableColumns: vi.fn(),
+  useResizableColumns: () => ({
+    initResizable: vi.fn(),
+    cleanupResizers: vi.fn(),
+  }),
 }));
 
 const VCardStub = defineComponent({
@@ -99,6 +102,10 @@ const VDataTableStub = defineComponent({
   props: {
     headers: Array,
     items: Array,
+    itemsLength: Number,
+    itemsPerPage: [Number, String],
+    hideDefaultFooter: Boolean,
+    loading: Boolean,
   },
   template: "<table class='v-data-table'><slot /></table>",
 });
@@ -109,6 +116,14 @@ const VProgressCircularStub = defineComponent({
 
 const VIconStub = defineComponent({
   template: "<i class='v-icon'><slot /></i>",
+});
+
+const VAlertStub = defineComponent({
+  template: "<div class='v-alert'><slot /></div>",
+});
+
+const VCodeStub = defineComponent({
+  template: "<code class='v-code'><slot /></code>",
 });
 
 const VPaginationStub = defineComponent({
@@ -138,9 +153,11 @@ const vuetifyStubs = {
   "v-spacer": VSpacerStub,
   "v-text-field": VTextFieldStub,
   "v-btn": VBtnStub,
-  "v-data-table": VDataTableStub,
+  "v-data-table-server": VDataTableStub,
   "v-progress-circular": VProgressCircularStub,
   "v-icon": VIconStub,
+  "v-alert": VAlertStub,
+  "v-code": VCodeStub,
   "v-pagination": VPaginationStub,
   "v-select": VSelectStub,
 };
@@ -166,8 +183,8 @@ describe("RepositoryPackagesTab.vue", () => {
     await nextTick();
     expect(wrapper.vm.searchTerm).toBe("express");
 
-    field.vm.$emit("click:clear");
-    await nextTick();
+    await wrapper.get(".v-text-field__clear").trigger("click");
+    await flushPromises();
     expect(wrapper.vm.searchTerm).toBe("");
   });
 
@@ -219,5 +236,34 @@ describe("RepositoryPackagesTab.vue", () => {
     const warning = wrapper.find('[data-testid="packages-indexing-warning"]');
     expect(warning.exists()).toBe(true);
     expect(warning.text()).toContain("Repository indexing in progress");
+  });
+
+  it("requests server-side search across all pages", async () => {
+    const httpGet = http.get as vi.Mock;
+    httpGet.mockClear();
+
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "1",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    httpGet.mockClear();
+
+    const field = wrapper.getComponent(VTextFieldStub);
+    field.vm.$emit("update:modelValue", "lodash");
+
+    await flushPromises();
+
+    expect(httpGet).toHaveBeenCalledTimes(1);
+    expect(httpGet).toHaveBeenCalledWith("/api/repository/1/packages", {
+      params: { page: 1, per_page: 50, q: "lodash" },
+    });
   });
 });

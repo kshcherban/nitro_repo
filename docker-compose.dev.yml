@@ -15,6 +15,11 @@ services:
     links:
       - jaeger
       - otel-collector
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
 
   jaeger:
     image: jaegertracing/all-in-one:latest
