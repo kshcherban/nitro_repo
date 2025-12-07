@@ -650,17 +650,18 @@ async fn handle_repo_request_core(
     let is_read_operation = matches!(method, Method::GET | Method::HEAD);
     let is_npm_login = matches!(repository, DynRepository::NPM(_))
         && crate::repository::npm::login::is_npm_login_path(&path);
+    let is_npm_proxy_like = matches!(
+        repository,
+        DynRepository::NPM(crate::repository::npm::NPMRegistry::Proxy(_))
+            | DynRepository::NPM(crate::repository::npm::NPMRegistry::Virtual(_))
+    );
 
-    let requires_auth = if is_npm_login {
-        // npm CLI login (POST/PUT) must be allowed without prior auth
-        false
-    } else if auth_config.enabled {
-        // Auth enabled: all operations require authentication
-        true
-    } else {
-        // Auth disabled: only write operations require authentication
-        !is_read_operation
-    };
+    let requires_auth = should_require_auth(
+        &auth_config,
+        is_read_operation,
+        is_npm_login,
+        is_npm_proxy_like,
+    );
 
     if requires_auth && !is_authenticated {
         if matches!(repository, DynRepository::Docker(_)) {
@@ -713,6 +714,30 @@ async fn handle_repo_request_core(
             error!(?err, "Failed to handle request");
             Ok(err.into_response())
         }
+    }
+}
+
+fn should_require_auth(
+    auth_config: &RepositoryAuthConfig,
+    is_read_operation: bool,
+    is_npm_login: bool,
+    is_npm_proxy_like: bool,
+) -> bool {
+    if is_npm_login {
+        // npm CLI login endpoints must be reachable without prior auth
+        return false;
+    }
+
+    if is_read_operation && is_npm_proxy_like {
+        // Allow anonymous reads for npm proxy/virtual repositories so tarball fetches
+        // don't get blocked after metadata rewrite.
+        return false;
+    }
+
+    if auth_config.enabled {
+        true
+    } else {
+        !is_read_operation
     }
 }
 

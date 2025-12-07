@@ -13,7 +13,7 @@ pretty_assertions = "1.1"
 serde_urlencoded = "0.7"
 rsa = { version = "0.9" }
 criterion = "0.5"
-testcontainers = { version = "0.19", features = ["blocking"] }
+testcontainers = "0.14"
 [dependencies]
 # Web
 axum = { version = "0.8", features = ["macros", "tokio", "ws"] }

@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
 
-use std::{iter::FromIterator, time::Duration};
+use std::iter::FromIterator;
 
 use ahash::{HashMap, HashSet};
 use nr_core::{
@@ -16,12 +16,8 @@ use nr_core::{
 };
 use once_cell::sync::Lazy;
 use serde_json::json;
-use sqlx::PgPool;
-use testcontainers::{
-    ContainerAsync, GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
+use sqlx::{PgPool, postgres::PgPoolOptions};
+use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
 use uuid::Uuid;
 
 use crate::{
@@ -30,110 +26,68 @@ use crate::{
     search::PackageSearchRepository,
 };
 
-const POSTGRES_IMAGE: &str = "postgres";
-const POSTGRES_TAG: &str = "14-alpine";
-const POSTGRES_PORT: u16 = 5432;
-
 static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
-static DATABASE_CONTAINER: tokio::sync::OnceCell<PostgresFixture> =
-    tokio::sync::OnceCell::const_new();
-static DB_MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
-struct PostgresFixture {
-    connection_string: String,
-    _container: ContainerAsync<GenericImage>,
+struct TestDb {
+    pool: PgPool,
+    _container: Container<'static, GenericImage>,
+    _docker: &'static Cli,
 }
 
-impl PostgresFixture {
-    fn url(&self) -> &str {
-        &self.connection_string
+impl TestDb {
+    fn pool(&self) -> &PgPool {
+        &self.pool
     }
 }
 
-async fn postgres_fixture() -> &'static PostgresFixture {
-    DATABASE_CONTAINER
-        .get_or_init(|| async {
-            let base_image = GenericImage::new(POSTGRES_IMAGE, POSTGRES_TAG)
-                .with_wait_for(WaitFor::seconds(5))
-                .with_exposed_port(POSTGRES_PORT.tcp());
-
-            let image = base_image
-                .with_env_var("POSTGRES_USER", "test")
-                .with_env_var("POSTGRES_PASSWORD", "test")
-                .with_env_var(
-                    "POSTGRES_INITDB_ARGS",
-                    "--locale=C --encoding=UTF8 --lc-collate=C --lc-ctype=C",
-                )
-                .with_startup_timeout(Duration::from_secs(60));
-
-            let container = image.start().await.expect("start postgres test container");
-            let host = container
-                .get_host()
-                .await
-                .expect("postgres host")
-                .to_string();
-            let port = container
-                .get_host_port_ipv4(POSTGRES_PORT)
-                .await
-                .expect("postgres mapped port");
-            let admin_url = format!("postgres://test:test@{host}:{port}/postgres");
-            let admin_pool = PgPool::connect(&admin_url)
-                .await
-                .expect("connect to admin database");
-            sqlx::query("DROP DATABASE IF EXISTS nitro_repo_test")
-                .execute(&admin_pool)
-                .await
-                .expect("drop test database");
-            sqlx::query(
-                "CREATE DATABASE nitro_repo_test TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'",
-            )
-            .execute(&admin_pool)
-            .await
-            .expect("create test database");
-            let collation_pool = PgPool::connect(&format!(
-                "postgres://test:test@{host}:{port}/nitro_repo_test"
-            ))
-            .await
-            .expect("connect to target database for collation setup");
-            sqlx::query(
-                "CREATE COLLATION IF NOT EXISTS ignoreCase (\n  provider = 'icu',\n  locale = 'und-u-ks-level2',\n  deterministic = false\n)",
-            )
-            .execute(&collation_pool)
-            .await
-            .expect("ensure deterministic ignoreCase collation");
-            let connection_string = format!("postgres://test:test@{host}:{port}/nitro_repo_test");
-
-            PostgresFixture {
-                connection_string,
-                _container: container,
+async fn start_postgres() -> TestDb {
+    let docker: &'static Cli = Box::leak(Box::new(Cli::default()));
+    let image = GenericImage::new("postgres", "18-alpine")
+        .with_env_var("POSTGRES_PASSWORD", "password")
+        .with_env_var("POSTGRES_USER", "postgres")
+        .with_env_var("POSTGRES_DB", "postgres");
+    let container = docker.run(image);
+    let port = container.get_host_port_ipv4(5432);
+    let url = format!("postgres://postgres:password@127.0.0.1:{port}/postgres");
+    let mut last_err: Option<anyhow::Error> = None;
+    for _ in 0..30 {
+        match PgPoolOptions::new().max_connections(4).connect(&url).await {
+            Ok(pool) => {
+                return TestDb {
+                    pool,
+                    _container: container,
+                    _docker: docker,
+                };
             }
-        })
-        .await
+            Err(err) => {
+                last_err = Some(err.into());
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+
+    panic!(
+        "postgres container did not become ready: {}",
+        last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error"))
+    );
 }
 
-async fn fresh_pool() -> PgPool {
-    let fixture = postgres_fixture().await;
-    let pool = PgPool::connect(fixture.url())
+async fn fresh_pool() -> TestDb {
+    let db = start_postgres().await;
+
+    let migrate_pool = db.pool().clone();
+    run_migrations(&migrate_pool)
         .await
-        .expect("connect to test database");
+        .expect("run database migrations");
 
-    let migrate_pool = pool.clone();
-    DB_MIGRATIONS
-        .get_or_init(|| async move {
-            run_migrations(&migrate_pool)
-                .await
-                .expect("run database migrations");
-        })
-        .await;
-
-    pool
+    db
 }
 
-async fn reset_database(pool: &PgPool) {
+async fn reset_database(db: &TestDb) {
     sqlx::query(
         "TRUNCATE TABLE project_versions, projects, repositories, storages RESTART IDENTITY CASCADE",
     )
-    .execute(pool)
+    .execute(db.pool())
     .await
     .expect("truncate test tables");
 }
@@ -205,15 +159,15 @@ async fn insert_package(pool: &PgPool, repository_id: Uuid, package: &str, versi
 #[tokio::test]
 async fn fetch_repository_rows_filters_by_package() {
     let _guard = DB_LOCK.lock().await;
-    let pool = fresh_pool().await;
-    reset_database(&pool).await;
+    let db = fresh_pool().await;
+    reset_database(&db).await;
 
-    let storage_id = insert_storage(&pool).await;
-    let repository_id = insert_repository(&pool, storage_id).await;
-    insert_package(&pool, repository_id, "alpha", "1.0.0").await;
-    insert_package(&pool, repository_id, "beta", "1.0.0").await;
+    let storage_id = insert_storage(db.pool()).await;
+    let repository_id = insert_repository(db.pool(), storage_id).await;
+    insert_package(db.pool(), repository_id, "alpha", "1.0.0").await;
+    insert_package(db.pool(), repository_id, "beta", "1.0.0").await;
 
-    let repository = PackageSearchRepository::new(&pool);
+    let repository = PackageSearchRepository::new(db.pool());
     let query = SearchQuery {
         package_filter: Some((Operator::Equals, "alpha".into())),
         ..SearchQuery::default()
@@ -230,15 +184,15 @@ async fn fetch_repository_rows_filters_by_package() {
 #[tokio::test]
 async fn fetch_repository_rows_filters_by_terms() {
     let _guard = DB_LOCK.lock().await;
-    let pool = fresh_pool().await;
-    reset_database(&pool).await;
+    let db = fresh_pool().await;
+    reset_database(&db).await;
 
-    let storage_id = insert_storage(&pool).await;
-    let repository_id = insert_repository(&pool, storage_id).await;
-    insert_package(&pool, repository_id, "core-lib", "2.0.0").await;
-    insert_package(&pool, repository_id, "support-lib", "1.1.0").await;
+    let storage_id = insert_storage(db.pool()).await;
+    let repository_id = insert_repository(db.pool(), storage_id).await;
+    insert_package(db.pool(), repository_id, "core-lib", "2.0.0").await;
+    insert_package(db.pool(), repository_id, "support-lib", "1.1.0").await;
 
-    let repository = PackageSearchRepository::new(&pool);
+    let repository = PackageSearchRepository::new(db.pool());
     let mut query = SearchQuery::default();
     query.terms = vec!["support".into()];
 
@@ -254,12 +208,12 @@ async fn fetch_repository_rows_filters_by_terms() {
 #[tokio::test]
 async fn repository_has_index_rows_detects_catalog_state() {
     let _guard = DB_LOCK.lock().await;
-    let pool = fresh_pool().await;
-    reset_database(&pool).await;
+    let db = fresh_pool().await;
+    reset_database(&db).await;
 
-    let storage_id = insert_storage(&pool).await;
-    let repository_id = insert_repository(&pool, storage_id).await;
-    let repository = PackageSearchRepository::new(&pool);
+    let storage_id = insert_storage(db.pool()).await;
+    let repository_id = insert_repository(db.pool(), storage_id).await;
+    let repository = PackageSearchRepository::new(db.pool());
 
     assert!(
         !repository
@@ -268,7 +222,7 @@ async fn repository_has_index_rows_detects_catalog_state() {
             .expect("query flag")
     );
 
-    insert_package(&pool, repository_id, "delta", "0.1.0").await;
+    insert_package(db.pool(), repository_id, "delta", "0.1.0").await;
 
     assert!(
         repository

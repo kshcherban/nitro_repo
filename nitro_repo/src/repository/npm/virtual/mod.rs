@@ -30,7 +30,7 @@ use crate::{
             RepositoryAuthentication, RepositoryRequestBody,
             repo_tracing::{RepositoryMetricsMeter, RepositoryRequestTracing},
         },
-        utils::can_read_repository_with_auth,
+        utils::can_read_repository,
     },
 };
 
@@ -461,12 +461,11 @@ impl NpmVirtualRepository {
         request: RepositoryRequest,
         method: Method,
     ) -> Result<RepoResponse, NPMRegistryError> {
-        let can_read = can_read_repository_with_auth(
+        let can_read = can_read_repository(
             &request.authentication,
             self.visibility(),
             self.id(),
             self.site().as_ref(),
-            &request.auth_config,
         )
         .await?;
         if !can_read {

@@ -59,3 +59,37 @@ fn unsupported_method_response_mentions_method() {
         RepoResponse::unsupported_method_response(Method::POST, "docker").into_response_default();
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
+
+#[test]
+fn npm_proxy_reads_do_not_require_auth_even_when_enabled() {
+    let auth = RepositoryAuthConfig { enabled: true };
+    let requires = super::should_require_auth(&auth, true, false, true);
+    assert!(
+        !requires,
+        "proxy/virtual npm GET should allow anonymous access"
+    );
+}
+
+#[test]
+fn npm_proxy_writes_still_require_auth() {
+    let auth = RepositoryAuthConfig { enabled: true };
+    let requires = super::should_require_auth(&auth, false, false, true);
+    assert!(requires, "non-read operations must remain protected");
+}
+
+#[test]
+fn non_npm_repos_honor_auth_enabled_for_reads() {
+    let auth = RepositoryAuthConfig { enabled: true };
+    let requires = super::should_require_auth(&auth, true, false, false);
+    assert!(
+        requires,
+        "other repositories should respect auth toggle for reads"
+    );
+}
+
+#[test]
+fn npm_login_paths_bypass_auth() {
+    let auth = RepositoryAuthConfig { enabled: true };
+    let requires = super::should_require_auth(&auth, true, true, false);
+    assert!(!requires, "npm login endpoints must remain open");
+}

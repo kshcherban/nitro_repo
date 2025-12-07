@@ -302,6 +302,7 @@ enum PackageStrategy {
     GoProxy,
     Cargo,
     DebHosted,
+    NpmProxy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,9 +356,7 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             crate::repository::npm::NPMRegistry::Hosted(_) => {
                 PackageStrategy::PackagesDirectory { base: None }
             }
-            crate::repository::npm::NPMRegistry::Proxy(_) => PackageStrategy::PackagesDirectory {
-                base: Some("packages/"),
-            },
+            crate::repository::npm::NPMRegistry::Proxy(_) => PackageStrategy::NpmProxy,
             crate::repository::npm::NPMRegistry::Virtual(_) => {
                 PackageStrategy::PackagesDirectory { base: None }
             }
@@ -543,6 +542,9 @@ pub async fn list_cached_packages(
             } else {
                 list_directory_packages(repository, query.page, query.per_page, base).await
             }
+        }
+        PackageStrategy::NpmProxy => {
+            list_npm_proxy_packages(site, repository, query.page, query.per_page).await
         }
         PackageStrategy::MavenHosted => {
             list_maven_hosted_packages(site, repository, query.page, query.per_page).await
@@ -751,6 +753,12 @@ struct MavenVersionRow {
     updated_at: DateTime<FixedOffset>,
 }
 
+#[derive(sqlx::FromRow)]
+struct ProxyVersionRow {
+    project_key: String,
+    version_data: SqlxJson<VersionData>,
+}
+
 async fn fetch_maven_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -765,6 +773,31 @@ async fn fetch_maven_catalog_page(
             pv.path AS version_path,
             pv.extra AS version_data,
             pv.updated_at
+        FROM project_versions pv
+        INNER JOIN projects p ON pv.project_id = p.id
+        WHERE p.repository_id = $1
+        ORDER BY LOWER(p.key) COLLATE "C", LOWER(pv.version) COLLATE "C"
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(repository_id)
+    .bind(per_page as i64)
+    .bind(offset)
+    .fetch_all(database)
+    .await
+}
+
+async fn fetch_npm_proxy_catalog_page(
+    database: &PgPool,
+    repository_id: Uuid,
+    per_page: usize,
+    offset: i64,
+) -> Result<Vec<ProxyVersionRow>, sqlx::Error> {
+    sqlx::query_as::<_, ProxyVersionRow>(
+        r#"
+        SELECT
+            p.key AS project_key,
+            pv.extra AS version_data
         FROM project_versions pv
         INNER JOIN projects p ON pv.project_id = p.id
         WHERE p.repository_id = $1
@@ -1329,6 +1362,62 @@ fn cargo_cache_path(project_key: &str, version: &str) -> String {
     )
 }
 
+async fn list_npm_proxy_packages(
+    site: NitroRepo,
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+) -> Result<Response, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let offset = ((current_page - 1) * per_page) as i64;
+    let repository_id = repository.id();
+
+    let total_versions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM project_versions pv
+        WHERE pv.repository_id = $1
+        "#,
+    )
+    .bind(repository_id)
+    .fetch_one(&site.database)
+    .await?;
+
+    if total_versions == 0 {
+        let response = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
+
+    if offset >= total_versions {
+        let response = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions as usize,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&response));
+    }
+
+    let rows =
+        fetch_npm_proxy_catalog_page(&site.database, repository_id, per_page, offset).await?;
+
+    let items: Vec<PackageFileEntry> = rows.iter().filter_map(proxy_entry_from_row).collect();
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions as usize,
+        items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
 async fn list_maven_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -1475,6 +1564,25 @@ async fn load_maven_version_entries(
     }
 
     Ok(Vec::new())
+}
+
+fn proxy_entry_from_row(row: &ProxyVersionRow) -> Option<PackageFileEntry> {
+    let proxy_meta = row.version_data.0.proxy_artifact()?;
+    let modified: DateTime<FixedOffset> = proxy_meta.fetched_at.into();
+    let file_name = proxy_meta
+        .cache_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&proxy_meta.cache_path)
+        .to_string();
+
+    Some(PackageFileEntry {
+        package: row.project_key.clone(),
+        name: file_name,
+        cache_path: proxy_meta.cache_path.clone(),
+        size: proxy_meta.size.unwrap_or_default(),
+        modified,
+    })
 }
 
 async fn list_deb_packages(
@@ -1854,6 +1962,9 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
             } else {
                 is_valid_repository_path(path)
             }
+        }
+        PackageStrategy::NpmProxy => {
+            path.starts_with("packages/") && is_valid_repository_path(path)
         }
         PackageStrategy::MavenHosted
         | PackageStrategy::MavenProxy

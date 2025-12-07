@@ -3,7 +3,7 @@ use super::*;
 use crate::repository::proxy_indexing::{ProxyIndexing, ProxyIndexingError};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{FixedOffset, Utc};
+use chrono::{FixedOffset, TimeZone, Utc};
 use nr_core::ConfigTimeStamp;
 use nr_core::repository::project::{ProxyArtifactKey, ProxyArtifactMeta};
 use nr_storage::{
@@ -1103,14 +1103,9 @@ mod catalog_db_tests {
     use super::*;
     use crate::repository::NewRepository;
     use once_cell::sync::Lazy;
-    use sqlx::PgPool;
+    use sqlx::{PgPool, postgres::PgPoolOptions};
     use std::collections::HashMap;
-    use testcontainers::ImageExt;
-    use testcontainers::{
-        ContainerAsync, GenericImage,
-        core::{IntoContainerPort, WaitFor},
-        runners::AsyncRunner,
-    };
+    use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
 
     use nr_core::{
         database::entities::{
@@ -1121,102 +1116,68 @@ mod catalog_db_tests {
         storage::StorageName,
     };
 
-    const POSTGRES_IMAGE: &str = "postgres";
-    const POSTGRES_TAG: &str = "14-alpine";
-    const POSTGRES_PORT: u16 = 5432;
+    static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
-    struct PostgresFixture {
-        connection_string: String,
-        _container: ContainerAsync<GenericImage>,
+    struct TestDb {
+        pool: PgPool,
+        _container: Container<'static, GenericImage>,
+        _docker: &'static Cli,
     }
 
-    impl PostgresFixture {
-        fn url(&self) -> &str {
-            &self.connection_string
+    impl TestDb {
+        fn pool(&self) -> &PgPool {
+            &self.pool
         }
     }
 
-    static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
-    static DATABASE_CONTAINER: tokio::sync::OnceCell<PostgresFixture> =
-        tokio::sync::OnceCell::const_new();
-    static DB_MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    async fn start_postgres() -> TestDb {
+        let docker: &'static Cli = Box::leak(Box::new(Cli::default()));
+        let image = GenericImage::new("postgres", "18-alpine")
+            .with_env_var("POSTGRES_PASSWORD", "password")
+            .with_env_var("POSTGRES_USER", "postgres")
+            .with_env_var("POSTGRES_DB", "postgres");
+        let container = docker.run(image);
+        let port = container.get_host_port_ipv4(5432);
+        let url = format!("postgres://postgres:password@127.0.0.1:{port}/postgres");
 
-    async fn postgres_fixture() -> &'static PostgresFixture {
-        DATABASE_CONTAINER
-            .get_or_init(|| async {
-                let base_image = GenericImage::new(POSTGRES_IMAGE, POSTGRES_TAG)
-                    .with_wait_for(WaitFor::seconds(5))
-                    .with_exposed_port(POSTGRES_PORT.tcp());
-
-                let image = base_image
-                    .with_env_var("POSTGRES_USER", "test")
-                    .with_env_var("POSTGRES_PASSWORD", "test")
-                    .with_env_var(
-                        "POSTGRES_INITDB_ARGS",
-                        "--locale=C --encoding=UTF8 --lc-collate=C --lc-ctype=C",
-                    )
-                    .with_startup_timeout(std::time::Duration::from_secs(60));
-
-                let container = image.start().await.expect("start postgres test container");
-                let host = container
-                    .get_host()
-                    .await
-                    .expect("postgres host")
-                    .to_string();
-                let port = container
-                    .get_host_port_ipv4(POSTGRES_PORT)
-                    .await
-                    .expect("postgres mapped port");
-
-                let admin_url = format!("postgres://test:test@{host}:{port}/postgres");
-                let admin_pool = PgPool::connect(&admin_url)
-                    .await
-                    .expect("connect to admin database");
-                sqlx::query("DROP DATABASE IF EXISTS nitro_repo_packages_test")
-                    .execute(&admin_pool)
-                    .await
-                    .expect("drop test database");
-                sqlx::query(
-                    "CREATE DATABASE nitro_repo_packages_test TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'",
-                )
-                .execute(&admin_pool)
-                .await
-                .expect("create test database");
-
-                let connection_string =
-                    format!("postgres://test:test@{host}:{port}/nitro_repo_packages_test");
-
-                PostgresFixture {
-                    connection_string,
-                    _container: container,
+        let mut last_err: Option<anyhow::Error> = None;
+        for _ in 0..30 {
+            match PgPoolOptions::new().max_connections(4).connect(&url).await {
+                Ok(pool) => {
+                    return TestDb {
+                        pool,
+                        _container: container,
+                        _docker: docker,
+                    };
                 }
-            })
-            .await
+                Err(err) => {
+                    last_err = Some(err.into());
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
+
+        panic!(
+            "postgres container did not become ready: {}",
+            last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error"))
+        );
     }
 
-    async fn fresh_pool() -> PgPool {
-        let fixture = postgres_fixture().await;
-        let pool = PgPool::connect(fixture.url())
+    async fn fresh_pool() -> TestDb {
+        let db = start_postgres().await;
+
+        nr_core::database::migration::run_migrations(db.pool())
             .await
-            .expect("connect to packages test database");
+            .expect("run migrations");
 
-        let migrate_pool = pool.clone();
-        DB_MIGRATIONS
-            .get_or_init(|| async move {
-                nr_core::database::migration::run_migrations(&migrate_pool)
-                    .await
-                    .expect("run migrations");
-            })
-            .await;
-
-        pool
+        db
     }
 
-    async fn reset_database(pool: &PgPool) {
+    async fn reset_database(db: &TestDb) {
         sqlx::query(
             "TRUNCATE TABLE project_versions, projects, repositories, storages RESTART IDENTITY CASCADE",
         )
-        .execute(pool)
+        .execute(db.pool())
         .await
         .expect("truncate tables");
     }
@@ -1246,6 +1207,19 @@ mod catalog_db_tests {
         repo.insert(storage_id, pool)
             .await
             .expect("insert repository")
+            .id
+    }
+
+    async fn insert_npm_repository(pool: &PgPool, storage_id: Uuid) -> Uuid {
+        let repo = NewRepository {
+            name: "npm-proxy-test".into(),
+            uuid: Uuid::new_v4(),
+            repository_type: "npm".into(),
+            configs: HashMap::with_hasher(Default::default()),
+        };
+        repo.insert(storage_id, pool)
+            .await
+            .expect("insert npm repository")
             .id
     }
 
@@ -1289,17 +1263,70 @@ mod catalog_db_tests {
         new_version.insert(pool).await.expect("insert version");
     }
 
+    async fn insert_proxy_version(
+        pool: &PgPool,
+        repository_id: Uuid,
+        package_key: &str,
+        package_name: &str,
+        version: &str,
+        cache_path: &str,
+        size: u64,
+        fetched_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let project = if let Some(existing) =
+            DBProject::find_by_project_key(package_key, repository_id, pool)
+                .await
+                .expect("query project")
+        {
+            existing
+        } else {
+            NewProject {
+                scope: None,
+                project_key: package_key.to_string(),
+                name: package_name.to_string(),
+                description: None,
+                repository: repository_id,
+                storage_path: format!("{package_key}/"),
+            }
+            .insert(pool)
+            .await
+            .expect("insert project")
+        };
+
+        let mut version_data = VersionData::default();
+        let meta = ProxyArtifactMeta::builder(package_name, package_key, cache_path)
+            .version(version)
+            .size(size)
+            .fetched_at(fetched_at)
+            .build();
+        version_data
+            .set_proxy_artifact(&meta)
+            .expect("store proxy metadata");
+
+        let new_version = NewVersion {
+            project_id: project.id,
+            repository_id,
+            version: version.to_string(),
+            release_type: ReleaseType::release_type_from_version(version),
+            version_path: cache_path.to_string(),
+            publisher: None,
+            version_page: None,
+            extra: version_data,
+        };
+        new_version.insert(pool).await.expect("insert version");
+    }
+
     #[tokio::test]
     async fn fetch_maven_catalog_page_respects_pagination() {
         let _guard = DB_LOCK.lock().await;
-        let pool = fresh_pool().await;
-        reset_database(&pool).await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
 
-        let storage_id = insert_storage(&pool).await;
-        let repository_id = insert_repository(&pool, storage_id).await;
+        let storage_id = insert_storage(db.pool()).await;
+        let repository_id = insert_repository(db.pool(), storage_id).await;
 
         insert_maven_version(
-            &pool,
+            db.pool(),
             repository_id,
             "com.example:alpha",
             "1.0.0",
@@ -1307,7 +1334,7 @@ mod catalog_db_tests {
         )
         .await;
         insert_maven_version(
-            &pool,
+            db.pool(),
             repository_id,
             "com.example:alpha",
             "2.0.0",
@@ -1315,7 +1342,7 @@ mod catalog_db_tests {
         )
         .await;
         insert_maven_version(
-            &pool,
+            db.pool(),
             repository_id,
             "com.example:bravo",
             "1.0.0",
@@ -1323,18 +1350,144 @@ mod catalog_db_tests {
         )
         .await;
 
-        let first_page = super::fetch_maven_catalog_page(&pool, repository_id, 2, 0)
+        let first_page = super::fetch_maven_catalog_page(db.pool(), repository_id, 2, 0)
             .await
             .expect("fetch catalog page");
         assert_eq!(first_page.len(), 2);
         assert_eq!(first_page[0].version, "1.0.0");
         assert_eq!(first_page[1].version, "2.0.0");
 
-        let second_page = super::fetch_maven_catalog_page(&pool, repository_id, 2, 2)
+        let second_page = super::fetch_maven_catalog_page(db.pool(), repository_id, 2, 2)
             .await
             .expect("fetch second page");
         assert_eq!(second_page.len(), 1);
         assert_eq!(second_page[0].project_key, "com.example:bravo");
         assert_eq!(second_page[0].version_path, "com/example/bravo/1.0.0");
+    }
+
+    #[tokio::test]
+    async fn fetch_npm_proxy_catalog_page_respects_pagination() {
+        let _guard = DB_LOCK.lock().await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
+
+        let storage_id = insert_storage(db.pool()).await;
+        let repository_id = insert_npm_repository(db.pool(), storage_id).await;
+        let fetched = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "left-pad",
+            "left-pad",
+            "1.0.0",
+            "packages/left-pad/left-pad-1.0.0.tgz",
+            1_111,
+            fetched,
+        )
+        .await;
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "left-pad",
+            "left-pad",
+            "2.0.0",
+            "packages/left-pad/left-pad-2.0.0.tgz",
+            2_222,
+            fetched,
+        )
+        .await;
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "lodash",
+            "lodash",
+            "4.17.21",
+            "packages/lodash/lodash-4.17.21.tgz",
+            3_333,
+            fetched,
+        )
+        .await;
+
+        let first_page = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 0)
+            .await
+            .expect("fetch first page");
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(first_page[0].project_key, "left-pad");
+        assert_eq!(
+            first_page[0]
+                .version_data
+                .0
+                .proxy_artifact()
+                .and_then(|meta| meta.version.clone())
+                .as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            first_page[1]
+                .version_data
+                .0
+                .proxy_artifact()
+                .and_then(|meta| meta.version.clone())
+                .as_deref(),
+            Some("2.0.0")
+        );
+
+        let second_page = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 2, 2)
+            .await
+            .expect("fetch second page");
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].project_key, "lodash");
+        assert_eq!(
+            second_page[0]
+                .version_data
+                .0
+                .proxy_artifact()
+                .and_then(|meta| meta.version.clone())
+                .as_deref(),
+            Some("4.17.21")
+        );
+    }
+
+    #[tokio::test]
+    async fn npm_proxy_rows_convert_to_package_entries() {
+        let _guard = DB_LOCK.lock().await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
+
+        let storage_id = insert_storage(db.pool()).await;
+        let repository_id = insert_npm_repository(db.pool(), storage_id).await;
+        let fetched = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 2, 12, 0, 0)
+            .single()
+            .unwrap();
+
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "left-pad",
+            "left-pad",
+            "3.0.0",
+            "packages/left-pad/left-pad-3.0.0.tgz",
+            4_444,
+            fetched,
+        )
+        .await;
+
+        let rows = super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 1, 0)
+            .await
+            .expect("fetch rows");
+        assert_eq!(rows.len(), 1);
+        let entry = super::proxy_entry_from_row(&rows[0]).expect("proxy entry");
+
+        let expected_modified: chrono::DateTime<chrono::FixedOffset> = fetched.into();
+        assert_eq!(entry.package, "left-pad");
+        assert_eq!(entry.name, "left-pad-3.0.0.tgz");
+        assert_eq!(entry.cache_path, "packages/left-pad/left-pad-3.0.0.tgz");
+        assert_eq!(entry.size, 4_444);
+        assert_eq!(entry.modified, expected_modified);
     }
 }

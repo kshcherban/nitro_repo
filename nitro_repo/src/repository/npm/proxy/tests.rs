@@ -1,10 +1,17 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::todo, clippy::unwrap_used)]
 use super::*;
 use crate::repository::proxy_indexing::{ProxyIndexing, ProxyIndexingError};
+use crate::repository::test_helpers::test_storage;
 use async_trait::async_trait;
+use axum::body::to_bytes;
+use bytes::Bytes;
+use http::Request;
 use nr_core::repository::project::{ProxyArtifactKey, ProxyArtifactMeta};
+use nr_storage::{FileContent, StorageFile};
 use std::sync::Arc;
+use tempfile::tempdir;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 #[test]
 fn cache_path_for_scoped_package() {
@@ -99,7 +106,7 @@ async fn evict_npm_proxy_cache_entry_invokes_indexer() {
 }
 
 #[tokio::test]
-async fn metadata_cache_hit_indexes_versions() {
+async fn metadata_cache_hit_indexes_versions_without_prefetching_tarballs() {
     let metadata = r#"{
         "name": "left-pad",
         "versions": {
@@ -121,10 +128,9 @@ async fn metadata_cache_hit_indexes_versions() {
 
     let indexer = RecordingIndexer::default();
 
-    let mut tarballs = super::record_npm_metadata_cache_hit(&indexer, metadata.as_bytes())
+    super::record_npm_metadata_cache_hit(&indexer, metadata.as_bytes())
         .await
         .expect("metadata indexed");
-    tarballs.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
 
     let mut recorded = indexer.recorded().await;
     recorded.sort_by(|a, b| a.version.cmp(&b.version));
@@ -151,18 +157,108 @@ async fn metadata_cache_hit_indexes_versions() {
         "packages/left-pad/left-pad-2.0.0.tgz"
     );
 
-    assert_eq!(tarballs.len(), 2);
+    // Tarballs are *not* prefetched from metadata; only indexed.
+}
+
+#[tokio::test]
+async fn metadata_tarball_urls_rewritten_to_proxy_base() {
+    let (parts, _) = Request::builder()
+        .uri("https://nitro.test/repositories/abc/npm-proxy/@scope/pkg")
+        .header(http::header::HOST, "nitro.test")
+        .body(())
+        .unwrap()
+        .into_parts();
+
+    let body = r#"{
+        "name": "@scope/pkg",
+        "versions": {
+            "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz" } }
+        }
+    }"#;
+
+    let tempdir = tempdir().unwrap();
+    let meta_path = tempdir.path().join("package.json");
+    std::fs::write(&meta_path, body).unwrap();
+    let meta = nr_storage::StorageFileMeta::read_from_file(&meta_path).unwrap();
+
+    let file = StorageFile::File {
+        meta,
+        content: nr_storage::StorageFileReader::Bytes(nr_storage::FileContentBytes::Bytes(
+            Bytes::from(body),
+        )),
+    };
+
+    let path = StoragePath::from("@scope/pkg");
+    let response = super::rewrite_metadata_tarballs(&parts, &path, file)
+        .await
+        .expect("rewrite works")
+        .expect("metadata response");
+
+    let RepoResponse::Other(resp) = response else {
+        panic!("expected Other response");
+    };
+
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body bytes");
+    let rewritten: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let tarball = rewritten["versions"]["1.0.0"]["dist"]["tarball"]
+        .as_str()
+        .unwrap();
     assert_eq!(
-        tarballs[0].0.as_str(),
-        "https://registry.npmjs.org/left-pad/-/left-pad-1.0.0.tgz"
+        tarball,
+        "https://nitro.test/repositories/abc/npm-proxy/@scope/pkg/-/pkg-1.0.0.tgz"
     );
+}
+
+#[tokio::test]
+async fn serve_cached_response_rewrites_metadata_tarballs() {
+    let repository_id = Uuid::new_v4();
+    let storage = test_storage().await;
+    let path = StoragePath::from("@scope/pkg");
+    let metadata = br#"{
+        "name": "@scope/pkg",
+        "versions": {
+            "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz" } }
+        }
+    }"#;
+
+    storage
+        .save_file(
+            repository_id,
+            FileContent::Bytes(Bytes::from_static(metadata)),
+            &path,
+        )
+        .await
+        .expect("write metadata");
+
+    let (parts, _) = Request::builder()
+        .uri("https://nitro.test/repositories/abc/npm-proxy/@scope/pkg")
+        .header(http::header::HOST, "nitro.test")
+        .body(())
+        .unwrap()
+        .into_parts();
+
+    let response = super::serve_cached_response(&parts, &storage, repository_id, &path, None)
+        .await
+        .expect("rewrite succeeds")
+        .expect("response exists");
+
+    let RepoResponse::Other(resp) = response else {
+        panic!("expected Other response");
+    };
+
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read rewritten body");
+    let rewritten: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let tarball = rewritten["versions"]["1.0.0"]["dist"]["tarball"]
+        .as_str()
+        .expect("tarball string");
+
     assert_eq!(
-        tarballs[0].1.to_string(),
-        "packages/left-pad/left-pad-1.0.0.tgz"
-    );
-    assert_eq!(
-        tarballs[1].1.to_string(),
-        "packages/left-pad/left-pad-2.0.0.tgz"
+        tarball,
+        "https://nitro.test/repositories/abc/npm-proxy/@scope/pkg/-/pkg-1.0.0.tgz"
     );
 }
 

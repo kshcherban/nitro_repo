@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::Utc;
-use http::StatusCode;
+use http::{StatusCode, header::CONTENT_TYPE};
 use nr_core::{
     database::entities::repository::{DBRepository, DBRepositoryConfig},
     repository::{
@@ -15,9 +15,10 @@ use nr_core::{
     },
     storage::StoragePath,
 };
-use nr_storage::{DynStorage, FileContent, Storage};
+use nr_storage::{DynStorage, FileContent, Storage, StorageFile};
 use parking_lot::{RwLock, RwLockReadGuard};
 use serde::Deserialize;
+use serde_json::Value;
 use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
@@ -32,7 +33,7 @@ use crate::{
         RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
         RepositoryRequest,
         proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError},
-        utils::can_read_repository_with_auth,
+        utils::can_read_repository,
     },
     utils::ResponseBuilder,
 };
@@ -75,6 +76,38 @@ fn normalize_routes(routes: Vec<NpmProxyRoute>) -> Vec<NpmProxyRoute> {
     } else {
         routes
     }
+}
+
+async fn serve_cached_response(
+    parts: &http::request::Parts,
+    storage: &DynStorage,
+    repository_id: Uuid,
+    path: &StoragePath,
+    cache_path: Option<&StoragePath>,
+) -> Result<Option<RepoResponse>, NPMRegistryError> {
+    if let Some(file) = storage.open_file(repository_id, path).await? {
+        if cache_path.is_none() {
+            if let Some(response) = rewrite_metadata_tarballs(parts, path, file).await? {
+                return Ok(Some(response));
+            }
+            if let Some(file) = storage.open_file(repository_id, path).await? {
+                return Ok(Some(file.into()));
+            }
+            return Ok(Some(RepoResponse::basic_text_response(
+                StatusCode::NOT_FOUND,
+                "File not found",
+            )));
+        }
+        return Ok(Some(file.into()));
+    }
+
+    if let Some(cache_path) = cache_path {
+        if let Some(file) = storage.open_file(repository_id, cache_path).await? {
+            return Ok(Some(file.into()));
+        }
+    }
+
+    Ok(None)
 }
 
 impl NpmProxyRegistry {
@@ -217,29 +250,7 @@ impl NpmProxyRegistry {
                             )
                             .await?;
                         } else {
-                            let tarballs =
-                                record_npm_metadata_cache_hit(self.indexer().as_ref(), &bytes)
-                                    .await?;
-                            for (tarball_url, tarball_path) in tarballs {
-                                if self
-                                    .storage()
-                                    .get_file_information(self.id(), &tarball_path)
-                                    .await?
-                                    .is_some()
-                                {
-                                    continue;
-                                }
-                                if let Err(err) =
-                                    self.cache_tarball(&tarball_url, &tarball_path).await
-                                {
-                                    warn!(
-                                        ?err,
-                                        %tarball_url,
-                                        cache_path = %tarball_path,
-                                        "Failed to prefetch npm tarball"
-                                    );
-                                }
-                            }
+                            record_npm_metadata_cache_hit(self.indexer().as_ref(), &bytes).await?;
                         }
                         debug!(%url, "Cached npm proxy resource");
                         return Ok(true);
@@ -261,6 +272,7 @@ impl NpmProxyRegistry {
         Ok(false)
     }
 
+    #[allow(dead_code)]
     async fn cache_tarball(
         &self,
         url: &Url,
@@ -452,21 +464,21 @@ impl Repository for NpmProxyRegistry {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository_with_auth(
+            if !can_read_repository(
                 &request.authentication,
                 this.visibility(),
                 this.id(),
                 this.site().as_ref(),
-                &request.auth_config,
             )
             .await?
             {
                 return Ok(RepoResponse::unauthorized());
             }
 
-            let path = request.path;
+            let path = request.path.clone();
 
             let cache_path = cache_path_for_npm_proxy(&path);
+            let storage = this.storage();
 
             if path.is_directory() {
                 if let Some(response) = this
@@ -481,24 +493,29 @@ impl Repository for NpmProxyRegistry {
                 ));
             }
 
-            if let Some(file) = this.storage().open_file(this.id(), &path).await? {
-                return Ok(file.into());
-            }
-
-            if let Some(cache_path) = &cache_path {
-                if let Some(file) = this.storage().open_file(this.id(), cache_path).await? {
-                    return Ok(file.into());
-                }
+            if let Some(response) = serve_cached_response(
+                request.as_ref(),
+                &storage,
+                this.id(),
+                &path,
+                cache_path.as_ref(),
+            )
+            .await?
+            {
+                return Ok(response);
             }
 
             if this.download_and_cache(&path, query.as_deref()).await? {
-                if let Some(file) = this.storage().open_file(this.id(), &path).await? {
-                    return Ok(file.into());
-                }
-                if let Some(cache_path) = &cache_path {
-                    if let Some(file) = this.storage().open_file(this.id(), cache_path).await? {
-                        return Ok(file.into());
-                    }
+                if let Some(response) = serve_cached_response(
+                    request.as_ref(),
+                    &storage,
+                    this.id(),
+                    &path,
+                    cache_path.as_ref(),
+                )
+                .await?
+                {
+                    return Ok(response);
                 }
             }
 
@@ -523,12 +540,11 @@ impl Repository for NpmProxyRegistry {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository_with_auth(
+            if !can_read_repository(
                 &request.authentication,
                 this.visibility(),
                 this.id(),
                 this.site().as_ref(),
-                &request.auth_config,
             )
             .await?
             {
@@ -726,7 +742,7 @@ fn meta_from_version_entry(
     package_name: &str,
     declared_version: &str,
     version: &NpmVersionDocument,
-) -> Option<(ProxyArtifactMeta, Url)> {
+) -> Option<ProxyArtifactMeta> {
     let dist = version.dist.as_ref()?;
     let tarball = dist.tarball.as_ref()?;
     let url = Url::parse(tarball).ok()?;
@@ -755,18 +771,18 @@ fn meta_from_version_entry(
         builder = builder.size(size);
     }
 
-    Some((builder.build(), url))
+    Some(builder.build())
 }
 
 pub(super) async fn record_npm_metadata_cache_hit(
     indexer: &dyn ProxyIndexing,
     metadata: &[u8],
-) -> Result<Vec<(Url, StoragePath)>, ProxyIndexingError> {
+) -> Result<(), ProxyIndexingError> {
     let doc: NpmPackageDocument = match serde_json::from_slice(metadata) {
         Ok(doc) => doc,
         Err(err) => {
             warn!(?err, "Failed to parse npm metadata for indexing");
-            return Ok(Vec::new());
+            return Ok(());
         }
     };
 
@@ -778,20 +794,17 @@ pub(super) async fn record_npm_metadata_cache_hit(
         .map(str::to_owned)
     else {
         warn!("NPM metadata missing package name, skipping indexing");
-        return Ok(Vec::new());
+        return Ok(());
     };
 
-    let mut tarballs = Vec::new();
     for (declared_version, version_doc) in doc.versions {
-        if let Some((meta, url)) =
-            meta_from_version_entry(&package_name, &declared_version, &version_doc)
+        if let Some(meta) = meta_from_version_entry(&package_name, &declared_version, &version_doc)
         {
-            tarballs.push((url, StoragePath::from(meta.cache_path.clone())));
             indexer.record_cached_artifact(meta).await?;
         }
     }
 
-    Ok(tarballs)
+    Ok(())
 }
 
 pub(super) async fn record_npm_proxy_cache_hit(
@@ -814,6 +827,78 @@ pub(super) async fn evict_npm_proxy_cache_entry(
         indexer.evict_cached_artifact(key).await?;
     }
     Ok(())
+}
+
+async fn rewrite_metadata_tarballs(
+    parts: &http::request::Parts,
+    requested_path: &StoragePath,
+    file: StorageFile,
+) -> Result<Option<RepoResponse>, NPMRegistryError> {
+    let StorageFile::File { meta, content } = file else {
+        return Ok(None);
+    };
+
+    let host = parts
+        .headers
+        .get(http::header::HOST)
+        .and_then(|h| h.to_str().ok());
+    let Some(host) = host else {
+        return Ok(None);
+    };
+    let scheme = parts.uri.scheme_str().unwrap_or("http");
+
+    // Compute repository base: full request path minus the requested package path.
+    let full_path = parts.uri.path();
+    let suffix = format!("/{}", requested_path.to_string());
+    let base_path = if let Some(stripped) = full_path.strip_suffix(&suffix) {
+        stripped
+    } else {
+        return Ok(None);
+    };
+    let mut base_path = base_path.to_string();
+    if !base_path.ends_with('/') {
+        base_path.push('/');
+    }
+
+    let base = match Url::parse(&format!("{}://{}{}", scheme, host, base_path)) {
+        Ok(url) => url,
+        Err(_) => return Ok(None),
+    };
+
+    let size_hint = meta.file_type.file_size as usize;
+    let mut bytes = content.read_to_vec(size_hint).await?;
+
+    let mut value: Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+
+    if let Some(versions) = value.get_mut("versions").and_then(Value::as_object_mut) {
+        for version in versions.values_mut() {
+            if let Some(dist) = version.get_mut("dist").and_then(Value::as_object_mut) {
+                if let Some(tarball) = dist.get_mut("tarball") {
+                    if let Some(tarball_str) = tarball.as_str() {
+                        let parsed = Url::parse(tarball_str).or_else(|_| base.join(tarball_str));
+                        if let Ok(parsed) = parsed {
+                            let path = parsed.path().trim_start_matches('/');
+                            if let Ok(rewritten) = base.join(path) {
+                                *tarball = Value::String(rewritten.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bytes = serde_json::to_vec(&value)?;
+    let mut builder = ResponseBuilder::ok();
+    if let Some(mime) = meta.file_type.mime_type.as_ref() {
+        builder = builder.header(CONTENT_TYPE, mime.0.to_string());
+    } else {
+        builder = builder.header(CONTENT_TYPE, "application/json");
+    }
+    Ok(Some(RepoResponse::Other(builder.body(bytes))))
 }
 
 fn build_head_response(response: reqwest::Response) -> RepoResponse {
