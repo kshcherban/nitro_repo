@@ -918,20 +918,6 @@ async fn large_blob_is_streamed_without_buffering() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn fetch_lock_map_is_bounded() {
-    // Create many unique keys to force evictions
-    for i in 0..(LOCK_CACHE_CAPACITY + 500) {
-        let key = format!("manifest:test:{i}");
-        with_fetch_lock(&key, async {}).await;
-    }
-
-    assert!(
-        fetch_lock_len() <= LOCK_CACHE_CAPACITY,
-        "lock cache should be bounded"
-    );
-}
-
 fn streamed_from_bytes(bytes: &[u8]) -> anyhow::Result<StreamedDownload> {
     use std::io::Write;
     let mut file = tempfile::Builder::new()

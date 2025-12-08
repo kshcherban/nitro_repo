@@ -43,7 +43,9 @@ impl Default for StagingConfig {
 }
 
 fn default_staging_directory() -> PathBuf {
-    env::current_dir().unwrap_or_else(|_| PathBuf::new()).join("staging")
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::new())
+        .join("staging")
 }
 pub struct StagingManagerInner {
     repository: Uuid,

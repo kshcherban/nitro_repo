@@ -35,9 +35,9 @@ use crate::utils::{IntoErrorResponse, ResponseBuilder, api_error_response::APIEr
 
 pub mod layer;
 pub mod oauth;
+pub mod providers;
 pub mod session;
 pub mod ws;
-pub mod providers;
 
 #[derive(Error, Debug)]
 pub enum AuthenticationError {

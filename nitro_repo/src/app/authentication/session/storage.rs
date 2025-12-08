@@ -56,7 +56,6 @@ mod tests {
     }
 }
 
-
 impl SessionStorage for SessionManager {
     fn create_session(
         &self,

@@ -15,7 +15,6 @@
 
 use std::{
     fmt,
-    num::NonZeroUsize,
     pin::Pin,
     sync::{
         Arc,
@@ -32,7 +31,6 @@ use http::{
     HeaderMap, StatusCode,
     header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE},
 };
-use lru::LruCache;
 use nr_core::{
     repository::{Visibility, config::RepositoryConfigType, project::ProxyArtifactMeta},
     storage::StoragePath,
@@ -44,11 +42,10 @@ use reqwest::{Client, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::sync::OnceLock;
 use tempfile::Builder;
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::time::sleep;
-use tracing::{instrument, warn};
+use tracing::{info, instrument, warn};
 use url::Url;
 use uuid::Uuid;
 
@@ -618,41 +615,6 @@ async fn cached_digest_string(
     }
 }
 
-const LOCK_CACHE_CAPACITY: usize = 100_000;
-
-fn fetch_lock_map() -> &'static tokio::sync::Mutex<LruCache<String, Arc<tokio::sync::Mutex<()>>>> {
-    static LOCKS: OnceLock<tokio::sync::Mutex<LruCache<String, Arc<tokio::sync::Mutex<()>>>>> =
-        OnceLock::new();
-    LOCKS.get_or_init(|| {
-        tokio::sync::Mutex::new(LruCache::new(
-            NonZeroUsize::new(LOCK_CACHE_CAPACITY).unwrap(),
-        ))
-    })
-}
-
-#[cfg(test)]
-fn fetch_lock_len() -> usize {
-    futures::executor::block_on(async { fetch_lock_map().lock().await.len() })
-}
-
-async fn with_fetch_lock<F, T>(key: &str, f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    let lock = {
-        let mut map = fetch_lock_map().lock().await;
-        if let Some(existing) = map.get(key) {
-            existing.clone()
-        } else {
-            let arc = Arc::new(tokio::sync::Mutex::new(()));
-            map.put(key.to_string(), arc.clone());
-            arc
-        }
-    };
-    let _guard = lock.lock().await;
-    f.await
-}
-
 fn docker_proxy_package_key(repository_name: &str) -> String {
     docker_package_key(repository_name)
 }
@@ -787,6 +749,10 @@ impl DockerProxy {
         accept: Option<&str>,
         head_only: bool,
     ) -> Result<RepoResponse, DockerError> {
+        info!(
+            repository_name,
+            reference, head_only, "DockerProxy::serve_manifest: start"
+        );
         let manifest = fetch_and_cache_manifest(
             self.upstream(),
             &self.0.storage,
@@ -1232,97 +1198,97 @@ pub(crate) async fn fetch_and_cache_manifest(
     accept: Option<&str>,
     indexer: Option<&dyn ProxyIndexing>,
 ) -> Result<CachedManifest, DockerError> {
+    info!(
+        repository_id = %repository_id,
+        repository_name,
+        reference,
+        "fetch_and_cache_manifest: start"
+    );
     let manifest_path =
         StoragePath::from(format!("v2/{}/manifests/{}", repository_name, reference));
-    let lock_key = format!(
-        "manifest:{}:{}:{}",
-        repository_id, repository_name, reference
-    );
+    if let Some(cached) =
+        load_cached_manifest(storage, repository_id, &manifest_path, reference).await?
+    {
+        info!("fetch_and_cache_manifest: found cached manifest");
+        let cached_is_schema1 = is_schema1_manifest(&cached.content_type);
 
-    with_fetch_lock(&lock_key, async {
-        if let Some(cached) =
-            load_cached_manifest(storage, repository_id, &manifest_path, reference).await?
-        {
-            let prefer_modern = client_prefers_modern_manifest(accept);
-            let cached_is_schema1 = is_schema1_manifest(&cached.content_type);
-
-            if cached_is_schema1 {
-                // Purge schema1 cache to force a modern re-fetch. For digest requests, fail fast so
-                // the client retries the tag and learns the modern digest.
-                let _ = storage.delete_file(repository_id, &manifest_path).await;
-                if !reference.starts_with("sha256:") {
-                    let digest_path = StoragePath::from(format!(
-                        "v2/{}/manifests/{}",
-                        repository_name, cached.digest
-                    ));
-                    let _ = storage.delete_file(repository_id, &digest_path).await;
-                } else {
-                    return Err(DockerError::ManifestNotFound(reference.to_string()));
-                }
+        if cached_is_schema1 {
+            // Purge schema1 cache to force a modern re-fetch. For digest requests, fail fast so
+            // the client retries the tag and learns the modern digest.
+            let _ = storage.delete_file(repository_id, &manifest_path).await;
+            if !reference.starts_with("sha256:") {
+                let digest_path = StoragePath::from(format!(
+                    "v2/{}/manifests/{}",
+                    repository_name, cached.digest
+                ));
+                let _ = storage.delete_file(repository_id, &digest_path).await;
             } else {
-                match revalidate_manifest_tag(
-                    upstream,
-                    storage,
-                    repository_id,
-                    repository_name,
-                    reference,
-                    &manifest_path,
-                    cached,
-                    indexer,
-                )
-                .await?
-                {
-                    RevalidationOutcome::Unchanged(cached) => {
-                        if accept_allows_media_type(accept, &cached.content_type) {
-                            return Ok(cached);
-                        }
-                    }
-                    RevalidationOutcome::Refetched(new_manifest) => return Ok(new_manifest),
-                }
+                return Err(DockerError::ManifestNotFound(reference.to_string()));
             }
-
-            // Re-download with the client's Accept header (or modern-only) to honor content negotiation.
-            let override_accept = if prefer_modern {
-                Some(MODERN_UPSTREAM_ACCEPT)
-            } else {
-                accept
-            };
-            match download_manifest_from_upstream(
+        } else {
+            match revalidate_manifest_tag(
                 upstream,
                 storage,
                 repository_id,
                 repository_name,
                 reference,
-                override_accept,
                 &manifest_path,
+                cached,
                 indexer,
             )
-            .await
+            .await?
             {
-                Ok(manifest) => return Ok(manifest),
-                Err(err) => {
-                    warn!(
-                        %reference,
-                        repository = repository_name,
-                        %err,
-                        "Failed to refresh manifest; cache miss path will retry"
-                    );
+                RevalidationOutcome::Unchanged(cached) => {
+                    if accept_allows_media_type(accept, &cached.content_type) {
+                        return Ok(cached);
+                    }
                 }
+                RevalidationOutcome::Refetched(new_manifest) => return Ok(new_manifest),
             }
         }
 
-        download_manifest_from_upstream(
+        // Re-download with the client's Accept header (or modern-only) to honor content negotiation.
+        let prefer_modern = client_prefers_modern_manifest(accept);
+        let override_accept = if prefer_modern {
+            Some(MODERN_UPSTREAM_ACCEPT)
+        } else {
+            accept
+        };
+        match download_manifest_from_upstream(
             upstream,
             storage,
             repository_id,
             repository_name,
             reference,
-            Some(MODERN_UPSTREAM_ACCEPT),
+            override_accept,
             &manifest_path,
             indexer,
         )
         .await
-    })
+        {
+            Ok(manifest) => return Ok(manifest),
+            Err(err) => {
+                warn!(
+                    %reference,
+                    repository = repository_name,
+                    %err,
+                    "Failed to refresh manifest; cache miss path will retry"
+                );
+            }
+        }
+    }
+
+    info!("fetch_and_cache_manifest: cache miss or refresh failed, downloading");
+    download_manifest_from_upstream(
+        upstream,
+        storage,
+        repository_id,
+        repository_name,
+        reference,
+        Some(MODERN_UPSTREAM_ACCEPT),
+        &manifest_path,
+        indexer,
+    )
     .await
 }
 
@@ -1562,23 +1528,18 @@ pub(crate) async fn fetch_and_cache_blob(
     digest: &str,
 ) -> Result<CachedBlob, DockerError> {
     let blob_path = StoragePath::from(format!("v2/{}/blobs/{}", repository_name, digest));
-    let lock_key = format!("blob:{}:{}:{}", repository_id, repository_name, digest);
+    if let Some(cached) = load_cached_blob(storage, repository_id, &blob_path, digest).await? {
+        return Ok(cached);
+    }
 
-    with_fetch_lock(&lock_key, async {
-        if let Some(cached) = load_cached_blob(storage, repository_id, &blob_path, digest).await? {
-            return Ok(cached);
-        }
-
-        download_blob_from_upstream(
-            upstream,
-            storage,
-            repository_id,
-            repository_name,
-            digest,
-            &blob_path,
-        )
-        .await
-    })
+    download_blob_from_upstream(
+        upstream,
+        storage,
+        repository_id,
+        repository_name,
+        digest,
+        &blob_path,
+    )
     .await
 }
 
@@ -1710,6 +1671,7 @@ impl Repository for DockerProxy {
     }
 
     async fn handle_get(&self, request: RepositoryRequest) -> Result<RepoResponse, Self::Error> {
+        info!(path = %request.path, "DockerProxy::handle_get: start");
         if !can_read_repository_with_auth(
             &request.authentication,
             self.visibility(),
@@ -1719,10 +1681,12 @@ impl Repository for DockerProxy {
         )
         .await?
         {
+            info!("DockerProxy::handle_get: forbidden by can_read_repository_with_auth");
             return Ok(RepoResponse::forbidden());
         }
 
         let path_str = request.path.to_string();
+        info!(%path_str, "DockerProxy::handle_get: after auth, parsing path");
         let parts: Vec<&str> = path_str.trim_start_matches('/').split('/').collect();
         let accept = request
             .parts
@@ -1755,6 +1719,7 @@ impl Repository for DockerProxy {
     }
 
     async fn handle_head(&self, request: RepositoryRequest) -> Result<RepoResponse, Self::Error> {
+        info!(path = %request.path, "DockerProxy::handle_head: start");
         if !can_read_repository_with_auth(
             &request.authentication,
             self.visibility(),
@@ -1764,6 +1729,7 @@ impl Repository for DockerProxy {
         )
         .await?
         {
+            info!("DockerProxy::handle_head: forbidden by can_read_repository_with_auth");
             return Ok(RepoResponse::forbidden());
         }
 

@@ -52,10 +52,7 @@ impl ProxyIndexing for RecordingIndexer {
         Ok(())
     }
 
-    async fn evict_cached_artifact(
-        &self,
-        key: ProxyArtifactKey,
-    ) -> Result<(), ProxyIndexingError> {
+    async fn evict_cached_artifact(&self, key: ProxyArtifactKey) -> Result<(), ProxyIndexingError> {
         self.evicted.lock().await.push(key);
         Ok(())
     }
@@ -119,4 +116,3 @@ async fn evict_proxy_cache_entry_ignores_none_key() {
     let evicted = indexer.evicted().await;
     assert!(evicted.is_empty());
 }
-
