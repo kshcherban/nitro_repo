@@ -51,4 +51,10 @@ export type WSBrowseResponse =
   | {
       type: "OpenedDirectory";
       data: StreamBrowseHeader;
+    }
+  | {
+      type: "Unauthorized";
+    }
+  | {
+      type: "Authorized";
     };

@@ -9,8 +9,9 @@ import browserslistToEsbuild from "browserslist-to-esbuild";
 import { ViteEjsPlugin } from "vite-plugin-ejs";
 
 export default defineConfig(async ({ command }): Promise<UserConfig> => {
+  const isTest = process.env.VITEST === "true";
   const enableDevTools =
-    command === "serve" && process.env.VITE_DEVTOOLS !== "false";
+    !isTest && command === "serve" && process.env.VITE_DEVTOOLS !== "false";
   const hasWindow =
     typeof globalThis !== "undefined" &&
     typeof (globalThis as { window?: unknown }).window !== "undefined";

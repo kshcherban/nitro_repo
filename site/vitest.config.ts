@@ -7,11 +7,13 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@vue/devtools-kit": path.resolve(__dirname, "./src/__mocks__/devtools-kit.ts"),
     },
   },
   test: {
     environment: "jsdom",
     globals: true,
     include: ["src/**/__tests__/**/*.spec.ts"],
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

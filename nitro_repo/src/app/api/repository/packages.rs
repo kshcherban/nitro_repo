@@ -348,6 +348,7 @@ enum PackageStrategy {
     MavenHosted,
     MavenProxy,
     PythonHosted,
+    PhpHosted,
     Docker,
     Helm,
     GoHosted,
@@ -413,15 +414,13 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
                 PackageStrategy::PackagesDirectory { base: None }
             }
         },
+        DynRepository::Php(_) => PackageStrategy::PhpHosted,
         DynRepository::Docker(_) => PackageStrategy::Docker,
         DynRepository::Cargo(_) => PackageStrategy::Cargo,
         DynRepository::Deb(_) => PackageStrategy::DebHosted,
         DynRepository::Go(go_repo) => match go_repo {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::GoHosted,
             crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::GoProxy,
-        },
-        _ => PackageStrategy::PackagesDirectory {
-            base: Some("packages/"),
         },
     }
 }
@@ -440,7 +439,7 @@ fn catalog_deletion_mode(repository: &DynRepository) -> CatalogDeletionMode {
             crate::repository::npm::NPMRegistry::Virtual(_) => CatalogDeletionMode::None,
             _ => CatalogDeletionMode::None,
         },
-        DynRepository::Php(_) => CatalogDeletionMode::StripLastSegment,
+        DynRepository::Php(_) => CatalogDeletionMode::ExactPath,
         DynRepository::Deb(_) => CatalogDeletionMode::ExactPath,
         DynRepository::Maven(_) => CatalogDeletionMode::StripLastSegment,
         // Helm uses repository-specific delete handlers that already update the catalog.
@@ -616,6 +615,16 @@ pub async fn list_cached_packages(
         }
         PackageStrategy::MavenHosted => {
             list_maven_hosted_packages(
+                site,
+                repository,
+                query.page,
+                query.per_page,
+                search_term.as_deref(),
+            )
+            .await
+        }
+        PackageStrategy::PhpHosted => {
+            list_php_hosted_packages(
                 site,
                 repository,
                 query.page,
@@ -951,6 +960,17 @@ async fn fetch_maven_catalog_page(
     .bind(offset)
     .fetch_all(database)
     .await
+}
+
+async fn fetch_php_catalog_page(
+    database: &PgPool,
+    repository_id: Uuid,
+    per_page: usize,
+    offset: i64,
+    search: Option<&str>,
+) -> Result<Vec<MavenVersionRow>, sqlx::Error> {
+    // PHP uses the same project_versions schema as Maven; reuse the same shape.
+    fetch_maven_catalog_page(database, repository_id, per_page, offset, search).await
 }
 
 async fn fetch_npm_proxy_catalog_page(
@@ -1828,6 +1848,93 @@ async fn list_maven_hosted_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+async fn list_php_hosted_packages(
+    site: NitroRepo,
+    repository: DynRepository,
+    page: usize,
+    per_page_raw: usize,
+    search: Option<&str>,
+) -> Result<Response, InternalError> {
+    let per_page = per_page_raw.clamp(1, 200);
+    let current_page = page.max(1);
+    let offset = ((current_page - 1) * per_page) as i64;
+    let repository_id = repository.id();
+    let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
+
+    let total_versions: i64 = if let Some(pattern) = &search_pattern {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+              AND (
+                LOWER(p.name) COLLATE "C" LIKE $2 OR
+                LOWER(p.key) COLLATE "C" LIKE $2 OR
+                LOWER(pv.version) COLLATE "C" LIKE $2 OR
+                LOWER(pv.path) COLLATE "C" LIKE $2
+              )
+            "#,
+        )
+        .bind(repository_id)
+        .bind(pattern)
+        .fetch_one(&site.database)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM project_versions pv
+            INNER JOIN projects p ON pv.project_id = p.id
+            WHERE p.repository_id = $1
+            "#,
+        )
+        .bind(repository_id)
+        .fetch_one(&site.database)
+        .await?
+    };
+
+    if total_versions == 0 {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: 0,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    if offset >= total_versions {
+        let empty = PackageListResponse {
+            page: current_page,
+            per_page,
+            total_packages: total_versions as usize,
+            items: Vec::new(),
+        };
+        return Ok(ResponseBuilder::ok().json(&empty));
+    }
+
+    let rows =
+        fetch_php_catalog_page(&site.database, repository_id, per_page, offset, search).await?;
+
+    let storage = repository.get_storage();
+    let version_chunks = map_ordered_concurrent(rows, MAX_STORAGE_CONCURRENCY, move |row| {
+        let storage = storage.clone();
+        async move { load_php_version_entries(storage, repository_id, row).await }
+    })
+    .await?;
+
+    let items: Vec<PackageFileEntry> = version_chunks.into_iter().flatten().collect();
+
+    let response = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages: total_versions as usize,
+        items,
+    };
+    Ok(ResponseBuilder::ok().json(&response))
+}
+
 async fn load_maven_version_entries(
     storage: DynStorage,
     repository_id: Uuid,
@@ -1911,6 +2018,42 @@ async fn load_maven_version_entries(
     }
 
     Ok(Vec::new())
+}
+
+async fn load_php_version_entries(
+    storage: DynStorage,
+    repository_id: Uuid,
+    row: MavenVersionRow,
+) -> Result<Vec<PackageFileEntry>, InternalError> {
+    let MavenVersionRow {
+        project_key,
+        version,
+        version_path,
+        version_data: _,
+        updated_at,
+    } = row;
+
+    let storage_path = nr_core::storage::StoragePath::from(version_path.as_str());
+    if let Some(StorageFile::File { meta, .. }) =
+        storage.open_file(repository_id, &storage_path).await?
+    {
+        return Ok(vec![PackageFileEntry {
+            package: project_key,
+            name: version,
+            cache_path: version_path,
+            size: meta.file_type.file_size,
+            modified: meta.modified,
+        }]);
+    }
+
+    let modified: DateTime<FixedOffset> = updated_at;
+    Ok(vec![PackageFileEntry {
+        package: project_key,
+        name: version,
+        cache_path: version_path,
+        size: 0,
+        modified,
+    }])
 }
 
 fn proxy_entry_from_row(row: &ProxyVersionRow) -> Option<PackageFileEntry> {
@@ -2452,6 +2595,7 @@ fn is_valid_cache_path(path: &str, strategy: PackageStrategy) -> bool {
             path.starts_with("packages/") && is_valid_repository_path(path)
         }
         PackageStrategy::MavenHosted
+        | PackageStrategy::PhpHosted
         | PackageStrategy::MavenProxy
         | PackageStrategy::PythonHosted
         | PackageStrategy::Cargo => is_valid_repository_path(path),

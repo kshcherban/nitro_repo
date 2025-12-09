@@ -1,21 +1,26 @@
 # Composer Repository
 
-Nitro Repo can host Composer packages, providing a lightweight alternative to Packagist for
-private or internal artifacts.
+Nitro Repo hosts Composer packages using the Composer V2 metadata format (p2 with `metadata-url`).
+Uploads are validated against `composer.json`, rewritten to point back to Nitro, and indexed for
+search.
 
-## Uploading Packages
+## Uploading Packages (Hosted)
 
-- Authenticate with an account that has `Write` permissions for the target repository.
-- Upload archives to `/repositories/<storage>/<repository>/<vendor>/<package>/<version>/<filename>`
-  via `PUT` or `POST`.
-- Nitro Repo automatically indexes the upload by `vendor/package` and version.
+- Authenticate with `Write` permission.
+- Upload a ZIP archive containing `composer.json` to  
+  `/repositories/<storage>/<repository>/dist/<vendor>/<package>/<version>.zip` via `PUT` or `POST`.
+- Nitro Repo streams the upload, extracts `composer.json`, validates `name` + `version`, and writes
+  p2 metadata to `/p2/<vendor>/<package>.json` (and `~dev` variant when needed).
+- Dist URLs in metadata are rewritten to Nitro download endpoints.
 
 ## Downloading Packages
 
-Clients can access packages using the same path structure. Additional metadata is recorded in the
-project database and surfaced through the Nitro Repo user interface.
+Composer clients consume:
+- Root: `/repositories/<storage>/<repository>/packages.json` (contains only `metadata-url`)
+- Package metadata: `/repositories/<storage>/<repository>/p2/<vendor>/<package>.json`
+- Dist: `/repositories/<storage>/<repository>/dist/<vendor>/<package>/<version>.zip`
 
-## Metadata
+## Metadata & Indexing
 
-Composer metadata is persisted to `VersionData.extra` as a `PhpPackageMetadata` document so that
-downstream consumers can reason about uploaded artifacts.
+- Version records are stored in `project_versions` with `PhpPackageMetadata` in `VersionData.extra`.
+- Search and admin package lists pull from the database; no filesystem scans are required.

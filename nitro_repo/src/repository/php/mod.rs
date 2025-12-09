@@ -10,6 +10,8 @@ use nr_storage::DynStorage;
 pub use super::prelude::*;
 mod configs;
 pub use configs::*;
+mod composer;
+pub(crate) use composer::*;
 pub mod hosted;
 pub mod utils;
 
@@ -28,6 +30,8 @@ pub enum PhpRepository {
 pub enum PhpRepositoryError {
     #[error("Invalid package path: {0}")]
     InvalidPath(String),
+    #[error("Invalid composer package: {0}")]
+    InvalidComposer(String),
     #[error("{0}")]
     Other(Box<dyn crate::utils::IntoErrorResponse>),
 }
@@ -36,6 +40,9 @@ impl crate::utils::IntoErrorResponse for PhpRepositoryError {
     fn into_response_boxed(self: Box<Self>) -> axum::response::Response {
         match *self {
             PhpRepositoryError::InvalidPath(message) => {
+                crate::utils::ResponseBuilder::bad_request().body(message)
+            }
+            PhpRepositoryError::InvalidComposer(message) => {
                 crate::utils::ResponseBuilder::bad_request().body(message)
             }
             PhpRepositoryError::Other(inner) => inner.into_response_boxed(),
@@ -154,5 +161,7 @@ impl RepositoryType for PhpRepositoryType {
     }
 }
 
+#[cfg(test)]
+mod composer_tests;
 #[cfg(test)]
 mod tests;

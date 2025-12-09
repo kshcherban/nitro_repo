@@ -1,9 +1,12 @@
 <template>
   <div class="php-repository-helper">
     <p>
-      Composer packages are stored by vendor, package, and version. Upload TAR/ZIP archives to
-      <code>/repositories/&lt;storage&gt;/&lt;repository&gt;/&lt;vendor&gt;/&lt;package&gt;/&lt;version&gt;/&lt;filename&gt;</code>.
+      Composer V2 packages are stored by vendor, package, and version. Upload ZIP archives to
+      <code>/repositories/&lt;storage&gt;/&lt;repository&gt;/dist/&lt;vendor&gt;/&lt;package&gt;/&lt;version&gt;.zip</code>.
     </p>
-    <p>Clients can download the same path to retrieve published packages.</p>
+    <p>
+      Clients fetch metadata from <code>/p2/%package%.json</code> and download the dist from the same
+      path; no manual <code>packages.json</code> needed.
+    </p>
   </div>
 </template>

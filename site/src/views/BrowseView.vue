@@ -34,10 +34,12 @@ import { websocketPath } from "@/config";
 
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
+import { sessionStore } from "@/stores/session";
 import type { ProjectResolution, RawBrowseFile, WSBrowseResponse } from "@/types/browse";
 import { type RepositoryWithStorageName } from "@/types/repository";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 const repoStore = useRepositoryStore();
+const session = sessionStore();
 const repositoryId = ref(router.currentRoute.value.params.id as string);
 const catchAll = ref(
   (router.currentRoute.value.params.catchAll as string | undefined) ?? "",
@@ -52,6 +54,7 @@ onBeforeUnmount(() => {
 });
 websocket.onopen = () => {
   console.log("Websocket opened");
+  sendAuthentication();
   changeDirectory(catchAll.value);
 };
 websocket.onmessage = (event) => {
@@ -68,6 +71,12 @@ websocket.onmessage = (event) => {
     numberOfFiles.value = message.data.number_of_files;
     files.value = [];
     projectResolution.value = message.data.project_resolution;
+  } else if (message.type === "Unauthorized") {
+    console.log("Unauthorized from browse websocket; trying to authenticate");
+    sendAuthentication();
+  } else if (message.type === "Authorized") {
+    console.log("Browse websocket authorized, reloading directory");
+    changeDirectory(catchAll.value);
   } else {
     console.log(`Unknown message type`, message);
   }
@@ -88,7 +97,9 @@ const supportsPackageListing = computed(() => {
   if (!type) {
     return false;
   }
-  return ["python", "npm", "maven", "docker", "go", "helm", "cargo", "deb"].includes(type);
+  return ["python", "npm", "maven", "docker", "go", "helm", "cargo", "deb", "php"].includes(
+    type,
+  );
 });
 
 const isRootPath = computed(() => catchAll.value === "" || catchAll.value === "/");
@@ -109,6 +120,19 @@ watch(showPackages, (value) => {
 function changeDirectory(path: string) {
   console.log(`Changing directory to ${path}`);
   websocket.send(JSON.stringify({ type: "ListDirectory", data: path }));
+}
+
+function sendAuthentication() {
+  const sessionId = session.session?.session_id;
+  if (!sessionId || websocket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  websocket.send(
+    JSON.stringify({
+      type: "Authentication",
+      data: { type: "Session", value: sessionId },
+    }),
+  );
 }
 watch(
   () => router.currentRoute.value.params.catchAll,

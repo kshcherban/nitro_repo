@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use http::StatusCode;
-use nr_core::repository::config::RepositoryConfigType;
+use bytes::Bytes;
+use futures::StreamExt;
+use http::{StatusCode, header::CONTENT_LOCATION};
 use nr_core::{
     database::entities::{
         project::{DBProject, ProjectDBType, versions::DBProjectVersion},
@@ -9,26 +10,31 @@ use nr_core::{
     },
     repository::{
         Visibility,
-        config::repository_page::RepositoryPageType,
-        project::{PhpPackageMetadata, VersionData},
+        config::{RepositoryConfigType, repository_page::RepositoryPageType},
+        project::{PhpPackageMetadata, ReleaseType, VersionData},
     },
+    storage::StoragePath,
     user::permissions::RepositoryActions,
 };
-use nr_storage::{DynStorage, Storage};
+use nr_storage::{DynStorage, FileContent, Storage, StorageFile};
 use parking_lot::RwLock;
 use serde_json::to_value;
+use sha2::{Digest, Sha256};
+use tempfile::{NamedTempFile, TempPath};
+use tokio::{fs::File, io::AsyncWriteExt};
 use uuid::Uuid;
 
 use super::{
+    ComposerDistPath, ComposerMetadataDocument, ComposerPackage, ComposerRootIndex,
     PhpRepositoryError,
     configs::{PhpRepositoryConfig, PhpRepositoryConfigType},
-    utils::PhpPackagePathInfo,
+    extract_composer_from_zip, validate_package_against_path,
 };
 use crate::{
     app::NitroRepo,
-    repository::{RepoResponse, Repository, RepositoryFactoryError, RepositoryRequest},
     repository::{
-        RepositoryAuthConfigType,
+        RepoResponse, Repository, RepositoryAuthConfigType, RepositoryFactoryError,
+        RepositoryRequest, RepositoryRequestBody,
         utils::{RepositoryExt, can_read_repository_with_auth},
     },
     utils::ResponseBuilder,
@@ -43,6 +49,7 @@ pub struct PhpRepositoryInner {
     pub config: PhpRepositoryConfig,
     pub storage: DynStorage,
     pub site: NitroRepo,
+    pub storage_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +69,7 @@ impl PhpHosted {
         .await?
         .map(|cfg| cfg.value.0)
         .unwrap_or_default();
+        let storage_name = storage.storage_config().storage_config.storage_name.clone();
         Ok(Self(Arc::new(PhpRepositoryInner {
             id: repository.id,
             name: repository.name.to_string(),
@@ -70,33 +78,145 @@ impl PhpHosted {
             config,
             storage,
             site,
+            storage_name,
         })))
+    }
+
+    fn id(&self) -> Uuid {
+        self.0.id
+    }
+
+    fn site(&self) -> NitroRepo {
+        self.0.site.clone()
+    }
+
+    fn storage(&self) -> DynStorage {
+        self.0.storage.clone()
+    }
+
+    fn visibility(&self) -> Visibility {
+        *self.0.visibility.read()
+    }
+
+    fn storage_name(&self) -> &str {
+        &self.0.storage_name
+    }
+
+    fn metadata_path(&self, vendor: &str, package: &str, is_dev: bool) -> StoragePath {
+        let suffix = if is_dev { "~dev" } else { "" };
+        StoragePath::from(format!(
+            "p2/{}/{}{}.json",
+            vendor.to_ascii_lowercase(),
+            package.to_ascii_lowercase(),
+            suffix
+        ))
+    }
+
+    fn dist_storage_path(&self, dist: &ComposerDistPath) -> StoragePath {
+        StoragePath::from(format!(
+            "dist/{}/{}/{}",
+            dist.vendor.to_ascii_lowercase(),
+            dist.package.to_ascii_lowercase(),
+            dist.filename
+        ))
+    }
+
+    fn dist_url(&self, dist: &StoragePath) -> String {
+        format!(
+            "/repositories/{}/{}/{}",
+            self.storage_name(),
+            self.name(),
+            dist
+        )
+    }
+
+    async fn load_metadata(
+        &self,
+        path: &StoragePath,
+    ) -> Result<Option<ComposerMetadataDocument>, PhpRepositoryError> {
+        let Some(file) = self.storage().open_file(self.id(), path).await? else {
+            return Ok(None);
+        };
+        let (content, meta) = match file {
+            StorageFile::File { content, meta } => (content, meta),
+            StorageFile::Directory { .. } => return Ok(None),
+        };
+        let size_hint: usize = meta.file_type().file_size.try_into().unwrap_or(16_384);
+        let bytes = content
+            .read_to_vec(size_hint)
+            .await
+            .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?;
+        let doc = serde_json::from_slice::<ComposerMetadataDocument>(&bytes)?;
+        Ok(Some(doc))
+    }
+
+    async fn write_metadata(
+        &self,
+        package: &ComposerPackage,
+        dist_path: &StoragePath,
+        sha256: Option<String>,
+    ) -> Result<(), PhpRepositoryError> {
+        let (vendor, package_name) = package.name.split_once('/').ok_or_else(|| {
+            PhpRepositoryError::InvalidComposer("package name missing vendor".into())
+        })?;
+        let is_dev = package.version.to_ascii_lowercase().contains("dev");
+        let metadata_path = self.metadata_path(vendor, package_name, is_dev);
+        let dist_url = self.dist_url(dist_path);
+        let doc = match self.load_metadata(&metadata_path).await? {
+            Some(mut existing) => {
+                existing.add_version(package, dist_url.clone(), sha256.clone());
+                existing
+            }
+            None => {
+                ComposerMetadataDocument::with_version(package, dist_url.clone(), sha256.clone())
+            }
+        };
+
+        let tmp_path = StoragePath::from(format!("{}.tmp", metadata_path));
+        let json_bytes = serde_json::to_vec(&doc)?;
+        self.storage()
+            .save_file(self.id(), FileContent::Content(json_bytes), &tmp_path)
+            .await?;
+        let moved = self
+            .storage()
+            .move_file(self.id(), &tmp_path, &metadata_path)
+            .await?;
+        if !moved {
+            return Err(PhpRepositoryError::InvalidComposer(
+                "failed to finalize metadata file".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn upsert_metadata(
         &self,
         publisher: Option<i32>,
-        info: &PhpPackagePathInfo,
+        composer: &ComposerPackage,
+        dist_path: &StoragePath,
     ) -> Result<(), PhpRepositoryError> {
-        let project_key = info.normalized_package_name();
+        let project_key = composer.name.to_ascii_lowercase();
         let project = if let Some(project) =
             DBProject::find_by_project_key(&project_key, self.id(), self.site().as_ref()).await?
         {
             project
         } else {
+            let (vendor, package) = composer.name.split_once('/').ok_or_else(|| {
+                PhpRepositoryError::InvalidComposer("package name missing vendor".into())
+            })?;
             let new_project = nr_core::database::entities::project::NewProject {
-                scope: Some(info.vendor.clone()),
+                scope: Some(vendor.to_string()),
                 project_key: project_key.clone(),
-                name: info.package_name(),
+                name: package.to_string(),
                 description: None,
                 repository: self.id(),
-                storage_path: info.project_storage_path(),
+                storage_path: composer.name.to_ascii_lowercase(),
             };
             new_project.insert(self.site().as_ref()).await?
         };
 
         if DBProjectVersion::find_by_version_and_project(
-            &info.version,
+            &composer.version,
             project.id,
             &self.site().database,
         )
@@ -107,16 +227,21 @@ impl PhpHosted {
         }
 
         let metadata = PhpPackageMetadata {
-            filename: info.file_name.clone(),
+            filename: dist_path
+                .clone()
+                .into_iter()
+                .last()
+                .map(|c| c.to_string())
+                .unwrap_or_default(),
             ..Default::default()
         };
 
         let new_version = nr_core::database::entities::project::versions::NewVersion {
             project_id: project.id,
             repository_id: self.id(),
-            version: info.version.clone(),
-            release_type: info.release_type(),
-            version_path: info.version_storage_path(),
+            version: composer.version.clone(),
+            release_type: ReleaseType::release_type_from_version(&composer.version),
+            version_path: dist_path.to_string(),
             publisher,
             version_page: None,
             extra: VersionData {
@@ -128,7 +253,37 @@ impl PhpHosted {
         Ok(())
     }
 
-    async fn handle_upload(
+    async fn receive_upload(
+        &self,
+        body: RepositoryRequestBody,
+    ) -> Result<(TempPath, String), PhpRepositoryError> {
+        let mut hasher = Sha256::new();
+        let temp = NamedTempFile::new()
+            .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?;
+        let mut writer = File::from_std(
+            temp.as_file()
+                .try_clone()
+                .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?,
+        );
+        let mut stream = body.into_byte_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk: Bytes = chunk?;
+            hasher.update(&chunk);
+            writer
+                .write_all(&chunk)
+                .await
+                .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?;
+        }
+        writer
+            .flush()
+            .await
+            .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?;
+        let sha256 = format!("{:x}", hasher.finalize());
+        let path = temp.into_temp_path();
+        Ok((path, sha256))
+    }
+
+    async fn ingest_upload(
         &self,
         request: RepositoryRequest,
     ) -> Result<RepoResponse, PhpRepositoryError> {
@@ -139,26 +294,143 @@ impl PhpHosted {
         else {
             return Ok(RepoResponse::unauthorized());
         };
-        let info = PhpPackagePathInfo::try_from(&request.path)?;
-        let bytes = request.body.body_as_bytes().await?;
+
+        let path = request.path.clone();
+        let PhpHostedPath::Dist(dist) = parse_path(&path)? else {
+            return Ok(RepoResponse::basic_text_response(
+                StatusCode::BAD_REQUEST,
+                "Uploads must target dist/{vendor}/{package}/{version}.zip",
+            ));
+        };
+
+        let body = request.body;
+        let (temp_path, sha256) = self.receive_upload(body).await?;
+        let archive_path = PathBuf::from(temp_path.as_ref() as &std::path::Path);
+        let composer =
+            tokio::task::spawn_blocking(move || extract_composer_from_zip(&archive_path))
+                .await
+                .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))??;
+
+        validate_package_against_path(&composer, &dist)?;
+
+        let dist_storage_path = self.dist_storage_path(&dist);
         self.storage()
-            .save_file(self.id(), bytes.into(), &request.path)
+            .save_file(
+                self.id(),
+                FileContent::Path(temp_path.to_path_buf()),
+                &dist_storage_path,
+            )
             .await?;
-        self.upsert_metadata(Some(user.id), &info).await?;
-        Ok(RepoResponse::Other(ResponseBuilder::created().empty()))
+
+        self.write_metadata(&composer, &dist_storage_path, Some(sha256.clone()))
+            .await?;
+        self.upsert_metadata(Some(user.id), &composer, &dist_storage_path)
+            .await?;
+
+        Ok(RepoResponse::Other(
+            ResponseBuilder::created()
+                .header(CONTENT_LOCATION, self.dist_url(&dist_storage_path))
+                .empty(),
+        ))
     }
 
-    fn id(&self) -> Uuid {
-        self.0.id
+    async fn handle_metadata_or_dist(
+        &self,
+        request: RepositoryRequest,
+        path: PhpHostedPath,
+    ) -> Result<RepoResponse, PhpRepositoryError> {
+        let repository_id = self.id();
+        let visibility = self.visibility();
+        let site = self.site();
+        let storage = self.storage();
+        if !can_read_repository_with_auth(
+            &request.authentication,
+            visibility,
+            repository_id,
+            site.as_ref(),
+            &request.auth_config,
+        )
+        .await?
+        {
+            return Ok(RepoResponse::basic_text_response(
+                StatusCode::UNAUTHORIZED,
+                "Missing permission to read repository",
+            ));
+        }
+        match path {
+            PhpHostedPath::Metadata {
+                vendor,
+                package,
+                is_dev,
+            } => {
+                let metadata_path = self.metadata_path(&vendor, &package, is_dev);
+                let file = storage.open_file(repository_id, &metadata_path).await?;
+                Ok(file.into())
+            }
+            PhpHostedPath::Dist(dist) => {
+                let dist_path = self.dist_storage_path(&dist);
+                let file = storage.open_file(repository_id, &dist_path).await?;
+                Ok(file.into())
+            }
+            PhpHostedPath::RootIndex => {
+                let index = ComposerRootIndex::new(self.storage_name(), &self.name());
+                Ok(RepoResponse::Other(ResponseBuilder::ok().json(&index)))
+            }
+            PhpHostedPath::Unknown => Ok(RepoResponse::basic_text_response(
+                StatusCode::NOT_FOUND,
+                "Not Found",
+            )),
+        }
     }
-    fn site(&self) -> NitroRepo {
-        self.0.site.clone()
-    }
-    fn storage(&self) -> DynStorage {
-        self.0.storage.clone()
-    }
-    fn visibility(&self) -> Visibility {
-        *self.0.visibility.read()
+
+    async fn handle_head_request(
+        &self,
+        request: RepositoryRequest,
+        path: PhpHostedPath,
+    ) -> Result<RepoResponse, PhpRepositoryError> {
+        let repository_id = self.id();
+        let visibility = self.visibility();
+        let site = self.site();
+        let storage = self.storage();
+        if !can_read_repository_with_auth(
+            &request.authentication,
+            visibility,
+            repository_id,
+            site.as_ref(),
+            &request.auth_config,
+        )
+        .await?
+        {
+            return Ok(RepoResponse::basic_text_response(
+                StatusCode::UNAUTHORIZED,
+                "Missing permission to read repository",
+            ));
+        }
+        match path {
+            PhpHostedPath::Metadata {
+                vendor,
+                package,
+                is_dev,
+            } => {
+                let metadata_path = self.metadata_path(&vendor, &package, is_dev);
+                let meta = storage
+                    .get_file_information(repository_id, &metadata_path)
+                    .await?;
+                Ok(meta.into())
+            }
+            PhpHostedPath::Dist(dist) => {
+                let dist_path = self.dist_storage_path(&dist);
+                let meta = storage
+                    .get_file_information(repository_id, &dist_path)
+                    .await?;
+                Ok(meta.into())
+            }
+            PhpHostedPath::RootIndex => Ok(RepoResponse::Other(ResponseBuilder::ok().empty())),
+            PhpHostedPath::Unknown => Ok(RepoResponse::basic_text_response(
+                StatusCode::NOT_FOUND,
+                "Not Found",
+            )),
+        }
     }
 }
 
@@ -211,27 +483,10 @@ impl Repository for PhpHosted {
         &self,
         request: RepositoryRequest,
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
-        let repository_id = self.id();
-        let visibility = self.visibility();
-        let site = self.site();
-        let storage = self.storage();
+        let this = self.clone();
         async move {
-            if !can_read_repository_with_auth(
-                &request.authentication,
-                visibility,
-                repository_id,
-                site.as_ref(),
-                &request.auth_config,
-            )
-            .await?
-            {
-                return Ok(RepoResponse::basic_text_response(
-                    StatusCode::UNAUTHORIZED,
-                    "Missing permission to read repository",
-                ));
-            }
-            let file = storage.open_file(repository_id, &request.path).await?;
-            Ok(file.into())
+            let path = parse_path(&request.path)?;
+            this.handle_metadata_or_dist(request, path).await
         }
     }
 
@@ -240,7 +495,7 @@ impl Repository for PhpHosted {
         request: RepositoryRequest,
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
         let this = self.clone();
-        async move { this.handle_upload(request).await }
+        async move { this.ingest_upload(request).await }
     }
 
     fn handle_post(
@@ -248,36 +503,59 @@ impl Repository for PhpHosted {
         request: RepositoryRequest,
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
         let this = self.clone();
-        async move { this.handle_upload(request).await }
+        async move { this.ingest_upload(request).await }
     }
 
     fn handle_head(
         &self,
         request: RepositoryRequest,
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
-        let repository_id = self.id();
-        let visibility = self.visibility();
-        let site = self.site();
-        let storage = self.storage();
+        let this = self.clone();
         async move {
-            if !can_read_repository_with_auth(
-                &request.authentication,
-                visibility,
-                repository_id,
-                site.as_ref(),
-                &request.auth_config,
-            )
-            .await?
-            {
-                return Ok(RepoResponse::basic_text_response(
-                    StatusCode::UNAUTHORIZED,
-                    "Missing permission to read repository",
-                ));
-            }
-            let meta = storage
-                .get_file_information(repository_id, &request.path)
-                .await?;
-            Ok(meta.into())
+            let path = parse_path(&request.path)?;
+            this.handle_head_request(request, path).await
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PhpHostedPath {
+    RootIndex,
+    Metadata {
+        vendor: String,
+        package: String,
+        is_dev: bool,
+    },
+    Dist(ComposerDistPath),
+    Unknown,
+}
+
+fn parse_path(path: &StoragePath) -> Result<PhpHostedPath, PhpRepositoryError> {
+    let components: Vec<String> = path.clone().into_iter().map(|c| c.to_string()).collect();
+    if components.is_empty() {
+        return Ok(PhpHostedPath::RootIndex);
+    }
+    if components.len() == 1 && components[0].eq_ignore_ascii_case("packages.json") {
+        return Ok(PhpHostedPath::RootIndex);
+    }
+
+    if components.get(0).map(|s| s.as_str()) == Some("p2") && components.len() >= 3 {
+        let vendor = components[1].clone();
+        let file = components.last().cloned().unwrap_or_default();
+        let is_dev = file.ends_with("~dev.json");
+        let trimmed = file.trim_end_matches("~dev.json").trim_end_matches(".json");
+        let package = trimmed.to_string();
+        return Ok(PhpHostedPath::Metadata {
+            vendor,
+            package,
+            is_dev,
+        });
+    }
+
+    if components.get(0).map(|s| s.as_str()) == Some("dist") || components.len() >= 3 {
+        let dist = ComposerDistPath::try_from(path)?;
+        return Ok(PhpHostedPath::Dist(dist));
+    }
+
+    Ok(PhpHostedPath::Unknown)
 }

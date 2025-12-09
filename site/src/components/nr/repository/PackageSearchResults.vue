@@ -25,6 +25,7 @@
       <thead>
         <tr>
           <th>Package</th>
+          <th>Type</th>
           <th>Repository</th>
           <th>Size</th>
           <th>Path</th>
@@ -43,6 +44,15 @@
               @click="selectCell">
               {{ pkg.fileName }}
             </span>
+          </td>
+          <td>
+            <v-chip
+              size="x-small"
+              variant="tonal"
+              color="primary"
+              class="text-uppercase font-weight-medium">
+              {{ pkg.repositoryType || "unknown" }}
+            </v-chip>
           </td>
           <td>
             <span

@@ -9,7 +9,7 @@ export interface PhpConfigType {
 
 export const PhpFrontendDefinition: FrontendRepositoryType = {
   name: "php",
-  properName: "Composer",
+  properName: "PHP Composer",
   projectComponent: {
     component: PhpProjectHelper,
   },

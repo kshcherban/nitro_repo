@@ -1085,6 +1085,37 @@ fn derive_version_path_returns_none_for_root_objects() {
 }
 
 #[tokio::test]
+async fn load_php_version_entries_reads_dist_file() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository_id = Uuid::new_v4();
+    let dist_path = nr_core::storage::StoragePath::from("dist/acme/example/example-1.2.3.zip");
+    let content = b"zip-bytes";
+    storage
+        .save_file(repository_id, FileContent::from(&content[..]), &dist_path)
+        .await?;
+
+    let row = super::MavenVersionRow {
+        project_key: "acme/example".into(),
+        version: "1.2.3".into(),
+        version_path: dist_path.to_string(),
+        version_data: sqlx::types::Json(VersionData::default()),
+        updated_at: chrono::Utc::now().fixed_offset(),
+    };
+
+    let entries = super::load_php_version_entries(storage, repository_id, row)
+        .await
+        .expect("entries");
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry.package, "acme/example");
+    assert_eq!(entry.name, "1.2.3");
+    assert_eq!(entry.cache_path, "dist/acme/example/example-1.2.3.zip");
+    assert_eq!(entry.size, content.len() as u64);
+    Ok(())
+}
+
+#[tokio::test]
 async fn delete_version_records_by_path_normalizes_and_deletes() {
     let repository_id = Uuid::new_v4();
     let mut targets = ahash::HashSet::new();
@@ -1222,6 +1253,19 @@ mod catalog_db_tests {
             name: "maven-proxy-test".into(),
             uuid: Uuid::new_v4(),
             repository_type: "maven".into(),
+            configs: HashMap::with_hasher(Default::default()),
+        };
+        repo.insert(storage_id, pool)
+            .await
+            .expect("insert repository")
+            .id
+    }
+
+    async fn insert_php_repository(pool: &PgPool, storage_id: Uuid) -> Uuid {
+        let repo = NewRepository {
+            name: "composer-hosted-test".into(),
+            uuid: Uuid::new_v4(),
+            repository_type: "php".into(),
             configs: HashMap::with_hasher(Default::default()),
         };
         repo.insert(storage_id, pool)
@@ -1383,6 +1427,34 @@ mod catalog_db_tests {
         assert_eq!(second_page.len(), 1);
         assert_eq!(second_page[0].project_key, "com.example:bravo");
         assert_eq!(second_page[0].version_path, "com/example/bravo/1.0.0");
+    }
+
+    #[tokio::test]
+    async fn fetch_php_catalog_page_returns_versions_for_hosted_repo() {
+        let _guard = DB_LOCK.lock().await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
+
+        let storage_id = insert_storage(db.pool()).await;
+        let repository_id = insert_php_repository(db.pool(), storage_id).await;
+
+        insert_maven_version(
+            db.pool(),
+            repository_id,
+            "acme/example",
+            "1.2.3",
+            "dist/acme/example/example-1.2.3.zip",
+        )
+        .await;
+
+        let rows = super::fetch_php_catalog_page(db.pool(), repository_id, 10, 0, None)
+            .await
+            .expect("fetch catalog");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].project_key, "acme/example");
+        assert_eq!(rows[0].version, "1.2.3");
+        assert_eq!(rows[0].version_path, "dist/acme/example/example-1.2.3.zip");
     }
 
     #[tokio::test]
