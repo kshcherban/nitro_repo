@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use super::composer::*;
+use nr_core::storage::StoragePath;
+use serde_json::json;
 use std::fs::File;
 use std::io::Write;
 use tempfile::TempDir;
@@ -31,6 +33,9 @@ fn root_packages_json_uses_metadata_url() {
         "/repositories/primary/php-hosted/p2/%package%.json"
     );
     assert!(index.packages.is_empty());
+
+    let serialized = serde_json::to_value(&index).expect("serialize packages.json");
+    assert_eq!(serialized.get("packages").unwrap(), &json!([]));
 }
 
 #[test]
@@ -58,6 +63,23 @@ fn extract_composer_json_from_zip() {
     let pkg = extract_composer_from_zip(&zip_path).expect("composer.json parsed");
     assert_eq!(pkg.name, "acme/example");
     assert_eq!(pkg.version, "2.4.0");
+}
+
+#[test]
+fn composer_dist_path_allows_version_filename_layout() {
+    let path = StoragePath::from("dist/acme/example/1.2.3.zip");
+    let dist = ComposerDistPath::try_from(&path).expect("parse dist path");
+    assert_eq!(dist.vendor, "acme");
+    assert_eq!(dist.package, "example");
+    assert_eq!(dist.version, "1.2.3");
+    assert_eq!(dist.filename, "1.2.3.zip");
+}
+
+#[test]
+fn composer_dist_path_rejects_non_zip_suffix() {
+    let path = StoragePath::from("dist/acme/example/1.2.3.tar.gz");
+    let err = ComposerDistPath::try_from(&path).expect_err("invalid path rejected");
+    assert!(format!("{err:?}").contains("dist/<vendor>/<package>/<version>.zip"));
 }
 
 #[test]

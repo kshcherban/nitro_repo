@@ -14,4 +14,5 @@ pub use crate::repository::docker::proxy::DockerProxy;
 pub use crate::repository::go::proxy::GoProxy;
 pub use crate::repository::maven::proxy::MavenProxy;
 pub use crate::repository::npm::proxy::NpmProxyRegistry;
+pub use crate::repository::php::proxy::PhpProxy;
 pub use crate::repository::python::proxy::PythonProxy;

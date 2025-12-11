@@ -1,13 +1,30 @@
-use nr_core::repository::config::{ConfigDescription, RepositoryConfigError, RepositoryConfigType};
+use nr_core::repository::{
+    config::{ConfigDescription, RepositoryConfigError, RepositoryConfigType},
+    proxy_url::ProxyURL,
+};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config")]
 pub enum PhpRepositoryConfig {
     #[default]
     Hosted,
+    Proxy(PhpProxyConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct PhpProxyConfig {
+    #[serde(default)]
+    pub routes: Vec<PhpProxyRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PhpProxyRoute {
+    pub url: ProxyURL,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

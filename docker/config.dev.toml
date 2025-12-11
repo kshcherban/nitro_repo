@@ -46,3 +46,6 @@ default = "Info"
 "tower" = "Info"
 "tonic" = "Info"
 "hyper_util" = "Info"
+
+[site]
+is_https = true

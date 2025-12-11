@@ -11,7 +11,7 @@ use super::PhpRepositoryError;
 pub struct ComposerRootIndex {
     #[serde(rename = "metadata-url")]
     pub metadata_url: String,
-    pub packages: HashMap<String, Value>,
+    pub packages: Vec<Value>,
 }
 
 impl ComposerRootIndex {
@@ -23,7 +23,7 @@ impl ComposerRootIndex {
         );
         Self {
             metadata_url,
-            packages: HashMap::default(),
+            packages: Vec::new(),
         }
     }
 }
@@ -111,19 +111,46 @@ impl TryFrom<&StoragePath> for ComposerDistPath {
         if components.first().map(|c| c.as_str()) == Some("dist") {
             components.remove(0);
         }
-        if components.len() < 4 {
-            return Err(PhpRepositoryError::InvalidPath(path.to_string()));
+
+        // Accept both shapes:
+        // 1) dist/<vendor>/<package>/<version>.zip           (common Composer upload)
+        // 2) dist/<vendor>/<package>/<version>/<filename>.zip (more explicit)
+        match components.len() {
+            3 => {
+                let vendor = components[0].clone();
+                let package = components[1].clone();
+                let filename = components[2].clone();
+                let version = filename
+                    .strip_suffix(".zip")
+                    .ok_or_else(|| {
+                        PhpRepositoryError::InvalidPath(format!(
+                            "{path} is invalid; expected dist/<vendor>/<package>/<version>.zip"
+                        ))
+                    })?
+                    .to_string();
+                Ok(Self {
+                    vendor,
+                    package,
+                    version,
+                    filename,
+                })
+            }
+            len if len >= 4 => {
+                let vendor = components[0].clone();
+                let package = components[1].clone();
+                let version = components[2].clone();
+                let filename = components.last().cloned().unwrap_or_default();
+                Ok(Self {
+                    vendor,
+                    package,
+                    version,
+                    filename,
+                })
+            }
+            _ => Err(PhpRepositoryError::InvalidPath(format!(
+                "{path} is invalid; expected dist/<vendor>/<package>/<version>.zip"
+            ))),
         }
-        let vendor = components[0].clone();
-        let package = components[1].clone();
-        let version = components[2].clone();
-        let filename = components.last().cloned().unwrap_or_default();
-        Ok(Self {
-            vendor,
-            package,
-            version,
-            filename,
-        })
     }
 }
 

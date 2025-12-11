@@ -1116,6 +1116,50 @@ async fn load_php_version_entries_reads_dist_file() -> Result<()> {
 }
 
 #[tokio::test]
+async fn load_php_version_entries_prefers_proxy_metadata() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository_id = Uuid::new_v4();
+    let fetched_at = chrono::Utc
+        .with_ymd_and_hms(2025, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+
+    let meta = ProxyArtifactMeta::builder(
+        "acme/example",
+        "acme/example",
+        "dist/acme/example/1.2.3/pkg-1.2.3.zip",
+    )
+    .version("1.2.3")
+    .upstream_url("https://files.example.com/dist/pkg-1.2.3.zip")
+    .size(2048)
+    .fetched_at(fetched_at)
+    .build();
+    let mut version_data = VersionData::default();
+    version_data.set_proxy_artifact(&meta)?;
+
+    let row = super::MavenVersionRow {
+        project_key: "acme/example".into(),
+        version: "1.2.3".into(),
+        version_path: meta.cache_path.clone(),
+        version_data: sqlx::types::Json(version_data),
+        updated_at: fetched_at.fixed_offset(),
+    };
+
+    let entries = super::load_php_version_entries(storage, repository_id, row)
+        .await
+        .expect("entries");
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry.package, "acme/example");
+    assert_eq!(entry.name, "1.2.3");
+    assert_eq!(entry.cache_path, meta.cache_path);
+    assert_eq!(entry.size, 2048);
+    assert_eq!(entry.modified, fetched_at.fixed_offset());
+    Ok(())
+}
+
+#[tokio::test]
 async fn delete_version_records_by_path_normalizes_and_deletes() {
     let repository_id = Uuid::new_v4();
     let mut targets = ahash::HashSet::new();

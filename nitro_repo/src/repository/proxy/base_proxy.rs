@@ -62,6 +62,7 @@ impl ProxyRepository for crate::repository::maven::proxy::MavenProxy {}
 impl ProxyRepository for crate::repository::npm::proxy::NpmProxyRegistry {}
 impl ProxyRepository for crate::repository::python::proxy::PythonProxy {}
 impl ProxyRepository for crate::repository::docker::proxy::DockerProxy {}
+impl ProxyRepository for crate::repository::php::proxy::PhpProxy {}
 
 #[cfg(test)]
 mod tests;

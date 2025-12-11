@@ -13,6 +13,7 @@ pub use configs::*;
 mod composer;
 pub(crate) use composer::*;
 pub mod hosted;
+pub mod proxy;
 pub mod utils;
 
 use super::{
@@ -24,6 +25,7 @@ use super::{
 #[repository_handler(error = PhpRepositoryError)]
 pub enum PhpRepository {
     Hosted(hosted::PhpHosted),
+    Proxy(proxy::PhpProxy),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -40,10 +42,12 @@ impl crate::utils::IntoErrorResponse for PhpRepositoryError {
     fn into_response_boxed(self: Box<Self>) -> axum::response::Response {
         match *self {
             PhpRepositoryError::InvalidPath(message) => {
-                crate::utils::ResponseBuilder::bad_request().body(message)
+                crate::utils::ResponseBuilder::bad_request()
+                    .json(&serde_json::json!({ "error": message }))
             }
             PhpRepositoryError::InvalidComposer(message) => {
-                crate::utils::ResponseBuilder::bad_request().body(message)
+                crate::utils::ResponseBuilder::bad_request()
+                    .json(&serde_json::json!({ "error": message }))
             }
             PhpRepositoryError::Other(inner) => inner.into_response_boxed(),
         }
@@ -65,6 +69,8 @@ impl_from_error!(nr_storage::StorageError);
 impl_from_error!(sqlx::Error);
 impl_from_error!(serde_json::Error);
 impl_from_error!(crate::app::authentication::AuthenticationError);
+impl_from_error!(crate::repository::proxy_indexing::ProxyIndexingError);
+impl_from_error!(reqwest::Error);
 
 impl From<PhpRepositoryError> for super::RepositoryHandlerError {
     fn from(value: PhpRepositoryError) -> Self {
@@ -96,7 +102,7 @@ impl RepositoryType for PhpRepositoryType {
     fn get_description(&self) -> RepositoryTypeDescription {
         RepositoryTypeDescription {
             type_name: "php",
-            name: "Composer",
+            name: "PHP Composer",
             description: "A Composer/Packagist compatible repository for Nitro Repo.",
             documentation_url: Some("https://nitro-repo.kingtux.dev/repositoryTypes/php/"),
             is_stable: false,
@@ -156,6 +162,10 @@ impl RepositoryType for PhpRepositoryType {
                     let hosted = hosted::PhpHosted::load(website, storage, repo).await?;
                     Ok(DynRepository::Php(PhpRepository::Hosted(hosted)))
                 }
+                PhpRepositoryConfig::Proxy(proxy_config) => {
+                    let proxy = proxy::PhpProxy::load(website, storage, repo, proxy_config).await?;
+                    Ok(DynRepository::Php(PhpRepository::Proxy(proxy)))
+                }
             }
         })
     }
@@ -163,5 +173,7 @@ impl RepositoryType for PhpRepositoryType {
 
 #[cfg(test)]
 mod composer_tests;
+#[cfg(test)]
+mod proxy_tests;
 #[cfg(test)]
 mod tests;

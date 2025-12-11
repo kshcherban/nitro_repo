@@ -3,9 +3,32 @@ import type { FrontendRepositoryType } from "@/types/repository";
 import PhpProjectHelper from "./PhpProjectHelper.vue";
 import PhpRepositoryHelper from "./PhpRepositoryHelper.vue";
 
-export interface PhpConfigType {
-  type: "Hosted";
+export interface PhpProxyRoute {
+  url: string;
+  name?: string;
 }
+
+export interface PhpProxyConfig {
+  routes: PhpProxyRoute[];
+}
+
+export type PhpConfigType =
+  | {
+      type: "Hosted";
+    }
+  | {
+      type: "Proxy";
+      config: PhpProxyConfig;
+    };
+
+export const defaultProxy = (): PhpProxyConfig => ({
+  routes: [
+    {
+      url: "https://repo.packagist.org",
+      name: "Packagist",
+    },
+  ],
+});
 
 export const PhpFrontendDefinition: FrontendRepositoryType = {
   name: "php",

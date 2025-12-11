@@ -2029,7 +2029,7 @@ async fn load_php_version_entries(
         project_key,
         version,
         version_path,
-        version_data: _,
+        version_data,
         updated_at,
     } = row;
 
@@ -2043,6 +2043,25 @@ async fn load_php_version_entries(
             cache_path: version_path,
             size: meta.file_type.file_size,
             modified: meta.modified,
+        }]);
+    }
+
+    if let Some(proxy_meta) = version_data.0.proxy_artifact() {
+        let modified: DateTime<FixedOffset> = proxy_meta.fetched_at.into();
+        let label = proxy_meta.version.clone().unwrap_or_else(|| {
+            proxy_meta
+                .cache_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&proxy_meta.cache_path)
+                .to_string()
+        });
+        return Ok(vec![PackageFileEntry {
+            package: proxy_meta.package_key.clone(),
+            name: label,
+            cache_path: proxy_meta.cache_path.clone(),
+            size: proxy_meta.size.unwrap_or_default(),
+            modified,
         }]);
     }
 
@@ -3118,6 +3137,10 @@ pub async fn delete_cached_packages(
         DynRepository::Python(PythonRepository::Proxy(proxy)) => Some(proxy),
         _ => None,
     };
+    let php_proxy = match repository.clone() {
+        DynRepository::Php(crate::repository::php::PhpRepository::Proxy(proxy)) => Some(proxy),
+        _ => None,
+    };
     let npm_proxy = match repository.clone() {
         DynRepository::NPM(NPMRegistry::Proxy(proxy)) => Some(proxy),
         _ => None,
@@ -3237,6 +3260,12 @@ pub async fn delete_cached_packages(
                             .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
                     }
                     if let Some(proxy) = npm_proxy.as_ref() {
+                        proxy
+                            .handle_external_eviction(&storage_path)
+                            .await
+                            .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+                    }
+                    if let Some(proxy) = php_proxy.as_ref() {
                         proxy
                             .handle_external_eviction(&storage_path)
                             .await

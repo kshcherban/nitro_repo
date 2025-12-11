@@ -371,6 +371,13 @@ async fn resolve_repository_kind(
             crate::repository::go::GoRepositoryConfigType::get_type_static(),
         )
         .await
+    } else if repo_type.eq_ignore_ascii_case("php") {
+        load_proxy_kind::<crate::repository::php::PhpRepositoryConfig>(
+            repository,
+            site,
+            crate::repository::php::PhpRepositoryConfigType::get_type_static(),
+        )
+        .await
     } else {
         Ok(None)
     }
@@ -434,6 +441,15 @@ impl ProxyKindClassifier for crate::repository::npm::NPMRegistryConfig {
 }
 
 impl ProxyKindClassifier for crate::repository::go::GoRepositoryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
+impl ProxyKindClassifier for crate::repository::php::PhpRepositoryConfig {
     fn proxy_kind_label(&self) -> Option<&'static str> {
         match self {
             Self::Hosted => Some("hosted"),
