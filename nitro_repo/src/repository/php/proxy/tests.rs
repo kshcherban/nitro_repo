@@ -91,11 +91,12 @@ fn github_zipball_to_codeload_converts_api_url() {
 
 #[test]
 fn github_zipball_to_codeload_rejects_non_github_or_non_zipball() {
-    assert!(github_zipball_to_codeload("https://example.com/repos/acme/demo/zipball/v1.2.3")
-        .is_none());
-    assert!(github_zipball_to_codeload(
-        "https://api.github.com/repos/acme/demo/tarball/v1.2.3"
-    )
-    .is_none());
+    assert!(
+        github_zipball_to_codeload("https://example.com/repos/acme/demo/zipball/v1.2.3").is_none()
+    );
+    assert!(
+        github_zipball_to_codeload("https://api.github.com/repos/acme/demo/tarball/v1.2.3")
+            .is_none()
+    );
     assert!(github_zipball_to_codeload("not a url").is_none());
 }

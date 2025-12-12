@@ -191,6 +191,23 @@ INSERT INTO repository_configs (repository_id, key, value) VALUES
     ('55555555-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 
+-- PHP Proxy Repository (proxies the local php-hosted repo for deterministic tests)
+INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
+VALUES (
+    '55555555-0000-0000-0000-000000000002'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'php-proxy',
+    'php',
+    'Public',
+    true
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO repository_configs (repository_id, key, value) VALUES
+    ('55555555-0000-0000-0000-000000000002'::uuid, 'php', '{"type": "Proxy", "config": {"routes": [{"url": "http://nitro-repo:8888/repositories/test-storage/php-hosted", "name": "Hosted"}]}}'::jsonb),
+    ('55555555-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
+ON CONFLICT (repository_id, key) DO NOTHING;
+
 -- Go Hosted Repository
 INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
 VALUES (

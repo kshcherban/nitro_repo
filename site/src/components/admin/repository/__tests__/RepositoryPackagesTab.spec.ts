@@ -215,7 +215,7 @@ describe("RepositoryPackagesTab.vue", () => {
     });
   });
 
-  it("surfaces indexing warning headers", async () => {
+  it("ignores indexing warning headers", async () => {
     const httpGet = http.get as vi.Mock;
     httpGet.mockResolvedValueOnce({
       data: { total_packages: 0, items: [] },
@@ -234,8 +234,8 @@ describe("RepositoryPackagesTab.vue", () => {
     await flushPromises();
 
     const warning = wrapper.find('[data-testid="packages-indexing-warning"]');
-    expect(warning.exists()).toBe(true);
-    expect(warning.text()).toContain("Repository indexing in progress");
+    expect(warning.exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Repository indexing in progress");
   });
 
   it("requests server-side search across all pages", async () => {
@@ -265,5 +265,24 @@ describe("RepositoryPackagesTab.vue", () => {
     expect(httpGet).toHaveBeenCalledWith("/api/repository/1/packages", {
       params: { page: 1, per_page: 50, q: "lodash" },
     });
+  });
+
+  it("labels name column as Version for PHP proxy repositories", async () => {
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "repo-php-proxy",
+        repositoryType: "php",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const headers = (wrapper.vm as any).headers as Array<{ key: string; title: string }>;
+    const nameHeader = headers.find((header) => header.key === "name");
+    expect(nameHeader?.title).toBe("Version");
   });
 });

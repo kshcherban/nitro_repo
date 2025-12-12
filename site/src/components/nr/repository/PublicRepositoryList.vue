@@ -80,7 +80,6 @@ import http from "@/http";
 import router from "@/router";
 import type { RepositoryWithStorageName } from "@/types/repository";
 import { isAdvancedQuery, shouldFetchPackages } from "@/utils/repositorySearch";
-import { useAlertsStore } from "@/stores/alerts";
 import { computed, onBeforeUnmount, ref, watch, type PropType } from "vue";
 
 const searchValue = ref<string>("");
@@ -103,7 +102,6 @@ interface PackageSearchResponse {
 const packageResults = ref<PackageResult[]>([]);
 const packageLoading = ref(false);
 const packageError = ref<string | null>(null);
-const alerts = useAlertsStore();
 let debounceHandle: number | undefined;
 
 const trimmedSearch = computed(() => searchValue.value.trim());
@@ -137,10 +135,6 @@ async function fetchPackages(query: string) {
     const response = await http.get<PackageSearchResponse[]>("/api/search/packages", {
       params: { q: query, limit: 25 },
     });
-    const warning = response.headers?.["x-nitro-warning"];
-    if (warning) {
-      alerts.error("Repository indexing in progress", warning, 8000);
-    }
     packageResults.value = response.data.map((item) => ({
       repositoryId: item.repository_id,
       repositoryName: item.repository_name,

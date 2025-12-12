@@ -65,3 +65,51 @@ async fn invalid_composer_error_returns_json() {
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(value["error"], serde_json::json!("bad composer"));
 }
+
+#[test]
+fn php_hosted_dist_url_prefers_configured_app_url() {
+    use super::hosted::PhpHosted;
+    use nr_core::storage::StoragePath;
+
+    let dist = StoragePath::from("dist/nitro-test/sample-lib/1.0.0.zip");
+    let url = PhpHosted::format_dist_url(
+        "http://nitro-repo:8888",
+        false,
+        "test-storage",
+        "php-hosted",
+        &dist,
+    );
+    assert_eq!(
+        url,
+        "http://nitro-repo:8888/repositories/test-storage/php-hosted/dist/nitro-test/sample-lib/1.0.0.zip"
+    );
+}
+
+#[test]
+fn php_hosted_dist_url_falls_back_when_app_url_missing() {
+    use super::hosted::PhpHosted;
+    use nr_core::storage::StoragePath;
+
+    let dist = StoragePath::from("dist/nitro-test/sample-lib/1.0.0.zip");
+    let http_url = PhpHosted::format_dist_url("", false, "test-storage", "php-hosted", &dist);
+    assert_eq!(
+        http_url,
+        "http://localhost:6742/repositories/test-storage/php-hosted/dist/nitro-test/sample-lib/1.0.0.zip"
+    );
+
+    let https_url = PhpHosted::format_dist_url("", true, "test-storage", "php-hosted", &dist);
+    assert_eq!(
+        https_url,
+        "https://localhost:6742/repositories/test-storage/php-hosted/dist/nitro-test/sample-lib/1.0.0.zip"
+    );
+}
+
+#[test]
+fn php_hosted_composer_shasum_is_sha1_hex() {
+    use super::hosted::PhpHosted;
+
+    assert_eq!(
+        PhpHosted::composer_shasum_for_bytes(b"abc"),
+        "a9993e364706816aba3e25717850c26c9cd0d89d"
+    );
+}

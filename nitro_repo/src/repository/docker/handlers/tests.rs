@@ -168,6 +168,30 @@ async fn catalog_collection_lists_unique_sorted_repositories() -> anyhow::Result
 }
 
 #[test]
+fn docker_manifest_proxy_meta_populates_expected_fields() {
+    let cache_path = StoragePath::from("v2/acme/app/manifests/latest");
+    let meta = super::docker_manifest_proxy_meta(
+        "acme/app",
+        "acme/app",
+        "latest",
+        &cache_path,
+        "sha256:deadbeef",
+        42,
+    );
+
+    assert_eq!(
+        meta.kind(),
+        nr_core::repository::project::ProxyMetadataKind::ProxyArtifact
+    );
+    assert_eq!(meta.package_name, "acme/app");
+    assert_eq!(meta.package_key, "acme/app");
+    assert_eq!(meta.version.as_deref(), Some("latest"));
+    assert_eq!(meta.cache_path, cache_path.to_string());
+    assert_eq!(meta.upstream_digest.as_deref(), Some("sha256:deadbeef"));
+    assert_eq!(meta.size, Some(42));
+}
+
+#[test]
 fn catalog_pagination_respects_limit_and_last() {
     let repositories = vec![
         "alpha".to_string(),

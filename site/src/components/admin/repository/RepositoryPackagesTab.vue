@@ -62,17 +62,6 @@
         </v-alert>
       </v-card-text>
 
-      <v-card-text
-        v-if="!isLoading && indexingWarning"
-        class="pt-0 px-4">
-        <div
-          class="packages__indexing-alert"
-          role="status"
-          data-testid="packages-indexing-warning">
-          {{ indexingWarning }}
-        </div>
-      </v-card-text>
-
       <v-data-table-server
         v-if="!isLoading && !error && totalPackages > 0 && visiblePackages.length > 0"
         :headers="headers"
@@ -182,7 +171,6 @@ const props = defineProps<{
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
-const indexingWarning = ref<string | null>(null);
 const currentPage = ref(1);
 const perPage = ref(50);
 const totalPackages = ref(0);
@@ -319,6 +307,10 @@ const isDebRepository = computed(() => repositoryType.value === "deb");
 const isDockerProxy = computed(
   () => isDockerRepository.value && props.repositoryKind?.toLowerCase() === "proxy",
 );
+const isPhpRepository = computed(() => repositoryType.value === "php");
+const isPhpProxy = computed(
+  () => isPhpRepository.value && props.repositoryKind?.toLowerCase() === "proxy",
+);
 
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
@@ -344,7 +336,7 @@ const nameColumnTitle = computed(() => {
   if (isDockerRepository.value) {
     return "Tag";
   }
-  if (isDebRepository.value) {
+  if (isDebRepository.value || isPhpProxy.value) {
     return "Version";
   }
   return "Name";
@@ -360,9 +352,6 @@ const timestampColumnTitle = computed(() =>
 );
 
 const emptyRepositoryMessage = computed(() => {
-  if (indexingWarning.value) {
-    return "Repository indexing in progress. Use Reindex or upload a new package to finish cataloging.";
-  }
   if (isDockerRepository.value) {
     if (isDockerProxy.value) {
       return "No images cached yet. Pull an image through this proxy to populate the list.";
@@ -380,7 +369,6 @@ async function loadPackages() {
   }
   isLoading.value = true;
   error.value = null;
-  indexingWarning.value = null;
   try {
     const params: Record<string, any> = {
       page: currentPage.value,
@@ -394,8 +382,6 @@ async function loadPackages() {
       params,
     });
     const data = response.data ?? {};
-    const warning = response.headers?.["x-nitro-warning"];
-    indexingWarning.value = typeof warning === "string" ? warning : null;
     const items: PackageEntry[] = (data.items ?? []).map((item: any) => ({
       name: item.name,
       size: item.size,

@@ -8,7 +8,16 @@ use axum::http::header::CONTENT_TYPE;
 use bytes::Bytes;
 use chrono::{SecondsFormat, Utc};
 use futures::stream;
-use nr_core::{database::entities::repository::DBRepository, repository::Visibility};
+use nr_core::{
+    database::entities::{
+        project::{
+            DBProject, NewProject, ProjectDBType,
+            versions::{DBProjectVersion, NewVersion},
+        },
+        repository::DBRepository,
+    },
+    repository::Visibility,
+};
 use nr_storage::{DynStorage, Storage};
 use parking_lot::RwLock;
 use serde_json::{Value, json};
@@ -37,6 +46,7 @@ use super::{
 };
 use crate::repository::{RepositoryAuthConfigType, utils::RepositoryExt};
 use nr_core::repository::config::{RepositoryConfigType, repository_page::RepositoryPageType};
+use nr_core::repository::project::{ReleaseType, VersionData};
 use nr_core::user::permissions::RepositoryActions;
 
 #[derive(Debug)]
@@ -98,13 +108,14 @@ impl GoHosted {
         &self,
         request: RepositoryRequest,
     ) -> Result<RepoResponse, crate::repository::RepositoryHandlerError> {
-        let Some(_user) = request
+        let Some(user) = request
             .authentication
             .get_user_if_has_action(RepositoryActions::Write, self.id(), self.site().as_ref())
             .await?
         else {
             return Ok(RepoResponse::unauthorized());
         };
+        let publisher_id = user.id;
 
         let content_type = request
             .parts
@@ -372,6 +383,8 @@ impl GoHosted {
             .await?;
 
         self.ensure_version_list(&module_path, &version).await?;
+        self.record_go_catalog_entry(&module_path, &version, GoFileType::Zip, publisher_id)
+            .await?;
         if let Err(err) = self.refresh_latest_aliases(&module_path).await {
             warn!(
                 module = %module_path.as_str(),
@@ -386,6 +399,65 @@ impl GoHosted {
             "version": version.as_str()
         }));
         Ok(RepoResponse::Other(response))
+    }
+
+    async fn record_go_catalog_entry(
+        &self,
+        module_path: &GoModulePath,
+        version: &GoVersion,
+        file_type: GoFileType,
+        publisher_id: i32,
+    ) -> Result<(), crate::repository::RepositoryHandlerError> {
+        let repository_id = self.id();
+        let database = &self.site().database;
+        let project_key = module_path.as_str().to_string();
+        let storage_path = format!("{}/", module_path.as_str());
+
+        let project =
+            match DBProject::find_by_project_key(&project_key, repository_id, database).await? {
+                Some(existing) => existing,
+                None => {
+                    NewProject {
+                        scope: None,
+                        project_key: project_key.clone(),
+                        name: project_key.clone(),
+                        description: None,
+                        repository: repository_id,
+                        storage_path,
+                    }
+                    .insert(database)
+                    .await?
+                }
+            };
+
+        let new_priority = go_file_priority(file_type.clone());
+        if let Some(existing) =
+            DBProjectVersion::find_by_version_and_project(version.as_str(), project.id, database)
+                .await?
+        {
+            let existing_priority = go_path_priority(&existing.path);
+            if existing_priority >= new_priority {
+                return Ok(());
+            }
+            sqlx::query("DELETE FROM project_versions WHERE id = $1")
+                .bind(existing.id)
+                .execute(database)
+                .await?;
+        }
+
+        let version_path = go_cache_path(module_path, version, file_type);
+        let new_version = NewVersion {
+            project_id: project.id,
+            repository_id,
+            version: version.as_str().to_string(),
+            release_type: ReleaseType::release_type_from_version(version.as_str()),
+            version_path,
+            publisher: Some(publisher_id),
+            version_page: None,
+            extra: VersionData::default(),
+        };
+        new_version.insert(database).await?;
+        Ok(())
     }
 
     fn canonicalize_module_zip(
@@ -529,6 +601,37 @@ impl GoHosted {
             ))
         })?;
         Ok(cursor.into_inner())
+    }
+}
+
+const fn go_file_priority(file_type: GoFileType) -> u8 {
+    match file_type {
+        GoFileType::Zip => 3,
+        GoFileType::GoMod => 2,
+        GoFileType::Info => 1,
+        GoFileType::GoModWithoutVersion => 0,
+    }
+}
+
+fn go_path_priority(path: &str) -> u8 {
+    if path.ends_with(".zip") {
+        return 3;
+    }
+    if path.ends_with(".mod") {
+        return 2;
+    }
+    if path.ends_with(".info") {
+        return 1;
+    }
+    0
+}
+
+fn go_cache_path(module_path: &GoModulePath, version: &GoVersion, file_type: GoFileType) -> String {
+    match file_type {
+        GoFileType::Zip => format!("{}/@v/{}.zip", module_path.as_str(), version.as_str()),
+        GoFileType::GoMod => format!("{}/@v/{}.mod", module_path.as_str(), version.as_str()),
+        GoFileType::Info => format!("{}/@v/{}.info", module_path.as_str(), version.as_str()),
+        GoFileType::GoModWithoutVersion => format!("{}/go.mod", module_path.as_str()),
     }
 }
 
@@ -941,13 +1044,14 @@ impl Repository for GoHosted {
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
         let this = self.clone();
         async move {
-            let Some(_user) = request
+            let Some(user) = request
                 .authentication
                 .get_user_if_has_action(RepositoryActions::Write, this.id(), this.site().as_ref())
                 .await?
             else {
                 return Ok(RepoResponse::unauthorized());
             };
+            let publisher_id = user.id;
 
             let module_request =
                 GoModuleRequest::from_path(&request.path.to_string()).map_err(|err| {
@@ -1034,6 +1138,8 @@ impl Repository for GoHosted {
             }
 
             this.save_go_module_file(&module_path, &version, file_type.clone(), bytes.to_vec())
+                .await?;
+            this.record_go_catalog_entry(&module_path, &version, file_type.clone(), publisher_id)
                 .await?;
 
             match file_type {

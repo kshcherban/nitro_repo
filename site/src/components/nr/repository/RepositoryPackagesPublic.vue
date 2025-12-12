@@ -32,14 +32,6 @@
     </header>
 
     <div
-      v-if="indexingWarning"
-      class="packages__indexing-warning"
-      role="status"
-      data-testid="public-packages-indexing-warning">
-      {{ indexingWarning }}
-    </div>
-
-    <div
       v-if="isLoading"
       class="packages__state">
       Loading packages...
@@ -239,7 +231,6 @@ const props = defineProps<{
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
-const indexingWarning = ref<string | null>(null);
 const currentPage = ref(1);
 const perPageOptions = [50, 100, 200];
 const perPage = ref(100);
@@ -280,6 +271,10 @@ const isDebRepository = computed(() => repositoryType.value === "deb");
 const isDockerProxy = computed(
   () => isDockerRepository.value && props.repositoryKind?.toLowerCase() === "proxy",
 );
+const isPhpRepository = computed(() => repositoryType.value === "php");
+const isPhpProxy = computed(
+  () => isPhpRepository.value && props.repositoryKind?.toLowerCase() === "proxy",
+);
 
 const isHostedRepository = computed(() => {
   if (props.repositoryKind) {
@@ -307,10 +302,7 @@ const nameColumnTitle = computed(() => {
   if (isDockerRepository.value) {
     return "Tag";
   }
-  if (isGoRepository.value) {
-    return "Version";
-  }
-  if (isDebRepository.value) {
+  if (isGoRepository.value || isDebRepository.value || isPhpProxy.value) {
     return "Version";
   }
   return "Name";
@@ -371,26 +363,9 @@ const orderedPackages = computed(() => {
   return sorted;
 });
 
-const normalizedPackageSearch = computed(() => packageSearchTerm.value.trim().toLowerCase());
+const normalizedPackageSearch = computed(() => packageSearchTerm.value.trim());
 
-const visiblePackages = computed(() => {
-  const term = normalizedPackageSearch.value;
-  if (!term) {
-    return orderedPackages.value;
-  }
-  return orderedPackages.value.filter((pkg) => {
-    const haystack = [
-      pkg.package,
-      pkg.name,
-      pkg.cachePath,
-      formatBytes(pkg.size),
-      formatTimestamp(pkg.modified),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(term);
-  });
-});
+const visiblePackages = computed(() => orderedPackages.value);
 
 const totalPages = computed(() => {
   if (totalPackages.value === 0) {
@@ -412,9 +387,6 @@ const pageLabel = computed(() => {
 });
 
 const emptyRepositoryMessage = computed(() => {
-  if (indexingWarning.value) {
-    return "Repository indexing in progress. Results will appear once cataloging finishes.";
-  }
   if (isDockerRepository.value) {
     if (isDockerProxy.value) {
       return "No images cached yet. Pull an image through this proxy to populate the list.";
@@ -435,17 +407,19 @@ async function loadPackages() {
   lastRequestToken.value = requestToken;
   isLoading.value = true;
   error.value = null;
-  indexingWarning.value = null;
   try {
+    const search = normalizedPackageSearch.value;
     const response = await http.get(`/api/repository/${props.repositoryId}/packages`, {
-      params: { page: currentPage.value, per_page: perPage.value },
+      params: {
+        page: currentPage.value,
+        per_page: perPage.value,
+        ...(search ? { q: search } : {}),
+      },
     });
     if (lastRequestToken.value !== requestToken) {
       return;
     }
     const data = response.data ?? {};
-    const warning = response.headers?.["x-nitro-warning"];
-    indexingWarning.value = typeof warning === "string" ? warning : null;
     const items: PackageEntry[] = (data.items ?? []).map((item: any) => ({
       name: item.name ?? "",
       size: Number(item.size ?? 0),
@@ -595,10 +569,16 @@ function rowKey(pkg: PackageEntry): string {
 
 function onSearchInput(event: Event) {
   const target = event.target as HTMLInputElement;
+  if (currentPage.value !== 1) {
+    currentPage.value = 1;
+  }
   packageSearchTerm.value = target.value;
 }
 
 function clearPackageSearch() {
+  if (currentPage.value !== 1) {
+    currentPage.value = 1;
+  }
   packageSearchTerm.value = "";
 }
 
@@ -622,7 +602,8 @@ watch(
 );
 
 watch(
-  () => [props.repositoryId, currentPage.value, perPage.value] as const,
+  () =>
+    [props.repositoryId, currentPage.value, perPage.value, normalizedPackageSearch.value] as const,
   ([repositoryId]) => {
     if (!repositoryId) {
       return;
@@ -635,10 +616,12 @@ watch(
 // Enable resizable columns
 const { initResizable: initPackageTableResizers } = useResizableColumns('.packages__table');
 
+const visibleColumnSignature = computed(() => visibleColumns.value.map((column) => column.key).join("|"));
+
 watch(
-  () => visiblePackages.value.length,
-  (length) => {
-    if (length === 0) {
+  () => [isLoading.value, visibleColumnSignature.value] as const,
+  ([loading]) => {
+    if (loading || visiblePackages.value.length === 0) {
       return;
     }
     nextTick(() => {

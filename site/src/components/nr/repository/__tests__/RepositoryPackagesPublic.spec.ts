@@ -198,24 +198,36 @@ describe("RepositoryPackagesPublic.vue", () => {
   });
 
   it("filters packages with the inline search input", async () => {
-    (http.get as vi.Mock).mockResolvedValue(
-      createPackages([
-        {
-          package: "pkg-one",
-          name: "One",
-          size: 1024,
-          cache_path: "cache/pkg-one",
-          modified: "2025-11-05T09:30:00Z",
-        },
-        {
-          package: "pkg-two",
-          name: "Two",
-          size: 2048,
-          cache_path: "cache/pkg-two",
-          modified: "2025-11-05T11:30:00Z",
-        },
-      ]),
-    );
+    (http.get as vi.Mock)
+      .mockResolvedValueOnce(
+        createPackages([
+          {
+            package: "pkg-one",
+            name: "One",
+            size: 1024,
+            cache_path: "cache/pkg-one",
+            modified: "2025-11-05T09:30:00Z",
+          },
+          {
+            package: "pkg-two",
+            name: "Two",
+            size: 2048,
+            cache_path: "cache/pkg-two",
+            modified: "2025-11-05T11:30:00Z",
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        createPackages([
+          {
+            package: "pkg-two",
+            name: "Two",
+            size: 2048,
+            cache_path: "cache/pkg-two",
+            modified: "2025-11-05T11:30:00Z",
+          },
+        ]),
+      );
 
     const wrapper = mount(RepositoryPackagesPublic, {
       props: {
@@ -234,12 +246,52 @@ describe("RepositoryPackagesPublic.vue", () => {
     await wrapper.get('[data-testid="packages-search-input"]').setValue("two");
     await flushPromises();
 
+    expect(http.get).toHaveBeenLastCalledWith(
+      "/api/repository/repo-xyz/packages",
+      expect.objectContaining({
+        params: expect.objectContaining({
+          q: "two",
+        }),
+      }),
+    );
+
     const rows = wrapper.findAll('[data-testid="package-row"]');
     expect(rows).toHaveLength(1);
     expect(rows[0].find('[data-testid="package-cell"]').text()).toBe("pkg-two");
   });
 
-  it("shows indexing warning when backend signals indexing", async () => {
+  it("labels name column as Version for PHP proxy repositories", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "acme/example",
+          name: "1.2.3",
+          size: 1024,
+          cache_path: "dist/acme/example/1.2.3/pkg-1.2.3.zip",
+          modified: "2025-12-10T12:00:00Z",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-php-proxy",
+        repositoryType: "php",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const nameHeader = wrapper.find('th[data-column="name"]');
+    expect(nameHeader.exists()).toBe(true);
+    expect(nameHeader.text()).toContain("Version");
+  });
+
+  it("ignores indexing warning headers", async () => {
     (http.get as vi.Mock).mockResolvedValue(
       createPackages([], 0, { "x-nitro-warning": "Repository indexing in progress" }),
     );
@@ -256,8 +308,9 @@ describe("RepositoryPackagesPublic.vue", () => {
     await flushPromises();
 
     const warning = wrapper.find('[data-testid="public-packages-indexing-warning"]');
-    expect(warning.exists()).toBe(true);
-    expect(warning.text()).toContain("Repository indexing in progress");
+    expect(warning.exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Repository indexing in progress");
+    expect(wrapper.text()).toContain("No cached packages yet. Trigger a download to populate this list.");
   });
 
   it("persists column visibility preferences per repository", async () => {
@@ -319,5 +372,72 @@ describe("RepositoryPackagesPublic.vue", () => {
 
     await flushPromises();
     expect(wrapperAgain.find('th[data-column="path"]').exists()).toBe(false);
+  });
+
+  it("keeps column resizers after navigating to the next page", async () => {
+    vi.useFakeTimers();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    try {
+      const buildPage = (page: number) =>
+        Array.from({ length: 100 }, (_, idx) => ({
+          package: `pkg-${page}-${idx}`,
+          name: `Name ${page}-${idx}`,
+          size: 1024 + idx,
+          cache_path: `cache/pkg-${page}-${idx}`,
+          modified: "2025-12-01T00:00:00Z",
+        }));
+
+      (http.get as vi.Mock).mockImplementation((_url: string, config?: any) => {
+        const page = Number(config?.params?.page ?? 1);
+        if (page === 1) {
+          return Promise.resolve(createPackages(buildPage(1), 200));
+        }
+        if (page === 2) {
+          return Promise.resolve(createPackages(buildPage(2), 200));
+        }
+        return Promise.resolve(createPackages([], 200));
+      });
+
+      const wrapper = mount(RepositoryPackagesPublic, {
+        attachTo: host,
+        props: {
+          repositoryId: "repo-paged",
+          repositoryType: "python",
+          repositoryKind: "proxy",
+        },
+        global: {
+          stubs: vuetifyStubs,
+        },
+      });
+
+      await flushPromises();
+      await wrapper.vm.$nextTick();
+
+      const firstPageHeaders = wrapper.findAll(".packages__table th");
+      expect(firstPageHeaders.length).toBeGreaterThan(0);
+      expect(wrapper.findAll(".packages__table th .column-resizer")).toHaveLength(
+        firstPageHeaders.length,
+      );
+
+      const nextButton = wrapper
+        .findAll('button[data-stub="v-btn"]')
+        .find((button) => button.text().trim() === "Next");
+      expect(nextButton).toBeTruthy();
+
+      await nextButton!.trigger("click");
+      await flushPromises();
+      await wrapper.vm.$nextTick();
+
+      const secondPageHeaders = wrapper.findAll(".packages__table th");
+      expect(secondPageHeaders.length).toBeGreaterThan(0);
+      expect(wrapper.findAll(".packages__table th .column-resizer")).toHaveLength(
+        secondPageHeaders.length,
+      );
+      wrapper.unmount();
+    } finally {
+      host.remove();
+      vi.useRealTimers();
+    }
   });
 });

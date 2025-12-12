@@ -19,7 +19,7 @@ use nr_core::{
 use nr_storage::{DynStorage, FileContent, Storage, StorageFile};
 use parking_lot::RwLock;
 use serde_json::to_value;
-use sha2::{Digest, Sha256};
+use sha1::{Digest, Sha1};
 use tempfile::{NamedTempFile, TempPath};
 use tokio::{fs::File, io::AsyncWriteExt};
 use uuid::Uuid;
@@ -56,6 +56,13 @@ pub struct PhpRepositoryInner {
 pub struct PhpHosted(pub Arc<PhpRepositoryInner>);
 
 impl PhpHosted {
+    #[cfg(test)]
+    pub(super) fn composer_shasum_for_bytes(bytes: &[u8]) -> String {
+        let mut hasher = Sha1::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
     pub async fn load(
         site: NitroRepo,
         storage: DynStorage,
@@ -121,12 +128,40 @@ impl PhpHosted {
         ))
     }
 
-    fn dist_url(&self, dist: &StoragePath) -> String {
+    pub(super) fn format_dist_url(
+        app_url: &str,
+        is_https: bool,
+        storage_name: &str,
+        repo_name: &str,
+        dist: &StoragePath,
+    ) -> String {
+        let base = if !app_url.is_empty() {
+            app_url.trim_end_matches('/').to_string()
+        } else {
+            // Best-effort fallback for environments that haven't configured a public URL.
+            // Keep this consistent with other repos (e.g. PHP proxy).
+            let scheme = if is_https { "https" } else { "http" };
+            format!("{scheme}://localhost:6742")
+        };
+
         format!(
-            "/repositories/{}/{}/{}",
+            "{base}/repositories/{storage_name}/{repo_name}/{dist}",
+            base = base,
+            storage_name = storage_name,
+            repo_name = repo_name,
+            dist = dist
+        )
+    }
+
+    fn dist_url(&self, dist: &StoragePath) -> String {
+        let site = self.site();
+        let instance = site.inner.instance.lock();
+        Self::format_dist_url(
+            &instance.app_url,
+            instance.is_https,
             self.storage_name(),
-            self.name(),
-            dist
+            &self.name(),
+            dist,
         )
     }
 
@@ -154,7 +189,7 @@ impl PhpHosted {
         &self,
         package: &ComposerPackage,
         dist_path: &StoragePath,
-        sha256: Option<String>,
+        shasum: Option<String>,
     ) -> Result<(), PhpRepositoryError> {
         let (vendor, package_name) = package.name.split_once('/').ok_or_else(|| {
             PhpRepositoryError::InvalidComposer("package name missing vendor".into())
@@ -164,11 +199,11 @@ impl PhpHosted {
         let dist_url = self.dist_url(dist_path);
         let doc = match self.load_metadata(&metadata_path).await? {
             Some(mut existing) => {
-                existing.add_version(package, dist_url.clone(), sha256.clone());
+                existing.add_version(package, dist_url.clone(), shasum.clone());
                 existing
             }
             None => {
-                ComposerMetadataDocument::with_version(package, dist_url.clone(), sha256.clone())
+                ComposerMetadataDocument::with_version(package, dist_url.clone(), shasum.clone())
             }
         };
 
@@ -257,7 +292,7 @@ impl PhpHosted {
         &self,
         body: RepositoryRequestBody,
     ) -> Result<(TempPath, String), PhpRepositoryError> {
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha1::new();
         let temp = NamedTempFile::new()
             .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?;
         let mut writer = File::from_std(
@@ -278,9 +313,9 @@ impl PhpHosted {
             .flush()
             .await
             .map_err(|err| PhpRepositoryError::InvalidComposer(err.to_string()))?;
-        let sha256 = format!("{:x}", hasher.finalize());
+        let shasum = format!("{:x}", hasher.finalize());
         let path = temp.into_temp_path();
-        Ok((path, sha256))
+        Ok((path, shasum))
     }
 
     async fn ingest_upload(
@@ -304,7 +339,7 @@ impl PhpHosted {
         };
 
         let body = request.body;
-        let (temp_path, sha256) = self.receive_upload(body).await?;
+        let (temp_path, shasum) = self.receive_upload(body).await?;
         let archive_path = PathBuf::from(temp_path.as_ref() as &std::path::Path);
         let composer =
             tokio::task::spawn_blocking(move || extract_composer_from_zip(&archive_path))
@@ -322,7 +357,7 @@ impl PhpHosted {
             )
             .await?;
 
-        self.write_metadata(&composer, &dist_storage_path, Some(sha256.clone()))
+        self.write_metadata(&composer, &dist_storage_path, Some(shasum.clone()))
             .await?;
         self.upsert_metadata(Some(user.id), &composer, &dist_storage_path)
             .await?;

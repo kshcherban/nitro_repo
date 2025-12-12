@@ -932,19 +932,19 @@ fn validate_maven_cache_paths() {
 fn validate_docker_manifest_paths() {
     assert!(is_valid_cache_path(
         "v2/library/nginx/manifests/latest",
-        PackageStrategy::Docker,
+        PackageStrategy::DockerHosted,
     ));
     assert!(!is_valid_cache_path(
         "/v2/library/nginx/manifests/latest",
-        PackageStrategy::Docker,
+        PackageStrategy::DockerHosted,
     ));
     assert!(!is_valid_cache_path(
         "v2/library/nginx/blobs/sha256:abc",
-        PackageStrategy::Docker,
+        PackageStrategy::DockerHosted,
     ));
     assert!(!is_valid_cache_path(
         "v2/library/../../etc/passwd",
-        PackageStrategy::Docker,
+        PackageStrategy::DockerHosted,
     ));
 }
 
@@ -1094,7 +1094,7 @@ async fn load_php_version_entries_reads_dist_file() -> Result<()> {
         .save_file(repository_id, FileContent::from(&content[..]), &dist_path)
         .await?;
 
-    let row = super::MavenVersionRow {
+    let row = super::HostedCatalogRow {
         project_key: "acme/example".into(),
         version: "1.2.3".into(),
         version_path: dist_path.to_string(),
@@ -1116,7 +1116,7 @@ async fn load_php_version_entries_reads_dist_file() -> Result<()> {
 }
 
 #[tokio::test]
-async fn load_php_version_entries_prefers_proxy_metadata() -> Result<()> {
+async fn load_php_version_entries_skips_proxy_metadata_when_dist_missing() -> Result<()> {
     let (storage, _tempdir) = local_storage().await?;
     let repository_id = Uuid::new_v4();
     let fetched_at = chrono::Utc
@@ -1129,15 +1129,17 @@ async fn load_php_version_entries_prefers_proxy_metadata() -> Result<()> {
         "acme/example",
         "dist/acme/example/1.2.3/pkg-1.2.3.zip",
     )
+    // Metadata-only entries created from upstream composer metadata do not
+    // have a size set; they must not appear in the packages list until the
+    // corresponding dist file has been cached.
     .version("1.2.3")
     .upstream_url("https://files.example.com/dist/pkg-1.2.3.zip")
-    .size(2048)
     .fetched_at(fetched_at)
     .build();
     let mut version_data = VersionData::default();
     version_data.set_proxy_artifact(&meta)?;
 
-    let row = super::MavenVersionRow {
+    let row = super::HostedCatalogRow {
         project_key: "acme/example".into(),
         version: "1.2.3".into(),
         version_path: meta.cache_path.clone(),
@@ -1149,11 +1151,59 @@ async fn load_php_version_entries_prefers_proxy_metadata() -> Result<()> {
         .await
         .expect("entries");
 
+    // Without a cached dist on storage, proxy rows should be hidden.
+    assert!(entries.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_php_version_entries_uses_proxy_metadata_for_cached_dist() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository_id = Uuid::new_v4();
+    let fetched_at = chrono::Utc
+        .with_ymd_and_hms(2025, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+
+    let cache_path = "dist/acme/example/1.2.3/pkg-1.2.3.zip";
+    let storage_path = nr_core::storage::StoragePath::from(cache_path);
+    let content = b"cached-zip-bytes";
+    storage
+        .save_file(
+            repository_id,
+            FileContent::from(&content[..]),
+            &storage_path,
+        )
+        .await?;
+
+    let meta = ProxyArtifactMeta::builder("acme/example", "acme/example", cache_path)
+        .version("1.2.3")
+        .upstream_url("https://files.example.com/dist/pkg-1.2.3.zip")
+        .size(2048)
+        .fetched_at(fetched_at)
+        .build();
+    let mut version_data = VersionData::default();
+    version_data.set_proxy_artifact(&meta)?;
+
+    let row = super::HostedCatalogRow {
+        project_key: "acme/example".into(),
+        version: "1.2.3".into(),
+        version_path: cache_path.to_string(),
+        version_data: sqlx::types::Json(version_data),
+        updated_at: fetched_at.fixed_offset(),
+    };
+
+    let entries = super::load_php_version_entries(storage, repository_id, row)
+        .await
+        .expect("entries");
+
     assert_eq!(entries.len(), 1);
     let entry = &entries[0];
+    // Package/name fields and size come from proxy metadata stored in the
+    // catalog; presence of a size marks dists that have been cached.
     assert_eq!(entry.package, "acme/example");
     assert_eq!(entry.name, "1.2.3");
-    assert_eq!(entry.cache_path, meta.cache_path);
+    assert_eq!(entry.cache_path, cache_path);
     assert_eq!(entry.size, 2048);
     assert_eq!(entry.modified, fetched_at.fixed_offset());
     Ok(())
@@ -1338,6 +1388,18 @@ mod catalog_db_tests {
         version: &str,
         version_path: &str,
     ) {
+        insert_maven_version_named(pool, repository_id, project_key, project_key, version, version_path)
+            .await;
+    }
+
+    async fn insert_maven_version_named(
+        pool: &PgPool,
+        repository_id: Uuid,
+        project_key: &str,
+        project_name: &str,
+        version: &str,
+        version_path: &str,
+    ) {
         let project = if let Some(existing) =
             DBProject::find_by_project_key(project_key, repository_id, pool)
                 .await
@@ -1348,7 +1410,7 @@ mod catalog_db_tests {
             NewProject {
                 scope: None,
                 project_key: project_key.to_string(),
-                name: project_key.to_string(),
+                name: project_name.to_string(),
                 description: None,
                 repository: repository_id,
                 storage_path: format!("{project_key}/"),
@@ -1652,6 +1714,40 @@ mod catalog_db_tests {
     }
 
     #[tokio::test]
+    async fn fetch_npm_proxy_catalog_page_filters_by_project_name() {
+        let _guard = DB_LOCK.lock().await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
+
+        let storage_id = insert_storage(db.pool()).await;
+        let repository_id = insert_npm_repository(db.pool(), storage_id).await;
+        let fetched = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+
+        insert_proxy_version(
+            db.pool(),
+            repository_id,
+            "abc123",
+            "TotallyDifferentName",
+            "1.0.0",
+            "packages/abc123/abc123-1.0.0.tgz",
+            1_111,
+            fetched,
+        )
+        .await;
+
+        let rows =
+            super::fetch_npm_proxy_catalog_page(db.pool(), repository_id, 10, 0, Some("different"))
+                .await
+                .expect("filtered page");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].project_key, "abc123");
+    }
+
+    #[tokio::test]
     async fn npm_proxy_rows_convert_to_package_entries() {
         let _guard = DB_LOCK.lock().await;
         let db = fresh_pool().await;
@@ -1688,5 +1784,136 @@ mod catalog_db_tests {
         assert_eq!(entry.cache_path, "packages/left-pad/left-pad-3.0.0.tgz");
         assert_eq!(entry.size, 4_444);
         assert_eq!(entry.modified, expected_modified);
+    }
+
+    #[tokio::test]
+    async fn catalog_pagination_and_search_match_between_hosted_and_proxy_queries() {
+        let _guard = DB_LOCK.lock().await;
+        let db = fresh_pool().await;
+        reset_database(&db).await;
+
+        let storage_id = insert_storage(db.pool()).await;
+        let hosted_repository_id = insert_repository(db.pool(), storage_id).await;
+        let proxy_repository_id = insert_npm_repository(db.pool(), storage_id).await;
+        let fetched = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+
+        for (key, name, version) in [
+            ("aaa", "TotallyDifferentName", "1.0.0"),
+            ("bbb", "bbb", "1.0.0"),
+            ("bbb", "bbb", "2.0.0"),
+            ("ccc", "ccc", "1.0.0"),
+        ] {
+            let hosted_path = format!("packages/{key}/{key}-{version}.tgz");
+            let proxy_path = hosted_path.clone();
+
+            insert_maven_version_named(
+                db.pool(),
+                hosted_repository_id,
+                key,
+                name,
+                version,
+                &hosted_path,
+            )
+            .await;
+
+            insert_proxy_version(
+                db.pool(),
+                proxy_repository_id,
+                key,
+                name,
+                version,
+                &proxy_path,
+                1_111,
+                fetched,
+            )
+            .await;
+        }
+
+        let hosted_first = super::fetch_maven_catalog_page(db.pool(), hosted_repository_id, 2, 0, None)
+            .await
+            .expect("hosted first page");
+        let proxy_first = super::fetch_proxy_catalog_page(db.pool(), proxy_repository_id, 2, 0, None)
+            .await
+            .expect("proxy first page");
+        assert_eq!(
+            hosted_first
+                .iter()
+                .map(|row| (row.project_key.clone(), row.version.clone()))
+                .collect::<Vec<_>>(),
+            proxy_first
+                .iter()
+                .map(|row| (row.project_key.clone(), row.version.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        let hosted_second =
+            super::fetch_maven_catalog_page(db.pool(), hosted_repository_id, 2, 2, None)
+                .await
+                .expect("hosted second page");
+        let proxy_second =
+            super::fetch_proxy_catalog_page(db.pool(), proxy_repository_id, 2, 2, None)
+                .await
+                .expect("proxy second page");
+        assert_eq!(
+            hosted_second
+                .iter()
+                .map(|row| (row.project_key.clone(), row.version.clone()))
+                .collect::<Vec<_>>(),
+            proxy_second
+                .iter()
+                .map(|row| (row.project_key.clone(), row.version.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        let hosted_named = super::fetch_maven_catalog_page(
+            db.pool(),
+            hosted_repository_id,
+            10,
+            0,
+            Some("different"),
+        )
+        .await
+        .expect("hosted name search");
+        let proxy_named = super::fetch_proxy_catalog_page(
+            db.pool(),
+            proxy_repository_id,
+            10,
+            0,
+            Some("different"),
+        )
+        .await
+        .expect("proxy name search");
+        assert_eq!(hosted_named.len(), 1);
+        assert_eq!(proxy_named.len(), 1);
+        assert_eq!(hosted_named[0].project_key, "aaa");
+        assert_eq!(proxy_named[0].project_key, "aaa");
+
+        let hosted_version = super::fetch_maven_catalog_page(
+            db.pool(),
+            hosted_repository_id,
+            10,
+            0,
+            Some("2.0.0"),
+        )
+        .await
+        .expect("hosted version search");
+        let proxy_version = super::fetch_proxy_catalog_page(
+            db.pool(),
+            proxy_repository_id,
+            10,
+            0,
+            Some("2.0.0"),
+        )
+        .await
+        .expect("proxy version search");
+        assert_eq!(hosted_version.len(), 1);
+        assert_eq!(proxy_version.len(), 1);
+        assert_eq!(hosted_version[0].project_key, "bbb");
+        assert_eq!(proxy_version[0].project_key, "bbb");
+        assert_eq!(hosted_version[0].version, "2.0.0");
+        assert_eq!(proxy_version[0].version, "2.0.0");
     }
 }

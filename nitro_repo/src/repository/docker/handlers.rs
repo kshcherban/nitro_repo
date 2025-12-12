@@ -7,8 +7,14 @@ use axum::body::Body;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::StreamExt;
 use http::StatusCode;
+use nr_core::database::entities::project::{
+    DBProject, NewProject, ProjectDBType,
+    versions::{DBProjectVersion, NewVersion},
+};
+use nr_core::repository::project::{ProxyArtifactMeta, ReleaseType, VersionData};
 use nr_core::{
     storage::{FileHashes, StoragePath},
     utils::base64_utils,
@@ -26,7 +32,7 @@ use url::form_urlencoded;
 
 use super::{
     DockerError, DockerHosted, RepoResponse, Repository, RepositoryHandlerError, RepositoryRequest,
-    metadata::collect_manifest_entries,
+    metadata::{collect_manifest_entries, docker_package_key},
     types::{Manifest, MediaType},
 };
 use crate::{
@@ -35,6 +41,88 @@ use crate::{
     utils::ResponseBuilder,
 };
 use uuid::Uuid;
+
+async fn record_manifest_in_catalog(
+    database: &sqlx::PgPool,
+    repository_id: Uuid,
+    repository_name: &str,
+    reference: &str,
+    cache_path: &StoragePath,
+    digest: &str,
+    size: u64,
+    publisher: Option<i32>,
+) -> Result<(), DockerError> {
+    let package_key = docker_package_key(repository_name);
+    let storage_path = format!("v2/{}/", repository_name.trim_matches('/'));
+    let project =
+        match DBProject::find_by_project_key(&package_key, repository_id, database).await? {
+            Some(existing) => existing,
+            None => {
+                NewProject {
+                    scope: None,
+                    project_key: package_key.clone(),
+                    name: repository_name.to_string(),
+                    description: None,
+                    repository: repository_id,
+                    storage_path,
+                }
+                .insert(database)
+                .await?
+            }
+        };
+
+    if let Some(existing) =
+        DBProjectVersion::find_by_version_and_project(reference, project.id, database).await?
+    {
+        sqlx::query("DELETE FROM project_versions WHERE id = $1")
+            .bind(existing.id)
+            .execute(database)
+            .await?;
+    }
+
+    let mut version_data = VersionData::default();
+    version_data.set_proxy_artifact(&docker_manifest_proxy_meta(
+        repository_name,
+        &package_key,
+        reference,
+        cache_path,
+        digest,
+        size,
+    ))?;
+
+    let new_version = NewVersion {
+        project_id: project.id,
+        repository_id,
+        version: reference.to_string(),
+        release_type: ReleaseType::release_type_from_version(reference),
+        version_path: cache_path.to_string(),
+        publisher,
+        version_page: None,
+        extra: version_data,
+    };
+    new_version.insert(database).await?;
+    Ok(())
+}
+
+fn docker_manifest_proxy_meta(
+    repository_name: &str,
+    package_key: &str,
+    reference: &str,
+    cache_path: &StoragePath,
+    digest: &str,
+    size: u64,
+) -> ProxyArtifactMeta {
+    ProxyArtifactMeta::builder(
+        repository_name.to_string(),
+        package_key.to_string(),
+        cache_path.to_string(),
+    )
+    .version(reference.to_string())
+    .upstream_digest(digest.to_string())
+    .size(size)
+    .fetched_at(Utc::now())
+    .build()
+}
 
 /// Helper to extract bytes from StorageFile
 async fn get_file_bytes(storage_file: StorageFile) -> Result<Vec<u8>, DockerError> {
@@ -890,6 +978,7 @@ async fn put_manifest(
     if request.authentication.get_user().is_none() {
         return Ok(RepoResponse::unauthorized());
     }
+    let publisher = request.authentication.get_user().map(|user| user.id);
 
     let content_type = request
         .parts
@@ -899,6 +988,7 @@ async fn put_manifest(
         .unwrap_or(MediaType::OCI_IMAGE_MANIFEST);
 
     let body = request.body.body_as_bytes().await?;
+    let body_size = body.len() as u64;
 
     // Parse and validate manifest
     let _manifest = Manifest::from_bytes(&body, content_type)
@@ -934,6 +1024,17 @@ async fn put_manifest(
     repo.get_storage()
         .save_file(repo.id(), body.clone().into(), &manifest_path)
         .await?;
+    record_manifest_in_catalog(
+        &repo.site().database,
+        repo.id(),
+        repository_name,
+        reference,
+        &manifest_path,
+        &digest,
+        body_size,
+        publisher,
+    )
+    .await?;
 
     // Also save by digest if this is a tag reference
     if !reference.starts_with("sha256:") {
@@ -941,6 +1042,17 @@ async fn put_manifest(
         repo.get_storage()
             .save_file(repo.id(), body.into(), &digest_path)
             .await?;
+        record_manifest_in_catalog(
+            &repo.site().database,
+            repo.id(),
+            repository_name,
+            &digest,
+            &digest_path,
+            &digest,
+            body_size,
+            publisher,
+        )
+        .await?;
     }
 
     Ok(custom_response(

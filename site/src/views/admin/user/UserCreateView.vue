@@ -250,7 +250,7 @@ function resolveUserCreateError(error: unknown): {
     const status = error.response?.status;
     const data = error.response?.data;
     const api = normalizeApiError(data);
-    let payloadMessage = api.message;
+    const payloadMessage = api.message;
 
     if (status === 400) {
       return {

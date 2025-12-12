@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+
 const storageFactory = () => {
   let store: Record<string, string> = {};
   return {
@@ -34,3 +36,14 @@ Object.defineProperty(globalThis, "sessionStorage", {
   configurable: true,
   writable: true,
 });
+
+// Stub the alerts store globally to avoid needing an active Pinia instance in component tests.
+vi.mock("@/stores/alerts", () => ({
+  useAlertsStore: () => ({
+    push: vi.fn(),
+    success: vi.fn(),
+    error: vi.fn(),
+    dismiss: vi.fn(),
+    clear: vi.fn(),
+  }),
+}));
