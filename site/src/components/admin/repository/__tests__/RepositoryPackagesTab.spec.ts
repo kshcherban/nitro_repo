@@ -163,6 +163,26 @@ const vuetifyStubs = {
 };
 
 describe("RepositoryPackagesTab.vue", () => {
+  it("offers 500 and 1000 items per page", async () => {
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "1",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const select = wrapper.getComponent(VSelectStub);
+    const items = select.props("items") as unknown as number[] | undefined;
+    expect(items).toBeDefined();
+    expect(items).toContain(500);
+    expect(items).toContain(1000);
+  });
+
   it("marks search field clearable and clears search term", async () => {
     const wrapper = mount(RepositoryPackagesTab, {
       props: {

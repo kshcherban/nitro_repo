@@ -215,6 +215,38 @@ async fn directory_package_pagination_respects_page_window() -> Result<()> {
 }
 
 #[tokio::test]
+async fn directory_package_pagination_allows_large_page_sizes() -> Result<()> {
+    let (storage, _tempdir) = local_storage().await?;
+    let repository = Uuid::new_v4();
+
+    for idx in 0..250 {
+        let pkg = format!("pkg-{idx:03}");
+        let path = format!("packages/{pkg}/{pkg}.tar.gz");
+        storage
+            .save_file(
+                repository,
+                FileContent::from(b"archive".as_slice()),
+                &nr_core::storage::StoragePath::from(path),
+            )
+            .await?;
+    }
+
+    let response = super::collect_directory_package_page(
+        &storage,
+        repository,
+        Some("packages/"),
+        1,
+        500,
+        None,
+    )
+    .await?;
+
+    assert_eq!(response.total_packages, 250);
+    assert_eq!(response.items.len(), 250);
+    Ok(())
+}
+
+#[tokio::test]
 async fn go_package_pagination_respects_page_window() -> Result<()> {
     let (storage, _tempdir) = local_storage().await?;
     let repository = Uuid::new_v4();

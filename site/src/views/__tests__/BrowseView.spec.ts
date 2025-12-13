@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
+import { defineComponent } from "vue";
 
 const mockLocalStorage = {
   getItem: () => null,
@@ -122,9 +123,15 @@ describe("BrowseView", () => {
           BrowseProject: {
             template: "<div data-testid='browse-project'></div>",
           },
-          RepositoryPackagesPublic: {
+          RepositoryPackagesPublic: defineComponent({
+            props: {
+              perPageOptions: {
+                type: Array,
+                default: undefined,
+              },
+            },
             template: "<div data-testid='packages-public'></div>",
-          },
+          }),
         },
       },
     });
@@ -136,5 +143,67 @@ describe("BrowseView", () => {
     await flushPromises();
 
     expect(wrapper.find("[data-testid='packages-public']").exists()).toBe(true);
+  });
+
+  it("passes expanded per-page package options to packages table", async () => {
+    http.get.mockImplementation((url: string) => {
+      if (url === "/api/repository/repo-php") {
+        return Promise.resolve({
+          data: {
+            id: "repo-php",
+            name: "composer-hosted",
+            storage_id: "storage-123",
+            storage_name: "primary",
+            repository_type: "php",
+            repository_kind: "hosted",
+            visibility: "Private",
+            active: true,
+            updated_at: "2025-12-08T12:00:00Z",
+            created_at: "2025-12-08T10:00:00Z",
+            auth_enabled: true,
+            storage_usage_bytes: null,
+            storage_usage_updated_at: null,
+          },
+        });
+      }
+      return Promise.reject(new Error(`Unhandled URL ${url}`));
+    });
+
+    const BrowseView = (await import("@/views/BrowseView.vue")).default;
+
+    const RepositoryPackagesPublicStub = defineComponent({
+      props: {
+        perPageOptions: {
+          type: Array,
+          default: undefined,
+        },
+      },
+      template: "<div data-testid='packages-public'></div>",
+    });
+
+    const wrapper = mount(BrowseView, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          BrowseHeader: {
+            template: "<div data-testid='browse-header'></div>",
+          },
+          BrowseList: {
+            template: "<div data-testid='browse-list'></div>",
+          },
+          BrowseProject: {
+            template: "<div data-testid='browse-project'></div>",
+          },
+          RepositoryPackagesPublic: RepositoryPackagesPublicStub,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    const packages = wrapper.getComponent(RepositoryPackagesPublicStub);
+    const options = packages.props("perPageOptions") as unknown as number[] | undefined;
+    expect(options).toBeDefined();
+    expect(options).toEqual([50, 100, 200, 500, 1000]);
   });
 });

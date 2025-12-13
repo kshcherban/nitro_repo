@@ -5,7 +5,8 @@
       v-if="showPackages"
       :repository-id="repository.id"
       :repository-type="repository.repository_type"
-      :repository-kind="repository.repository_kind ?? null" />
+      :repository-kind="repository.repository_kind ?? null"
+      :per-page-options="packagePerPageOptions" />
     <div v-if="files">
       <div class="browse">
         <BrowseList
@@ -48,6 +49,9 @@ console.log(`Browsing repository ${repositoryId.value} with catchAll ${catchAll.
 
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
 const websocket = new WebSocket(websocketPath(`api/repository/browse-ws/${repositoryId.value}`));
+
+const packagePerPageOptions = [50, 100, 200, 500, 1000];
+
 onBeforeUnmount(() => {
   console.log("Closing websocket");
   websocket.close();

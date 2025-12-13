@@ -226,13 +226,30 @@ const props = defineProps<{
   repositoryId: string;
   repositoryType?: string;
   repositoryKind?: string | null;
+  perPageOptions?: number[] | null;
 }>();
 
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
 const currentPage = ref(1);
-const perPageOptions = [50, 100, 200];
+const defaultPerPageOptions = [50, 100, 200, 500, 1000] as const;
+const perPageOptions = computed<number[]>(() => {
+  const unique = new Set<number>();
+  const normalized: number[] = [];
+  const input = props.perPageOptions?.length ? props.perPageOptions : defaultPerPageOptions;
+  for (const rawValue of input) {
+    if (!Number.isFinite(rawValue) || !Number.isInteger(rawValue) || rawValue <= 0) {
+      continue;
+    }
+    if (unique.has(rawValue)) {
+      continue;
+    }
+    unique.add(rawValue);
+    normalized.push(rawValue);
+  }
+  return normalized.length ? normalized : [...defaultPerPageOptions];
+});
 const perPage = ref(100);
 const totalPackages = ref(0);
 const sortState = ref<{ key: ColumnKey; direction: SortDirection } | null>(null);
@@ -244,7 +261,7 @@ const packageSearchTerm = ref("");
 const perPageModel = computed({
   get: () => perPage.value,
   set: (value: number | null) => {
-    if (typeof value === "number" && perPageOptions.includes(value)) {
+    if (typeof value === "number" && perPageOptions.value.includes(value)) {
       if (perPage.value !== value) {
         perPage.value = value;
         currentPage.value = 1;
@@ -503,7 +520,7 @@ function loadPreferences() {
         )
       : [];
     hiddenColumns.value = new Set<ColumnKey>(hidden);
-    if (typeof parsed.perPage === "number" && perPageOptions.includes(parsed.perPage)) {
+    if (typeof parsed.perPage === "number" && perPageOptions.value.includes(parsed.perPage)) {
       perPage.value = parsed.perPage;
     } else {
       perPage.value = 100;

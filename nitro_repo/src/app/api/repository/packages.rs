@@ -81,6 +81,8 @@ const fn default_per_page() -> usize {
     50
 }
 
+const MAX_PER_PAGE: usize = 1000;
+
 fn normalize_search_term(term: &Option<String>) -> Option<String> {
     term.as_ref()
         .map(|value| value.trim().to_lowercase())
@@ -125,7 +127,7 @@ fn build_package_page_from_objects(
     per_page: usize,
     search: Option<&str>,
 ) -> PackageListResponse {
-    let per_page = per_page.clamp(1, 200);
+    let per_page = per_page.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let start = (current_page - 1) * per_page;
     let end = start + per_page;
@@ -253,7 +255,7 @@ async fn collect_directory_package_page(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<PackageListResponse, nr_storage::StorageError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let start = (current_page - 1) * per_page;
     let end = start + per_page;
@@ -305,7 +307,7 @@ async fn collect_go_package_page(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<PackageListResponse, nr_storage::StorageError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let start = (current_page - 1) * per_page;
     let end = start + per_page;
@@ -1573,7 +1575,7 @@ async fn list_helm_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
@@ -1730,7 +1732,7 @@ async fn list_cargo_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
@@ -1907,7 +1909,7 @@ async fn list_npm_proxy_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -1987,7 +1989,7 @@ async fn list_npm_hosted_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2091,7 +2093,7 @@ async fn list_python_hosted_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2185,7 +2187,7 @@ async fn list_python_proxy_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2265,7 +2267,7 @@ async fn list_go_catalog_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2378,7 +2380,7 @@ async fn list_go_proxy_catalog_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2478,7 +2480,7 @@ async fn list_docker_catalog_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2558,7 +2560,7 @@ async fn list_maven_hosted_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2645,7 +2647,7 @@ async fn list_php_hosted_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -2974,7 +2976,7 @@ async fn list_deb_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let search_pattern = search.map(|term| format!("%{}%", term.to_lowercase()));
@@ -3112,7 +3114,7 @@ async fn list_php_proxy_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -3202,7 +3204,7 @@ async fn list_maven_proxy_packages(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let offset = ((current_page - 1) * per_page) as i64;
     let repository_id = repository.id();
@@ -3289,7 +3291,7 @@ async fn build_maven_proxy_package_list(
     per_page_raw: usize,
     search: Option<&str>,
 ) -> Result<PackageListResponse, InternalError> {
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let search_term = search.map(|value| value.to_lowercase());
 
@@ -3429,7 +3431,7 @@ async fn list_docker_packages(
     search: Option<&str>,
 ) -> Result<Response, InternalError> {
     let storage = repository.get_storage();
-    let per_page = per_page_raw.clamp(1, 200);
+    let per_page = per_page_raw.clamp(1, MAX_PER_PAGE);
     let current_page = page.max(1);
     let start = (current_page - 1) * per_page;
     let search_term = search.map(|value| value.to_lowercase());
