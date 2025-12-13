@@ -2,11 +2,17 @@
 
 Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite front end.
 
+At runtime, Nitro Repo is a three-part system:
+- **Rust application**: serves both the JSON API (`/api/**`) and protocol-specific repository endpoints (for example Docker Registry under `/v2/**`).
+- **Postgres**: stores users/auth, repository configuration, and the **package catalog** used for search and package listings.
+- **Storage backend**: holds artifact blobs (local filesystem or S3).
+
 ## Crate Layout
-- `nitro_repo/`: main binary crate. Hosts HTTP server (Axum), repository dispatch, authentication, OpenAPI, metrics.
+- `nitro_repo/`: main server binary (Axum) and CLI. Hosts HTTP server, repository dispatch, authentication, OpenAPI, metrics, search, and background tasks.
 - `crates/core`: shared domain types (database entities, repository metadata, project models, security utilities).
 - `crates/storage`: abstraction over storage backends (local filesystem, S3). Provides `DynStorage` trait object used by repositories.
 - `crates/macros`: derives like `DynRepositoryHandler`.
+- `crates/nr-api`: Rust client library for interacting with a Nitro Repo instance over HTTP.
 
 ## Repository Abstractions
 - `Repository` trait: defines HTTP handling (`handle_get`, `handle_put`, etc.), metadata (id, visibility, configs).
@@ -15,10 +21,15 @@ Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite 
 - Config descriptors (implementing `RepositoryConfigType`) supply schemars schemas, validation, defaults; registered in `REPOSITORY_CONFIG_TYPES`.
 
 ## Repository Implementations
-- Maven: hosted + proxy support (`maven` module).
-- NPM: hosted registry (`npm` module).
-- Cargo: hosted registry with sparse index support (`cargo` module) exposing the Cargo publish API, sparse index files, and archive downloads.
-- Python / PHP (Composer): hosted-only modules introduced during current iteration, leveraging shared `RepositoryExt` helpers, metadata inserts into `VersionData.extra`.
+- Maven (`maven`): hosted + proxy.
+- NPM (`npm`): hosted + proxy + virtual registry; implements the npm publish and login flows.
+- Cargo (`cargo`): hosted registry with sparse index support (publish API, index files, crate downloads).
+- Python (`python`): hosted + proxy (pip/simple endpoints and cached upstream artifacts).
+- PHP Composer (`php`): hosted + proxy (Composer V2 metadata and dist serving).
+- Docker (`docker`): hosted + proxy, including registry Bearer token auth support.
+- Helm (`helm`): hosted chart repository support.
+- Go (`go`): hosted + proxy, including module proxy endpoints.
+- Debian (`deb`): package repository endpoints and catalog integration.
 
 ## HTTP Flow
 - `repository_router` in `repo_http.rs`: resolves storage/repo by path, constructs `RepositoryRequest` (HTTP parts, body, parsed `StoragePath`, authentication).
@@ -32,9 +43,28 @@ Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite 
 - Docker Registry clients use the standard Bearer token flow: any write request that reaches `/v2/**` without credentials is answered with a `WWW-Authenticate: Bearer …` challenge whose `realm` points at `/v2/token` and whose `scope` reflects the concrete repository path resolved for the request. The `/v2/token` handler (in `repository::docker::auth`) inspects the incoming authentication (session, password, or long-lived API token), validates the requested repository scopes, and mints a short-lived repository token (`NewRepositoryToken`). The token is hashed at rest, carries its allowed actions, and is returned to the Docker client as the Bearer token that must accompany the retried request.
 
 ## Data Persistence
-- DB layer via `nr_core::database::entities`. Projects and versions inserted/queried directly in repositories for metadata.
-- Configs stored in `repository_configs` table; retrieved through `DBRepositoryConfig`.
+- Postgres via `sqlx` and `nr_core::database::entities`.
+- Repository configuration stored in `repository_configs`; retrieved through `DBRepositoryConfig`.
+- **Package catalog** stored in `projects` + `project_versions` (includes `repository_id`, `path`, `version`, and JSON metadata in `extra`).
 - Repository lookup/registration handled by `NitroRepo` state with in-memory caches keyed by UUID and name pair.
+
+## Catalog, Search, and Package Listings
+Nitro Repo’s search and package listing flows are **database-backed** (no storage directory traversal in the hot path).
+
+- Hosted repositories write catalog rows as part of publish/upload handlers.
+- Proxy repositories write catalog rows when artifacts are cached/evicted (via `proxy_indexing` and the `DatabaseProxyIndexer` implementation).
+- `/api/search/packages` and `/api/repository/<id>/packages` query the catalog; repositories that are present but not yet indexed are surfaced via `X-Nitro-Warning`.
+
+Operational and query details live in `docs/docs/knowledge/search.md`.
+
+## Storage and Proxy Caching
+- Artifact bytes live in the configured storage backend (local filesystem or S3).
+- The S3 implementation includes disk caching and defensive behavior for production (for example retrying transient deletion failures and using adaptive buffering for large response bodies under memory pressure).
+- Proxy repository behaviors are designed around caching being mandatory for correctness (search, retention, and policy enforcement rely on catalog/indexing).
+
+## Observability
+- Request-scoped tracing is wired through repository handling (`RepositoryRequestTracing`) and exported via OpenTelemetry.
+- When running via the dev compose stack, traces are viewable in Jaeger (see `docker-compose.dev.yml` and the project dev workflow).
 
 ## Front End Integration
 - Vue components under `site/`: repository type configs (`types/<repo>/`), helper views, admin panel integration.
@@ -43,3 +73,4 @@ Nitro Repo is split into a Rust back end (multi-crate workspace) and a Vue/Vite 
 ## Build/Test Notes
 - Rust workspace managed via Cargo; `cargo build` requires system `pkg-config` + OpenSSL headers (`libssl-dev`/`openssl-devel`).
 - Front end built separately with Vite (not covered in this summary).
+- Project helpers: `./dev.sh` for full rebuild/start, `./dev.sh -b` for backend rebuild, `npm --prefix site run build` for frontend build.

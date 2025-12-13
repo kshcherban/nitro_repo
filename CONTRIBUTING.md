@@ -1,27 +1,75 @@
-# Requirements to Contribute
+# Contributing
 
-1. Rust 1.56 or newer installed
-2. Mysql C++ Driver/Connector installed
-3. Mysql Database Ready for use
-4. For SSL openssl library installed
-5. Node 16 installed and NPM installed
-6. Lots of Patience.
+This repository is Nitro Repo v3: a Rust (Axum) backend + Vue/Vite frontend, backed by Postgres for configuration and the
+package catalog (used by search and package listings).
 
-# Configuring nitro repo.
+## Prerequisites
 
-1. Copy example.env to your working directory of the application and name it .env
-2. The only one you will need to edit will be the `DATABASE_URL` and BIND_URL if that port is already in use
+- Docker + Docker Compose (used for local dev and integration tests)
+- Rust (latest stable; see `rust-toolchain.toml`)
+- Node.js (see `site/.node-version`; npm is used as the package manager)
 
-# Development Frontend Only
+## Quick Start (Full Stack)
 
-1. Follow all steps up to this point only changing the cargo build command
-   to `cargo build --release --features dev-frontend`
-2. Then add a .env.local inside the site directory and add the value `VITE_API_URL=http://127.0.0.1:6742` Changing the
-   URL if necessary.
-3. You can at this point execute `npm run dev` with the backend executable running and work on the frontend
+Build and start the dev stack:
 
-# Development Full Stack or Backend
+```bash
+./dev.sh
+```
 
-1. I recommend following the Frontend development steps because using the frontend development mode will be easier
-2. Ignore the --release argument. Because you are doing development. 
+Useful endpoints:
+- App: `http://localhost:8000`
+- OpenAPI docs: `http://localhost:8000/api/docs`
+- Jaeger (tracing): `http://localhost:16686` (dev compose only)
 
+Useful commands:
+- Stop services: `docker compose -f docker-compose.yml -f docker-compose.dev.yml down`
+- Logs: `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs nitro`
+
+## Backend Development
+
+If you only changed Rust code and want to skip rebuilding the frontend assets:
+
+```bash
+./dev.sh -b
+```
+
+## Frontend Development
+
+The UI expects an API base URL via `VITE_API_URL` (there is no Vite proxy in this repo).
+
+1. Start the backend with `./dev.sh -b`
+2. In another terminal:
+
+```bash
+VITE_API_URL=http://127.0.0.1:8000 npm --prefix site run dev
+```
+
+## Tests, Lints, and Formatting
+
+Rust:
+- `cargo fmt --all`
+- `cargo test --workspace`
+- `cargo clippy --workspace --all-targets`
+
+Frontend:
+- `npm --prefix site run test`
+- `npm --prefix site run lint`
+- `npm --prefix site run type-check`
+- `npm --prefix site run build`
+
+Integration tests (Docker-based):
+- `./tests/run_integration_tests.sh`
+
+## Project Standards (Non-Negotiable)
+
+- TDD: write tests first; cover error paths and edge cases.
+- No `unwrap()` / `expect()` / `panic!` / `todo!` / `unimplemented!` in non-test code (CI enforces workspace clippy lints).
+- Prefer small single-purpose functions and explicit error handling (`Result` + `?`).
+- Keep tests in dedicated test modules/files (no inline tests inside production source files).
+- Search and package listings are catalog-backed (`projects` / `project_versions`): changes to repository publish/cache flows must keep the catalog consistent.
+
+## Documentation Changes
+
+Docs live under `docs/docs`. If you change behavior, APIs, repository types, or operational flows, update the relevant docs
+alongside the code change (for example `docs/docs/knowledge/Architecture.md` and `docs/docs/knowledge/search.md`).
