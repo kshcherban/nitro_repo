@@ -53,6 +53,9 @@ export type WSBrowseResponse =
       data: StreamBrowseHeader;
     }
   | {
+      type: "EndOfDirectory";
+    }
+  | {
       type: "Unauthorized";
     }
   | {

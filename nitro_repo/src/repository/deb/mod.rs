@@ -20,16 +20,24 @@ use crate::utils::{IntoErrorResponse, ResponseBuilder};
 
 pub mod configs;
 pub mod hosted;
+pub mod proxy;
+pub mod proxy_indexing;
+pub mod proxy_refresh;
+pub mod refresh_status;
+pub mod scheduler;
 mod metadata;
 mod package;
 
 pub use configs::*;
 pub use hosted::DebHostedRepository;
+pub use proxy::DebProxyRepository;
+pub use proxy_indexing::{DatabaseDebProxyIndexer, DebProxyIndexing, DebProxyIndexingError};
 
 #[derive(Debug, Clone, nr_macros::DynRepositoryHandler)]
 #[repository_handler(error = DebRepositoryError)]
 pub enum DebRepository {
     Hosted(DebHostedRepository),
+    Proxy(DebProxyRepository),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -206,8 +214,18 @@ impl RepositoryType for DebRepositoryType {
             .ok_or(RepositoryFactoryError::MissingConfig(
                 DebRepositoryConfigType::get_type_static(),
             ))?;
-            let hosted = DebHostedRepository::load(website, storage, repo, config.value.0).await?;
-            Ok(DynRepository::Deb(DebRepository::Hosted(hosted)))
+            match config.value.0 {
+                DebRepositoryConfig::Hosted(hosted_config) => {
+                    let hosted =
+                        DebHostedRepository::load(website, storage, repo, hosted_config).await?;
+                    Ok(DynRepository::Deb(DebRepository::Hosted(hosted)))
+                }
+                DebRepositoryConfig::Proxy(proxy_config) => {
+                    let proxy = DebProxyRepository::load(website, storage, repo, proxy_config)
+                        .await?;
+                    Ok(DynRepository::Deb(DebRepository::Proxy(proxy)))
+                }
+            }
         })
     }
 }

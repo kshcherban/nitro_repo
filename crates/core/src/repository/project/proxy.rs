@@ -142,6 +142,7 @@ impl VersionData {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
     use chrono::{TimeZone, Utc};
 
     use super::*;

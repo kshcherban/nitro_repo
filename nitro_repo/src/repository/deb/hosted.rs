@@ -19,7 +19,7 @@ use uuid::Uuid;
 use xz2::write::XzEncoder;
 
 use super::{
-    configs::DebRepositoryConfig,
+    configs::DebHostedConfig,
     metadata::{PackagesRecord, ReleaseEntry, build_release_file, format_packages_entry},
     package::parse_deb_package,
 };
@@ -52,7 +52,7 @@ pub struct DebHostedInner {
     pub repository: DBRepository,
     pub storage: DynStorage,
     pub site: NitroRepo,
-    pub config: DebRepositoryConfig,
+    pub config: DebHostedConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ impl DebHostedRepository {
         site: NitroRepo,
         storage: DynStorage,
         repository: DBRepository,
-        config: DebRepositoryConfig,
+        config: DebHostedConfig,
     ) -> Result<Self, RepositoryFactoryError> {
         Ok(Self(Arc::new(DebHostedInner {
             id: repository.id,
@@ -84,7 +84,7 @@ impl DebHostedRepository {
         self.0.site.clone()
     }
 
-    fn config(&self) -> &DebRepositoryConfig {
+    fn config(&self) -> &DebHostedConfig {
         &self.0.config
     }
 

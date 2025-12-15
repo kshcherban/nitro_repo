@@ -7,4 +7,3 @@ storage_tests
 charts/nitro-repo/charts
 *.tgz
 mise.toml
-/todo-*.md

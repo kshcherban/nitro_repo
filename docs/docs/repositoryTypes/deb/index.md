@@ -1,8 +1,12 @@
 # Debian Repositories
 
-Nitro Repo can now host Debian package repositories that expose the standard `dists/` and `pool/` layout used by `apt`. Debian repositories are always hosted (there is no proxy mode) and can serve metadata for any combination of suites, components, and architectures that you enable in the repository configuration.
+Nitro Repo supports Debian package repositories that expose the standard `dists/` and `pool/` layout used by `apt`.
 
-The backend generates `Packages`, `Packages.gz`, and `Packages.xz` indexes for every component/architecture pair and emits a `Release` file so that `apt update` behaves as expected.
+Debian repositories can run in two modes:
+- **Hosted**: you upload `.deb` packages to Nitro; Nitro generates `dists/` metadata.
+- **Proxy/Mirror**: Nitro serves and caches upstream APT paths (including `by-hash`) and can download all referenced `.deb` files for offline mirroring.
+
+For hosted repositories, Nitro generates `Packages`, `Packages.gz`, and `Packages.xz` indexes for every component/architecture pair and emits a `Release` file so that `apt update` behaves as expected.
 
 ## Uploading packages
 
@@ -31,8 +35,15 @@ deb [trusted=yes] https://nitro.example.com/repositories/<storage>/<repository> 
 
 Release signatures are not generated yet, so include the `trusted=yes` option or configure your host to allow unsigned repositories. Once added, run `sudo apt update` followed by the usual `apt install` commands. Nitro serves the `Packages`, `Packages.gz`, and `Packages.xz` files that `apt` expects.
 
+## Proxy/mirror repositories
+
+Debian proxy repositories are designed to behave like an upstream mirror:
+- `GET`/`HEAD` requests are served from Nitro storage when cached; on a cache miss Nitro fetches `upstream_url + request.path`, stores it, then serves it.
+- Upstream metadata bytes (`InRelease` / `Release` / `Release.gpg`) are served unchanged so signature verification can work.
+- An offline mirror refresh can be triggered via the API: `POST /api/repository/<id>/deb/refresh` (requires repository edit permission). The refresh downloads `Release`/`InRelease`/`Release.gpg`, the `Packages` index for configured dists/components/architectures, creates a SHA256 `by-hash` alias for `Packages`, and downloads every referenced `.deb` file.
+
 ## Current limitations
 
-- Only hosted repositories are supported; there is no proxy mode.
-- Release files are unsigned. Configure clients with `trusted=yes` until signing is available.
-- Uploads must be `.deb` artifacts; source packages and `apt` by-hash lookups are not implemented yet.
+- Hosted repositories: Release files are unsigned. Configure clients with `trusted=yes` until signing is available.
+- Hosted repositories: uploads must be `.deb` artifacts; source packages and `apt` by-hash lookups are not implemented yet.
+- Proxy repositories: upstream authentication is not supported yet; scheduling is not implemented yet (manual refresh only).

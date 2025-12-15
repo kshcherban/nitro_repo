@@ -78,6 +78,7 @@ parking_lot.workspace = true
 once_cell.workspace = true
 oauth2 = { version = "5", features = ["reqwest"] }
 flate2 = "1"
+cron = "0.15"
 tar = "0.4"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 casbin = { version = "2.15", default-features = false, features = ["runtime-tokio"] }

@@ -81,6 +81,9 @@ websocket.onmessage = (event) => {
   } else if (message.type === "Authorized") {
     console.log("Browse websocket authorized, reloading directory");
     changeDirectory(catchAll.value);
+  } else if (message.type === "EndOfDirectory") {
+    // Terminal marker from server to indicate the directory stream finished.
+    // Nothing to do on the client right now.
   } else {
     console.log(`Unknown message type`, message);
   }

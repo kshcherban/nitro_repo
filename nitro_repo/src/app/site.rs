@@ -68,6 +68,7 @@ use http::{HeaderName, Uri};
 pub struct InternalServices {
     pub session_cleaner: Option<JoinHandle<()>>,
     pub email: Option<EmailService>,
+    pub background_scheduler: Option<JoinHandle<()>>,
 }
 
 pub struct NitroRepoInner {
@@ -104,6 +105,7 @@ macro_rules! take_service {
 impl NitroRepoInner {
     take_service! {
         take_session_cleaner => session_cleaner -> JoinHandle<()>,
+        take_background_scheduler => background_scheduler -> JoinHandle<()>,
         take_email => email -> EmailService
     }
 
@@ -377,6 +379,7 @@ impl NitroRepo {
         };
         nitro_repo.load_storages().await?;
         nitro_repo.load_repositories().await?;
+        nitro_repo.start_background_scheduler();
         Ok(nitro_repo)
     }
 
@@ -465,6 +468,10 @@ impl NitroRepo {
         }
         let session_cleaner = self.inner.take_session_cleaner();
         if let Some(handle) = session_cleaner {
+            handle.abort();
+        }
+        let background_scheduler = self.inner.take_background_scheduler();
+        if let Some(handle) = background_scheduler {
             handle.abort();
         }
     }
@@ -852,6 +859,17 @@ impl NitroRepo {
             self.set_session_cleaner(handle);
             info!("Session cleaner started");
         }
+    }
+
+    fn set_background_scheduler(&self, scheduler: JoinHandle<()>) {
+        let mut services = self.inner.services.lock();
+        services.background_scheduler = Some(scheduler);
+    }
+
+    fn start_background_scheduler(&self) {
+        let handle = crate::app::scheduler::start_background_scheduler(self.clone());
+        self.set_background_scheduler(handle);
+        info!("Background scheduler started");
     }
 }
 

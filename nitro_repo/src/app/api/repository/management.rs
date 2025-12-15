@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
+use chrono::{DateTime, FixedOffset, Utc};
 use nr_core::{
     database::entities::repository::{DBRepository, GenericDBRepositoryConfig},
     repository::Visibility,
@@ -24,7 +25,7 @@ use crate::{
         responses::{InvalidRepositoryConfig, MissingPermission, RepositoryNotFound},
     },
     error::InternalError,
-    repository::Repository,
+    repository::{DynRepository, Repository},
     utils::{ResponseBuilder, conflict::ConflictResponse},
 };
 use nr_storage::Storage;
@@ -34,6 +35,8 @@ pub fn management_routes() -> Router<NitroRepo> {
         .route("/new/{repository_type}", post(new_repository))
         .route("/{repository_id}/config/{key}", put(update_config))
         .route("/{repository_id}/config/{key}", get(get_config))
+        .route("/{repository_id}/deb/refresh", post(deb_refresh))
+        .route("/{repository_id}/deb/refresh/status", get(deb_refresh_status))
         .route("/{repository_id}", delete(delete_repository))
 }
 
@@ -264,6 +267,199 @@ pub async fn get_config(
         Ok(AuthenticationError::Forbidden.into_response())
     }
 }
+
+#[utoipa::path(
+    post,
+    summary = "Refresh Debian proxy mirror",
+    path = "/{repository_id}/deb/refresh",
+    params(
+        ("repository_id" = Uuid, Path, description = "The Repository ID"),
+    ),
+    responses(
+        (status = 200, description = "Mirror refresh completed", body = crate::repository::deb::proxy_refresh::DebProxyRefreshSummary),
+        (status = 400, description = "Repository is not a Debian proxy"),
+        (status = 403, description = "Missing permissions"),
+        (status = 409, description = "Refresh already running"),
+    )
+)]
+#[instrument]
+pub async fn deb_refresh(
+    State(site): State<NitroRepo>,
+    auth: Authentication,
+    Path(repository_id): Path<Uuid>,
+) -> Result<Response, InternalError> {
+    if !auth
+        .has_action(RepositoryActions::Edit, repository_id, &site.database)
+        .await?
+    {
+        return Ok(MissingPermission::EditRepository(repository_id).into_response());
+    }
+
+    let Some(repository) = site.get_repository(repository_id) else {
+        return Ok(RepositoryNotFound::Uuid(repository_id).into_response());
+    };
+
+    let DynRepository::Deb(crate::repository::deb::DebRepository::Proxy(proxy)) = repository else {
+        return Ok(ResponseBuilder::bad_request().body("Repository is not a Debian proxy"));
+    };
+
+    use crate::repository::deb::refresh_status::{
+        DebProxyRefreshLockOutcome, mark_deb_proxy_refresh_failed,
+        mark_deb_proxy_refresh_succeeded, try_mark_deb_proxy_refresh_started,
+    };
+
+    let lock = match try_mark_deb_proxy_refresh_started(&site.database, repository_id).await? {
+        DebProxyRefreshLockOutcome::Acquired(lock) => lock,
+        DebProxyRefreshLockOutcome::AlreadyRunning => {
+            return Ok(ResponseBuilder::conflict().body("Debian proxy refresh already running"));
+        }
+    };
+
+    let refresh_result = proxy.refresh_offline_mirror().await;
+    let status_update: Result<(), InternalError> = match &refresh_result {
+        Ok(summary) => {
+            mark_deb_proxy_refresh_succeeded(&site.database, repository_id, *summary)
+                .await
+                .map_err(|err| err.into())
+        }
+        Err(err) => {
+            mark_deb_proxy_refresh_failed(&site.database, repository_id, &err.to_string())
+                .await
+                .map_err(|err| err.into())
+        }
+    };
+
+    let response = match refresh_result {
+        Ok(summary) => ResponseBuilder::ok().json(&summary),
+        Err(err) => ResponseBuilder::internal_server_error().body(err.to_string()),
+    };
+
+    let release_result: Result<(), InternalError> = lock.release().await.map_err(|err| err.into());
+    status_update?;
+    release_result?;
+    Ok(response)
+}
+
+#[derive(Debug, serde::Serialize, ToSchema)]
+pub struct DebProxyRefreshStatusResponse {
+    pub in_progress: bool,
+    pub last_started_at: Option<DateTime<FixedOffset>>,
+    pub last_finished_at: Option<DateTime<FixedOffset>>,
+    pub last_success_at: Option<DateTime<FixedOffset>>,
+    pub last_error: Option<String>,
+    pub last_downloaded_packages: Option<i32>,
+    pub last_downloaded_files: Option<i32>,
+    pub due: bool,
+    pub next_run_at: Option<DateTime<Utc>>,
+}
+
+#[utoipa::path(
+    get,
+    summary = "Get Debian proxy mirror refresh status",
+    path = "/{repository_id}/deb/refresh/status",
+    params(
+        ("repository_id" = Uuid, Path, description = "The Repository ID"),
+    ),
+    responses(
+        (status = 200, description = "Mirror refresh status", body = DebProxyRefreshStatusResponse),
+        (status = 400, description = "Repository is not a Debian proxy"),
+        (status = 403, description = "Missing permissions"),
+    )
+)]
+#[instrument]
+pub async fn deb_refresh_status(
+    State(site): State<NitroRepo>,
+    auth: Authentication,
+    Path(repository_id): Path<Uuid>,
+) -> Result<Response, InternalError> {
+    if !auth
+        .has_action(RepositoryActions::Edit, repository_id, &site.database)
+        .await?
+    {
+        return Ok(MissingPermission::EditRepository(repository_id).into_response());
+    }
+
+    let Some(repository) = site.get_repository(repository_id) else {
+        return Ok(RepositoryNotFound::Uuid(repository_id).into_response());
+    };
+
+    let DynRepository::Deb(crate::repository::deb::DebRepository::Proxy(proxy)) = repository else {
+        return Ok(ResponseBuilder::bad_request().body("Repository is not a Debian proxy"));
+    };
+
+    #[derive(sqlx::FromRow, Debug)]
+    struct StatusRow {
+        in_progress: bool,
+        last_started_at: Option<DateTime<FixedOffset>>,
+        last_finished_at: Option<DateTime<FixedOffset>>,
+        last_success_at: Option<DateTime<FixedOffset>>,
+        last_error: Option<String>,
+        last_downloaded_packages: Option<i32>,
+        last_downloaded_files: Option<i32>,
+    }
+
+    let status: Option<StatusRow> = sqlx::query_as(
+        r#"
+        SELECT in_progress,
+               last_started_at,
+               last_finished_at,
+               last_success_at,
+               last_error,
+               last_downloaded_packages,
+               last_downloaded_files
+        FROM deb_proxy_refresh_status
+        WHERE repository_id = $1
+        "#,
+    )
+    .bind(repository_id)
+    .fetch_optional(&site.database)
+    .await?;
+
+    let now = Utc::now();
+    let schedule = proxy
+        .0
+        .config
+        .refresh
+        .as_ref()
+        .filter(|refresh| refresh.enabled)
+        .map(|refresh| &refresh.schedule);
+
+    let (last_started_at, in_progress, last_finished_at, last_success_at, last_error, last_downloaded_packages, last_downloaded_files) =
+        if let Some(status) = status {
+            (
+                status.last_started_at,
+                status.in_progress,
+                status.last_finished_at,
+                status.last_success_at,
+                status.last_error,
+                status.last_downloaded_packages,
+                status.last_downloaded_files,
+            )
+        } else {
+            (None, false, None, None, None, None, None)
+        };
+
+    let due = schedule
+        .map(|schedule| {
+            crate::repository::deb::scheduler::is_due(now, schedule, last_started_at.clone())
+        })
+        .unwrap_or(false);
+    let next_run_at = schedule.and_then(|schedule| {
+        crate::repository::deb::scheduler::next_run_at(now, schedule, last_started_at)
+    });
+
+    Ok(ResponseBuilder::ok().json(&DebProxyRefreshStatusResponse {
+        in_progress,
+        last_started_at,
+        last_finished_at,
+        last_success_at,
+        last_error,
+        last_downloaded_packages,
+        last_downloaded_files,
+        due,
+        next_run_at,
+    }))
+}
 /// Updates a config for a repository
 ///
 /// # Method Body
@@ -340,6 +536,7 @@ pub async fn update_config(
     }
     Ok(ResponseBuilder::no_content().empty())
 }
+
 #[utoipa::path(
     delete,
     path = "/{repository}",

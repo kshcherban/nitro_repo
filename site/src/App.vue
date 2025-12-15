@@ -2,23 +2,24 @@
   <v-app>
     <AppBar :user="user" />
     <v-main>
-      <div
-        class="contentWithSideBar"
-        v-if="hasSideBar">
-        <component :is="router.currentRoute.value.meta.sideBar" />
-        <v-slide-x-transition mode="out-in">
-          <RouterView />
+      <RouterView v-slot="{ Component, route }">
+        <div
+          class="contentWithSideBar"
+          v-if="route.meta.sideBar">
+          <component :is="route.meta.sideBar" />
+          <v-slide-x-transition mode="out-in">
+            <component :is="Component" :key="route.fullPath" />
+          </v-slide-x-transition>
+        </div>
+        <v-slide-x-transition mode="out-in" v-else>
+          <component :is="Component" :key="route.fullPath" />
         </v-slide-x-transition>
-      </div>
-      <v-slide-x-transition mode="out-in" v-else>
-        <RouterView />
-      </v-slide-x-transition>
+      </RouterView>
     </v-main>
     <GlobalAlerts />
   </v-app>
 </template>
 <script setup lang="ts">
-import { RouterView } from "vue-router";
 import { siteStore } from "./stores/site";
 import router from "./router";
 import AppBar from "./components/layout/AppBar.vue";
@@ -31,9 +32,6 @@ import GlobalAlerts from "@/components/core/GlobalAlerts.vue";
 const site = siteStore();
 const session = sessionStore();
 const user = computed(() => session.user);
-const hasSideBar = computed(() => {
-  return router.currentRoute.value.meta.sideBar !== undefined;
-});
 
 if (import.meta.env.MODE === "development") {
   const routes: Array<{ path: string; name: string }> = [];

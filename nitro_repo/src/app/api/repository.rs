@@ -65,6 +65,7 @@ mod types;
         management::get_config,
         management::update_config,
         management::get_configs_for_repository,
+        management::deb_refresh,
         management::delete_repository,
         browse::browse,
         packages::list_cached_packages,
@@ -87,6 +88,7 @@ mod types;
         RepositoryListEntry,
         packages::PackageDeleteRequest,
         packages::PackageDeleteResponse
+        , crate::repository::deb::proxy_refresh::DebProxyRefreshSummary
         , virtual_api::VirtualConfigView, virtual_api::VirtualMemberView, virtual_api::UpdateMembersRequest, virtual_api::UpdateResolutionOrderRequest
     )),
     nest(
@@ -378,6 +380,13 @@ async fn resolve_repository_kind(
             crate::repository::php::PhpRepositoryConfigType::get_type_static(),
         )
         .await
+    } else if repo_type.eq_ignore_ascii_case("deb") {
+        load_proxy_kind::<crate::repository::deb::DebRepositoryConfig>(
+            repository,
+            site,
+            crate::repository::deb::DebRepositoryConfigType::get_type_static(),
+        )
+        .await
     } else {
         Ok(None)
     }
@@ -453,6 +462,15 @@ impl ProxyKindClassifier for crate::repository::php::PhpRepositoryConfig {
     fn proxy_kind_label(&self) -> Option<&'static str> {
         match self {
             Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
+impl ProxyKindClassifier for crate::repository::deb::DebRepositoryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted(_) => Some("hosted"),
             Self::Proxy(_) => Some("proxy"),
         }
     }
