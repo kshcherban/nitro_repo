@@ -11,12 +11,13 @@ without guesswork.
 | Maven | Yes | Yes | Standard Maven 2 layout for private artifacts or upstream caching ([docs](./repositoryTypes/maven/index.md)). |
 | npm | Yes | Yes | Works as a private registry or smart cache with multiple upstreams ([docs](./repositoryTypes/npm/index.md)). |
 | Python | Yes | Yes | Hosts wheels/sdists and proxies PyPI-compatible indexes, including `uv` workflows ([docs](./repositoryTypes/python/index.md)). |
-| Composer (PHP) | Yes | Planned | Work in progress. Vendor/package storage with indexed metadata for downstream Composer clients ([docs](./repositoryTypes/php/index.md)). |
+| Composer (PHP) | Yes | Yes | Composer V2 repository for private packages or Packagist proxy caching ([docs](./repositoryTypes/php/index.md)). |
 | Go modules | Yes | Yes | Athens-style hosted uploads plus multi-route proxy cache control ([docs](./repositoryTypes/go/index.md)). |
 | Cargo (Rust) | Yes | No | Sparse index + publish/download endpoints for private crates ([docs](./repositoryTypes/cargo/index.md)). |
+| RubyGems | Yes | Yes | RubyGems-compatible hosted/proxy repositories with Compact Index + Bundler support ([docs](./repositoryTypes/ruby/index.md)). |
 | Docker / OCI | Yes | Yes | Private Docker Registry HTTP API v2 implementation plus pull-through caching for upstream registries ([docs](./repositoryTypes/docker/index.md)). |
 | Helm | Yes | No | HTTP chart repository and OCI distribution registry with unified package management ([docs](./repositoryTypes/helm/index.md)). |
-| Debian (APT) | Yes | No | Generates `dists/` + `pool/` trees with `Packages*` and `Release` metadata for `apt` ([docs](./repositoryTypes/deb/index.md)). |
+| Debian (APT) | Yes | Yes | Hosted APT repos plus proxy/mirror caching for upstream `dists/`/`pool/` trees ([docs](./repositoryTypes/deb/index.md)). |
 | NuGet | Planned | Planned | Tracked in [issue #191](https://github.com/wherkamp/nitro_repo/issues/191). |
 
 ## Platform Capabilities

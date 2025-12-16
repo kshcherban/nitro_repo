@@ -10,6 +10,9 @@ export default defineConfig({
       "@vue/devtools-kit": path.resolve(__dirname, "./src/__mocks__/devtools-kit.ts"),
     },
   },
+  ssr: {
+    noExternal: ["vuetify"],
+  },
   test: {
     environment: "jsdom",
     globals: true,

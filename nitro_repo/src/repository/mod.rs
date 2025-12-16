@@ -36,6 +36,7 @@ pub mod npm;
 pub mod php;
 pub mod proxy;
 pub mod python;
+pub mod ruby;
 pub use auth_config::*;
 pub mod proxy_indexing;
 pub use proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError};
@@ -62,6 +63,7 @@ pub enum DynRepository {
     NPM(npm::NPMRegistry),
     Python(python::PythonRepository),
     Php(php::PhpRepository),
+    Ruby(ruby::RubyRepository),
 }
 
 #[cfg(test)]

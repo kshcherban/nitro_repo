@@ -107,7 +107,7 @@
         <v-divider class="mt-2" />
 
         <SwitchInput
-          v-model="refreshEnabled"
+          v-model="refreshEnabledUi"
           id="deb-proxy-refresh-enabled"
           data-testid="deb-refresh-enabled"
         >Enable automatic mirror refresh</SwitchInput>
@@ -116,11 +116,11 @@
           v-model="selectedRefreshType"
           :options="refreshTypeOptions"
           class="full-width"
-          :disabled="!refreshEnabled"
+          :disabled="!refreshEnabledUi"
           required
         >Refresh Schedule</DropDown>
 
-        <template v-if="refreshEnabled && selectedRefreshType === 'interval_seconds'">
+        <template v-if="refreshEnabledUi && selectedRefreshType === 'interval_seconds'">
           <v-text-field
             v-model.number="refreshIntervalSeconds"
             type="number"
@@ -135,7 +135,7 @@
           />
         </template>
 
-        <template v-if="refreshEnabled && selectedRefreshType === 'cron'">
+        <template v-if="refreshEnabledUi && selectedRefreshType === 'cron'">
           <TextInput
             v-model="refreshCronExpression"
             placeholder="0 3 * * *"
@@ -352,18 +352,60 @@ const refresh = computed<DebProxyRefreshConfig>({
   },
 });
 
-const refreshEnabled = computed<boolean>({
-  get() {
-    return refresh.value.enabled;
-  },
-  set(next) {
-    const current = refresh.value;
+const refreshEnabledUi = ref(false);
+
+const suppressRefreshEnabledAutosave = ref(true);
+const isSavingRefreshEnabled = ref(false);
+const isRevertingRefreshEnabledUi = ref(false);
+let refreshEnabledSaveSequence = 0;
+
+watch(
+  refreshEnabledUi,
+  (newValue, oldValue) => {
+    if (!isDebProxyConfig(value.value)) {
+      return;
+    }
+
     refresh.value = {
-      ...current,
-      enabled: next,
+      ...refresh.value,
+      enabled: newValue,
     };
+
+    if (isRevertingRefreshEnabledUi.value) {
+      return;
+    }
+
+    if (suppressRefreshEnabledAutosave.value) {
+      return;
+    }
+    if (!props.repository || isCreate.value || !isProxy.value) {
+      return;
+    }
+    if (newValue === oldValue) {
+      return;
+    }
+
+    const sequence = ++refreshEnabledSaveSequence;
+    void (async () => {
+      isSavingRefreshEnabled.value = true;
+      try {
+        await http.put(`/api/repository/${props.repository}/config/deb`, value.value);
+      } catch (error) {
+        if (sequence === refreshEnabledSaveSequence) {
+          isRevertingRefreshEnabledUi.value = true;
+          refreshEnabledUi.value = oldValue;
+          isRevertingRefreshEnabledUi.value = false;
+        }
+      } finally {
+        if (sequence === refreshEnabledSaveSequence) {
+          isSavingRefreshEnabled.value = false;
+          await loadRefreshStatus();
+        }
+      }
+    })();
   },
-});
+  { flush: "sync" },
+);
 
 const refreshIntervalSeconds = computed<number>({
   get() {
@@ -402,6 +444,7 @@ const refreshCronExpression = computed<string>({
 function normalize() {
   if (!value.value) {
     value.value = defaultDebConfig();
+    refreshEnabledUi.value = false;
     return;
   }
 
@@ -454,6 +497,7 @@ function normalize() {
       selectedLayout.value = "flat";
     }
     value.value = { type: "proxy", config };
+    refreshEnabledUi.value = config.refresh?.enabled ?? false;
     return;
   }
 
@@ -468,9 +512,8 @@ function normalize() {
   if (!Array.isArray(hostedValue.architectures) || hostedValue.architectures.length === 0) {
     hostedValue.architectures = ["amd64", "all"];
   }
+  refreshEnabledUi.value = false;
 }
-
-normalize();
 
 watch(selectedType, (newType) => {
   if (!isCreate.value) {
@@ -522,7 +565,6 @@ watch(selectedRefreshType, (newType) => {
       schedule: { type: "interval_seconds", config: { interval_seconds: refreshIntervalSeconds.value } },
     };
   }
-  normalize();
 });
 
 async function load() {
@@ -530,12 +572,15 @@ async function load() {
     return;
   }
   try {
+    suppressRefreshEnabledAutosave.value = true;
     const response = await http.get(`/api/repository/${props.repository}/config/deb`);
     value.value = response.data ?? defaultDebConfig();
     normalize();
     await loadRefreshStatus();
   } catch (error) {
     console.error(error);
+  } finally {
+    suppressRefreshEnabledAutosave.value = false;
   }
 }
 

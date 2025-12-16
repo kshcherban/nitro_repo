@@ -194,6 +194,32 @@ function repositoryTypesBar() {
       ],
     },
     {
+      text: "RubyGems",
+      link: "/repositoryTypes/ruby",
+      items: [
+        {
+          text: "Quick Reference",
+          link: "/repositoryTypes/ruby/reference",
+        },
+        {
+          text: "HTTP Routes",
+          link: "/repositoryTypes/ruby/routes",
+        },
+        {
+          text: "RubyGems Standard",
+          link: "/repositoryTypes/ruby/standard",
+        },
+        {
+          text: "Configs",
+          link: "/repositoryTypes/ruby/configs",
+        },
+        {
+          text: "Common Issues",
+          link: "/repositoryTypes/ruby/errors",
+        },
+      ],
+    },
+    {
       text: "PHP",
       link: "/repositoryTypes/php",
       items: [

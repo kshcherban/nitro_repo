@@ -50,6 +50,7 @@ TEST_SUITES:
     docker_proxy Run Docker proxy cache integration tests
     python      Run Python/PyPI integration tests
     php         Run PHP/Composer integration tests
+    ruby        Run RubyGems integration tests
     go          Run Go integration tests
     debian      Run Debian repository integration tests
     cargo       Run Cargo registry integration tests
@@ -111,12 +112,12 @@ while [[ $# -gt 0 ]]; do
             STOP=0
             shift
             ;;
-        maven|npm|docker|docker_proxy|python|php|go|debian|cargo|helm)
+        maven|npm|docker|docker_proxy|python|php|ruby|go|debian|cargo|helm)
             TEST_SUITES+=("$1")
             shift
             ;;
         all)
-            TEST_SUITES=(maven npm docker docker_proxy python php go debian cargo helm)
+            TEST_SUITES=(maven npm docker docker_proxy python php ruby go debian cargo helm)
             shift
             ;;
         *)
@@ -129,7 +130,7 @@ done
 
 # Default to all tests if none specified
 if [ ${#TEST_SUITES[@]} -eq 0 ]; then
-    TEST_SUITES=(maven npm docker docker_proxy python php go debian cargo helm)
+    TEST_SUITES=(maven npm docker docker_proxy python php ruby go debian cargo helm)
 fi
 
 # Enable verbose mode

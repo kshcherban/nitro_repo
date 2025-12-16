@@ -78,7 +78,7 @@ X-Nitro-Warning: Repositories awaiting indexing: docker-proxy
 - SRE dashboards should alert when warnings cross your tolerated threshold (e.g., more than 5 repositories returning warnings for >15 minutes).
 
 ### Reindex tooling
-Current CLI coverage (Phase 5 work extends this list):
+Current CLI coverage:
 
 ```bash
 nitro_repo search reindex python-hosted --repository <uuid>

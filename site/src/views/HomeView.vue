@@ -153,7 +153,7 @@ import RepositorySearchHeader from "@/components/nr/repository/RepositorySearchH
 import http from "@/http";
 import { shouldFetchPackages, isAdvancedQuery, formatBytes as formatBytesUtil } from "@/utils/repositorySearch";
 import { useRouter } from "vue-router";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, resolveComponent, watch } from "vue";
 import type { Component } from "vue";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
@@ -196,6 +196,34 @@ type ComponentIcon = {
   props?: Record<string, unknown>;
 };
 
+const MdiBrandIcon = defineComponent({
+  props: {
+    icon: {
+      type: String,
+      required: true,
+    },
+    color: {
+      type: String,
+      default: "primary",
+    },
+    size: {
+      type: [String, Number],
+      default: "32",
+    },
+  },
+  setup(props) {
+    // Don't use a template here: Vuetify component auto-registration is handled
+    // by the SFC compiler transform; runtime templates won't see it.
+    const VIcon = resolveComponent("v-icon") as Component;
+    return () =>
+      h(VIcon, {
+        icon: props.icon,
+        color: props.color,
+        size: props.size,
+      });
+  },
+});
+
 const componentIconMap: Record<string, ComponentIcon> = {
   helm: {
     component: HelmIcon,
@@ -219,6 +247,14 @@ const componentIconMap: Record<string, ComponentIcon> = {
     props: {
       size: "32",
       color: "#A81D33",
+    },
+  },
+  ruby: {
+    component: MdiBrandIcon,
+    props: {
+      icon: "mdi-language-ruby",
+      color: "#CC342D",
+      size: "32",
     },
   },
 };

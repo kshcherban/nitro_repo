@@ -380,6 +380,13 @@ async fn resolve_repository_kind(
             crate::repository::php::PhpRepositoryConfigType::get_type_static(),
         )
         .await
+    } else if repo_type.eq_ignore_ascii_case("ruby") {
+        load_proxy_kind::<crate::repository::ruby::RubyRepositoryConfig>(
+            repository,
+            site,
+            crate::repository::ruby::RubyRepositoryConfigType::get_type_static(),
+        )
+        .await
     } else if repo_type.eq_ignore_ascii_case("deb") {
         load_proxy_kind::<crate::repository::deb::DebRepositoryConfig>(
             repository,
@@ -476,6 +483,15 @@ impl ProxyKindClassifier for crate::repository::deb::DebRepositoryConfig {
     }
 }
 
+impl ProxyKindClassifier for crate::repository::ruby::RubyRepositoryConfig {
+    fn proxy_kind_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Hosted => Some("hosted"),
+            Self::Proxy(_) => Some("proxy"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod repository_kind_tests {
     use super::ProxyKindClassifier;
@@ -488,6 +504,7 @@ mod repository_kind_tests {
             npm_virtual::{NpmVirtualConfig, VirtualResolutionOrder},
         },
         python::{PythonProxyConfig, PythonRepositoryConfig},
+        ruby::RubyRepositoryConfig,
     };
 
     fn sample_docker_proxy() -> DockerProxyConfig {
@@ -508,6 +525,12 @@ mod repository_kind_tests {
     #[test]
     fn docker_hosted_reports_hosted_kind() {
         let config = DockerRegistryConfig::Hosted;
+        assert_eq!(config.proxy_kind_label(), Some("hosted"));
+    }
+
+    #[test]
+    fn ruby_hosted_reports_hosted_kind() {
+        let config = RubyRepositoryConfig::Hosted;
         assert_eq!(config.proxy_kind_label(), Some("hosted"));
     }
 

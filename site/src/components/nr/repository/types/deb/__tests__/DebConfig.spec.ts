@@ -366,6 +366,19 @@ describe("DebConfig edit mode without v-model", () => {
           due: false,
           next_run_at: null,
         },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          in_progress: false,
+          last_started_at: null,
+          last_finished_at: null,
+          last_success_at: null,
+          last_error: null,
+          last_downloaded_packages: null,
+          last_downloaded_files: null,
+          due: false,
+          next_run_at: null,
+        },
       });
 
     (http.put as vi.Mock).mockResolvedValueOnce({ data: null });
@@ -391,15 +404,16 @@ describe("DebConfig edit mode without v-model", () => {
 
     await flushPromises();
 
+    expect(http.put).not.toHaveBeenCalled();
+
     const checkbox = wrapper.find("input[type='checkbox']");
     expect(checkbox.exists()).toBe(true);
     await checkbox.trigger("change");
     await flushPromises();
 
-    await wrapper.find("form").trigger("submit");
-    await flushPromises();
+    expect((wrapper.find("input[type='checkbox']").element as HTMLInputElement).checked).toBe(true);
 
-    expect(http.put).toHaveBeenCalled();
+    expect(http.put).toHaveBeenCalledWith("/api/repository/repo-123/config/deb", expect.anything());
     const [, payload] = (http.put as vi.Mock).mock.calls[0] ?? [];
     expect(payload?.config?.refresh?.enabled).toBe(true);
   });

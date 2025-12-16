@@ -432,6 +432,7 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
             crate::repository::go::GoRepository::Hosted(_) => PackageStrategy::GoHosted,
             crate::repository::go::GoRepository::Proxy(_) => PackageStrategy::GoProxy,
         },
+        DynRepository::Ruby(_) => PackageStrategy::PackagesDirectory { base: Some("gems") },
     }
 }
 
@@ -451,6 +452,7 @@ fn catalog_deletion_mode(repository: &DynRepository) -> CatalogDeletionMode {
         },
         DynRepository::Php(_) => CatalogDeletionMode::ExactPath,
         DynRepository::Deb(_) => CatalogDeletionMode::ExactPath,
+        DynRepository::Ruby(_) => CatalogDeletionMode::ExactPath,
         DynRepository::Maven(_) => CatalogDeletionMode::StripLastSegment,
         // Helm uses repository-specific delete handlers that already update the catalog.
         DynRepository::Helm(_) => CatalogDeletionMode::None,

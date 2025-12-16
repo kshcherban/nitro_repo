@@ -41,6 +41,7 @@ use crate::{
         npm::{NPMRegistryConfigType, NpmRegistryType},
         php::{PhpRepositoryConfigType, PhpRepositoryType},
         python::{PythonRepositoryConfigType, PythonRepositoryType},
+        ruby::{RubyRepositoryConfigType, RubyRepositoryType},
         repo_tracing::RepositoryMetricsMeter,
     },
     utils::ip_addr::HasForwardedHeader,
@@ -888,6 +889,7 @@ pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
     &PythonRepositoryConfigType,
     &PhpRepositoryConfigType,
     &DebRepositoryConfigType,
+    &RubyRepositoryConfigType,
     &RepositoryAuthConfigType,
 ];
 
@@ -901,4 +903,5 @@ pub static REPOSITORY_TYPES: &[&dyn RepositoryType] = &[
     &PythonRepositoryType,
     &PhpRepositoryType,
     &DebRepositoryType,
+    &RubyRepositoryType,
 ];

@@ -7,6 +7,7 @@ import vuetify from "vite-plugin-vuetify";
 import fs from "fs";
 import browserslistToEsbuild from "browserslist-to-esbuild";
 import { ViteEjsPlugin } from "vite-plugin-ejs";
+import { stripLegacyMdiFontSourcesPlugin } from "./vite/plugins/stripLegacyMdiFontSources";
 
 export default defineConfig(async ({ command }): Promise<UserConfig> => {
   const isTest = process.env.VITEST === "true";
@@ -16,6 +17,7 @@ export default defineConfig(async ({ command }): Promise<UserConfig> => {
     typeof globalThis !== "undefined" &&
     typeof (globalThis as { window?: unknown }).window !== "undefined";
   const plugins: PluginOption[] = [
+    stripLegacyMdiFontSourcesPlugin(),
     vue(),
     vueJsx(),
     vuetify({ autoImport: true }),

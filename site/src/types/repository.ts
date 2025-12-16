@@ -7,6 +7,7 @@ import HelmConfig from "@/components/nr/repository/types/helm/HelmConfig.vue";
 import CargoConfig from "@/components/nr/repository/types/cargo/CargoConfig.vue";
 import DebConfig from "@/components/nr/repository/types/deb/DebConfig.vue";
 import DockerConfig from "@/components/nr/repository/types/docker/DockerConfig.vue";
+import RubyConfig from "@/components/nr/repository/types/ruby/RubyConfig.vue";
 
 import type { Component } from "vue";
 import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
@@ -17,6 +18,7 @@ import { MavenFrontendDefinition } from "@/components/nr/repository/types/maven/
 import { PythonFrontendDefinition } from "@/components/nr/repository/types/python/python";
 import { PhpFrontendDefinition } from "@/components/nr/repository/types/php/php";
 import { NpmFrontendDefinition } from "@/components/nr/repository/types/npm/npm";
+import { RubyFrontendDefinition } from "@/components/nr/repository/types/ruby/ruby";
 import { GoFrontendDefinition } from "@/components/nr/repository/types/go/go";
 import { HelmFrontendDefinition } from "@/components/nr/repository/types/helm/helm";
 import { DockerFrontendDefinition } from "@/components/nr/repository/types/docker/docker";
@@ -96,6 +98,11 @@ export const configTypes: ConfigType[] = [
     component: NPMConfig,
   },
   {
+    name: "ruby",
+    title: "Ruby Repository Config",
+    component: RubyConfig,
+  },
+  {
     name: "php",
     title: "PHP Repository Config",
     component: PhpConfig,
@@ -144,6 +151,7 @@ export const repositoryTypes: FrontendRepositoryType[] = [
   MavenFrontendDefinition,
   CargoFrontendDefinition,
   NpmFrontendDefinition,
+  RubyFrontendDefinition,
   PythonFrontendDefinition,
   PhpFrontendDefinition,
   GoFrontendDefinition,

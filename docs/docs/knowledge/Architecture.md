@@ -26,6 +26,7 @@ At runtime, Nitro Repo is a three-part system:
 - Cargo (`cargo`): hosted registry with sparse index support (publish API, index files, crate downloads).
 - Python (`python`): hosted + proxy (pip/simple endpoints and cached upstream artifacts).
 - PHP Composer (`php`): hosted + proxy (Composer V2 metadata and dist serving).
+- RubyGems (`ruby`): hosted + proxy (Compact Index endpoints, `.gem` downloads, publish/yank in hosted mode).
 - Docker (`docker`): hosted + proxy, including registry Bearer token auth support.
 - Helm (`helm`): hosted chart repository support.
 - Go (`go`): hosted + proxy, including module proxy endpoints.

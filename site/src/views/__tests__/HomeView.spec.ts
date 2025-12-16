@@ -98,6 +98,16 @@ const VSpacerStub = defineComponent({
 });
 
 const VIconStub = defineComponent({
+  props: {
+    icon: {
+      type: String,
+      default: "",
+    },
+    color: {
+      type: String,
+      default: "",
+    },
+  },
   template: "<i class='v-icon'><slot /></i>",
 });
 
@@ -222,5 +232,34 @@ describe("HomeView.vue", () => {
     field.vm.$emit("click:clear");
     await nextTick();
     expect((wrapper.vm as any).searchValue).toBe("");
+  });
+
+  it("uses the ruby language icon for ruby repositories", async () => {
+    repositoriesMock.mockResolvedValueOnce([
+      {
+        id: "repo-3",
+        name: "Ruby Gems",
+        repository_type: "ruby",
+        storage_name: "Primary",
+        auth_enabled: true,
+        storage_usage_bytes: 0,
+        active: true,
+      },
+    ]);
+
+    const wrapper = mount(HomeView, {
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const icons = wrapper.findAllComponents(VIconStub);
+    const rubyIcon = icons.find((icon) => icon.props("icon") === "mdi-language-ruby");
+    expect(rubyIcon).toBeTruthy();
+    expect(rubyIcon?.props("color")).toBe("#CC342D");
+
+    expect(icons.some((icon) => icon.props("icon") === "mdi-package-variant")).toBe(false);
   });
 });

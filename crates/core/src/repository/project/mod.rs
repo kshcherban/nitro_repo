@@ -16,6 +16,8 @@ pub mod cargo;
 pub use cargo::{CargoDependencyMetadata, CargoPackageMetadata};
 pub mod deb;
 pub use deb::DebPackageMetadata;
+pub mod ruby;
+pub use ruby::{RubyDependencyMetadata, RubyPackageMetadata};
 pub mod proxy;
 pub use proxy::{ProxyArtifactKey, ProxyArtifactMeta, ProxyMetadataKind};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]

@@ -208,6 +208,44 @@ INSERT INTO repository_configs (repository_id, key, value) VALUES
     ('55555555-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
 ON CONFLICT (repository_id, key) DO NOTHING;
 
+-- Ruby Hosted Repository
+INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
+VALUES (
+    '12121212-0000-0000-0000-000000000001'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'ruby-hosted',
+    'ruby',
+    'Public',
+    true
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO repository_configs (repository_id, key, value) VALUES
+    ('12121212-0000-0000-0000-000000000001'::uuid, 'ruby', '{"type": "Hosted"}'::jsonb),
+    ('12121212-0000-0000-0000-000000000001'::uuid, 'auth', '{"enabled": false}'::jsonb)
+ON CONFLICT (repository_id, key) DO NOTHING;
+
+-- Ruby Proxy Repository (proxies the local ruby-hosted repo for deterministic tests)
+INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
+VALUES (
+    '12121212-0000-0000-0000-000000000002'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'ruby-proxy',
+    'ruby',
+    'Public',
+    true
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO repository_configs (repository_id, key, value) VALUES
+    (
+        '12121212-0000-0000-0000-000000000002'::uuid,
+        'ruby',
+        '{"type": "Proxy", "config": {"upstream_url": "http://nitro-repo:8888/repositories/test-storage/ruby-hosted"}}'::jsonb
+    ),
+    ('12121212-0000-0000-0000-000000000002'::uuid, 'auth', '{"enabled": false}'::jsonb)
+ON CONFLICT (repository_id, key) DO NOTHING;
+
 -- Go Hosted Repository
 INSERT INTO repositories (id, storage_id, name, repository_type, visibility, active)
 VALUES (
