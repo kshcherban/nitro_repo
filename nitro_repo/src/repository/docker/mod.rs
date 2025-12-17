@@ -290,3 +290,6 @@ impl RepositoryType for DockerRepositoryType {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

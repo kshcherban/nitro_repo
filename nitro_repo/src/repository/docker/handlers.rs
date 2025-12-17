@@ -1024,17 +1024,19 @@ async fn put_manifest(
     repo.get_storage()
         .save_file(repo.id(), body.clone().into(), &manifest_path)
         .await?;
-    record_manifest_in_catalog(
-        &repo.site().database,
-        repo.id(),
-        repository_name,
-        reference,
-        &manifest_path,
-        &digest,
-        body_size,
-        publisher,
-    )
-    .await?;
+    if repo.catalog_indexing_enabled() {
+        record_manifest_in_catalog(
+            &repo.site().database,
+            repo.id(),
+            repository_name,
+            reference,
+            &manifest_path,
+            &digest,
+            body_size,
+            publisher,
+        )
+        .await?;
+    }
 
     // Also save by digest if this is a tag reference
     if !reference.starts_with("sha256:") {
@@ -1042,17 +1044,19 @@ async fn put_manifest(
         repo.get_storage()
             .save_file(repo.id(), body.into(), &digest_path)
             .await?;
-        record_manifest_in_catalog(
-            &repo.site().database,
-            repo.id(),
-            repository_name,
-            &digest,
-            &digest_path,
-            &digest,
-            body_size,
-            publisher,
-        )
-        .await?;
+        if repo.catalog_indexing_enabled() {
+            record_manifest_in_catalog(
+                &repo.site().database,
+                repo.id(),
+                repository_name,
+                &digest,
+                &digest_path,
+                &digest,
+                body_size,
+                publisher,
+            )
+            .await?;
+        }
     }
 
     Ok(custom_response(

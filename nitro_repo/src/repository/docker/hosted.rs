@@ -34,6 +34,12 @@ pub struct DockerHostedInner {
     pub active: AtomicBool,
     pub visibility: RwLock<Visibility>,
     pub push_rules: RwLock<DockerPushRules>,
+    /// Whether Docker manifest pushes should write catalog (projects/project_versions) entries.
+    ///
+    /// Some non-Docker repositories (e.g. Helm in OCI mode) reuse Docker V2 endpoints for storage,
+    /// but manage their own catalog entries. In those cases, writing Docker manifest entries would
+    /// conflict with the repository's catalog and can violate unique path constraints.
+    pub catalog_indexing_enabled: bool,
     #[debug(skip)]
     pub storage: DynStorage,
     #[debug(skip)]
@@ -52,6 +58,14 @@ pub struct ProxySettings {
 }
 
 impl DockerHosted {
+    pub(crate) fn catalog_indexing_enabled_for_repository_type(repository_type: &str) -> bool {
+        repository_type == super::REPOSITORY_TYPE_ID
+    }
+
+    pub(crate) fn catalog_indexing_enabled(&self) -> bool {
+        self.0.catalog_indexing_enabled
+    }
+
     pub async fn load(
         repository: DBRepository,
         storage: DynStorage,
@@ -65,6 +79,8 @@ impl DockerHosted {
         debug!("Loaded Docker Push Rules Config: {:?}", push_rules_db);
 
         let active = AtomicBool::new(repository.active);
+        let catalog_indexing_enabled =
+            Self::catalog_indexing_enabled_for_repository_type(&repository.repository_type);
 
         let inner = DockerHostedInner {
             id: repository.id,
@@ -72,6 +88,7 @@ impl DockerHosted {
             active,
             visibility: RwLock::new(repository.visibility),
             push_rules: RwLock::new(push_rules_db.value.0),
+            catalog_indexing_enabled,
             storage,
             site,
             proxy: None,
