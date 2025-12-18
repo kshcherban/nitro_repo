@@ -217,3 +217,38 @@ fn ansi_color_true_colorizes_level_in_compact_format() {
         "output was: {output}"
     );
 }
+
+#[test]
+fn ansi_color_true_in_compact_does_not_style_fields() {
+    let writer = BufferWriter::default();
+    let rules = StandardLoggerFmtRules {
+        include_time: false,
+        include_level: true,
+        include_target: false,
+        ansi_color: true,
+        ..StandardLoggerFmtRules::default()
+    };
+
+    let layer = rules.fmt_layer_for_registry_with_writer(
+        ConsoleLogFormat::Compact,
+        targets_all(),
+        writer.clone(),
+    );
+    let subscriber = Registry::default().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        info!(example_field = "value", "hello");
+    });
+
+    let output = read_buffer(&writer);
+    assert!(
+        output.contains("\u{1b}[32mINFO\u{1b}[0m"),
+        "output was: {output}"
+    );
+    let without_level = output
+        .replace("\u{1b}[32m", "")
+        .replace("\u{1b}[0m", "");
+    assert!(
+        !without_level.contains("\u{1b}["),
+        "unexpected ANSI styling in output: {output}"
+    );
+}

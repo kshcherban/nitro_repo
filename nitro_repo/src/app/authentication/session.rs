@@ -184,7 +184,10 @@ impl SessionManager {
         Self::ensure_sessions_table(&sessions)?;
 
         if mode == Mode::Debug {
-            println!("Opened database: {:?}", sessions);
+            debug!(
+                db.path = %session_config.database_location.display(),
+                "Opened sessions database"
+            );
             let txn = sessions.begin_read()?;
             let table = txn.open_table(TABLE)?;
             debug!("Found {} sessions", table.len()?);

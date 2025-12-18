@@ -91,7 +91,10 @@ impl StandardLoggerFmtRules {
         match format {
             ConsoleLogFormat::Compact => {
                 let layer = tracing_subscriber::fmt::layer::<Registry>()
-                    .with_ansi(self.ansi_color)
+                    // In compact mode, only the level is colorized (when enabled) by our custom
+                    // formatter. Keep the `fmt` layer itself non-ANSI to avoid styling fields
+                    // (italics/dim/background) in docker logs.
+                    .with_ansi(false)
                     .event_format(CompactTextEventFormat { rules: *self });
                 layer.with_filter(filter).boxed()
             }
@@ -160,7 +163,10 @@ impl StandardLoggerFmtRules {
             ConsoleLogFormat::Compact => {
                 let layer = tracing_subscriber::fmt::layer::<Registry>()
                     .with_writer(writer)
-                    .with_ansi(self.ansi_color)
+                    // In compact mode, only the level is colorized (when enabled) by our custom
+                    // formatter. Keep the `fmt` layer itself non-ANSI to avoid styling fields
+                    // (italics/dim/background) in docker logs.
+                    .with_ansi(false)
                     .event_format(CompactTextEventFormat { rules: *self });
                 layer.with_filter(filter).boxed()
             }

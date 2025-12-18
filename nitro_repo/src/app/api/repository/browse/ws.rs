@@ -368,7 +368,13 @@ impl StoragePathStream {
     ) -> Result<BrowseStreamPrimaryData, InternalError> {
         let span = Span::current();
         self.path = path;
-        info!(?self.path, "Changing directory");
+        let path_display = self.path.to_string();
+        let path_display = if path_display.is_empty() {
+            "/".to_string()
+        } else {
+            path_display
+        };
+        info!(path = %path_display, "Changing directory");
         self.sent_end_of_directory = false;
         let target_path = match &self.repository {
             DynRepository::Docker(_) => {
@@ -441,7 +447,6 @@ impl Future for NextItem<'_> {
         let this = self.project();
         match this.stream.poll_next(cx) {
             std::task::Poll::Ready(Some(file)) => {
-                println!("file: {:?}", file);
                 std::task::Poll::Ready(file.map_err(InternalError::from))
             }
             std::task::Poll::Ready(None) => {
