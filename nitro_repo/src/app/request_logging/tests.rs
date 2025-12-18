@@ -105,6 +105,7 @@ fn access_log_emits_required_fields_once() {
             status_code: Some(200),
             http_route: "/api/test".to_string(),
             http_method: "GET".to_string(),
+            url_path: "/api/test?ignored=true".to_string(),
             access_log,
             access_logged: false,
             request_id: RequestId::new_random(),
@@ -127,6 +128,10 @@ fn access_log_emits_required_fields_once() {
     );
     assert!(
         output.contains("\"http.route\":\"/api/test\""),
+        "output was: {output}"
+    );
+    assert!(
+        output.contains("\"url.path\":\"/api/test?ignored=true\""),
         "output was: {output}"
     );
     assert!(
@@ -164,6 +169,7 @@ fn access_log_omits_optional_fields_when_not_present() {
             status_code: Some(204),
             http_route: "/api/empty".to_string(),
             http_method: "GET".to_string(),
+            url_path: "/api/empty".to_string(),
             access_log,
             access_logged: false,
             request_id: RequestId::new_random(),

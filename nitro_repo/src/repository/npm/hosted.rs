@@ -68,7 +68,7 @@ impl NPMHostedRegistry {
             return Ok(RepoResponse::unauthorized());
         };
         let body = request.body.body_as_string().await?;
-        debug!(?body, "Handling publish request");
+        debug!(body.len = body.len(), "Handling publish request");
         let PublishRequest {
             name,
             attachments,
@@ -99,7 +99,6 @@ impl NPMHostedRegistry {
             .await?;
 
         for (file, attachment) in attachments.into_iter() {
-            info!(?file, ?attachment, "Saving Attachment");
             let mut path = version_path.clone();
             if file.starts_with("@") && file.contains("/") {
                 let split = file.split("/").collect::<Vec<&str>>();
@@ -108,6 +107,7 @@ impl NPMHostedRegistry {
                 path.push_mut(&file);
             }
             let attachment_data = attachment.read_data()?;
+            info!(file = %file, attachment.size_bytes = attachment_data.len(), "Saving attachment");
             let storage = self.get_storage();
             storage
                 .save_file(self.id, FileContent::Content(attachment_data), &path)

@@ -536,7 +536,7 @@ mod repository_kind_tests {
 
     #[test]
     fn maven_proxy_reports_proxy_kind() {
-        let config = MavenRepositoryConfig::Proxy(MavenProxyConfig { routes: vec![] });
+        let config = MavenRepositoryConfig::Proxy(MavenProxyConfig::default());
         assert_eq!(config.proxy_kind_label(), Some("proxy"));
     }
 

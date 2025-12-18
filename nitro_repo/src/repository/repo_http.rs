@@ -281,7 +281,7 @@ impl RepositoryRequestBody {
         self,
     ) -> Result<T, RepositoryHandlerError> {
         let body = self.body_as_string().await?;
-        debug!(?body, "Body as JSON");
+        debug!(body.len = body.len(), "Body as JSON");
         Ok(serde_json::from_str(&body).map_err(BadRequestErrors::from)?)
     }
     #[instrument]

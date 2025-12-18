@@ -85,6 +85,7 @@ where
             .get::<MatchedPath>()
             .map_or(req.uri().path(), |p| p.as_str());
         let http_route = path.to_owned();
+        let url_path = req.uri().path().to_string();
         let http_method = req.method().as_str().to_string();
         let request_id = RequestId::new_random();
         let attributes = vec![
@@ -124,6 +125,7 @@ where
             access_log,
             http_route,
             http_method,
+            url_path,
         }
     }
 }
@@ -143,6 +145,7 @@ pub struct TraceResponseFuture<F> {
     access_log: AccessLogContext,
     http_route: String,
     http_method: String,
+    url_path: String,
 }
 
 impl<F, E> Future for TraceResponseFuture<F>
@@ -207,6 +210,7 @@ where
                 let access_log = this.access_log.clone();
                 let http_route = this.http_route.clone();
                 let http_method = this.http_method.clone();
+                let url_path = this.url_path.clone();
                 let request_id = *this.request_id;
                 let metrics = state.metrics.clone();
                 let res: Response<TraceResponseBody> = response.map(|body| TraceResponseBody {
@@ -221,6 +225,7 @@ where
                     status_code: Some(status_code),
                     http_route,
                     http_method,
+                    url_path,
                     access_log,
                     access_logged: false,
                     request_id,
@@ -246,6 +251,7 @@ where
                     *this.request_id,
                     &*this.http_method,
                     &*this.http_route,
+                    &*this.url_path,
                     Some(500),
                     None,
                     &*this.access_log,

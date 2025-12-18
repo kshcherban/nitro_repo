@@ -74,9 +74,9 @@ pub async fn perform_login(
     };
     let user_name = path_as_string.replace("-/user/org.couchdb.user:", "");
     let body = request.body.body_as_string().await?;
-    debug!(?user_name, ?body, "Handling PUT request");
+    debug!(user_name = %user_name, body.len = body.len(), "Handling PUT request");
     let login: CouchDBLoginRequest = serde_json::from_str(&body)?;
-    debug!(?login, "Handling PUT request");
+    debug!(user_name = %user_name, login.name = %login.name, "Handling PUT request");
     let user = match verify_login(login.name, login.password, repository.site().as_ref()).await {
         Ok(ok) => ok,
         Err(_err) => {

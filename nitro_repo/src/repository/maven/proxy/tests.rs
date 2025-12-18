@@ -87,7 +87,10 @@ fn snapshot_routes_releases_read_lock() {
         name: None,
         priority: Some(1),
     }];
-    let lock = RwLock::new(MavenProxyConfig { routes });
+    let lock = RwLock::new(MavenProxyConfig {
+        routes,
+        prefetch: MavenProxyPrefetchConfig::default(),
+    });
 
     let cloned = snapshot_routes(&lock);
     assert_eq!(cloned.len(), 1);
@@ -98,7 +101,7 @@ fn snapshot_routes_releases_read_lock() {
 }
 
 #[tokio::test]
-async fn stream_response_to_tempfile_streams_full_body() {
+async fn read_response_bytes_reads_full_body() {
     let payload = vec![7u8; 64 * 1024];
     let chunks: Vec<Bytes> = payload
         .chunks(4096)
@@ -145,21 +148,16 @@ async fn stream_response_to_tempfile_streams_full_body() {
         .await
         .expect("http request");
 
-    let streamed = stream_response_to_tempfile(response)
-        .await
-        .expect("stream to tempfile");
-    let stored = tokio::fs::read(&streamed.path)
-        .await
-        .expect("read tempfile");
+    let downloaded = read_response_bytes(response).await.expect("read bytes");
 
-    assert_eq!(stored, payload);
-    assert_eq!(streamed.size, payload.len() as u64);
+    assert_eq!(downloaded.bytes, payload);
+    assert_eq!(downloaded.size, payload.len() as u64);
 
     server.abort();
 }
 
 #[tokio::test]
-async fn persist_streamed_download_records_size_and_writes_file() -> anyhow::Result<()> {
+async fn persist_downloaded_bytes_records_size_and_writes_file() -> anyhow::Result<()> {
     let repository_id = Uuid::new_v4();
     let tempdir = tempdir()?;
     let storage = DynStorage::Local(
@@ -172,24 +170,20 @@ async fn persist_streamed_download_records_size_and_writes_file() -> anyhow::Res
         .await?,
     );
 
-    let content = b"artifact-bytes".to_vec();
-    let file = tempfile::Builder::new()
-        .prefix("maven-proxy-test-")
-        .tempfile()?;
-    std::fs::write(file.path(), &content)?;
-    let streamed = StreamedDownload {
-        path: file.into_temp_path(),
+    let content = Bytes::from_static(b"artifact-bytes");
+    let downloaded = DownloadedBytes {
         size: content.len() as u64,
+        bytes: content.clone(),
     };
 
     let dest = StoragePath::from("com/example/app/1.0.0/app-1.0.0.jar");
     let indexer = Arc::new(RecordingIndexer::default());
 
-    persist_streamed_download(
+    persist_downloaded_bytes(
         &storage,
         repository_id,
         Some(indexer.as_ref()),
-        &streamed,
+        &downloaded,
         &dest,
     )
     .await?;
@@ -205,4 +199,38 @@ async fn persist_streamed_download_records_size_and_writes_file() -> anyhow::Res
     assert!(saved.is_file());
 
     Ok(())
+}
+
+#[test]
+fn project_download_files_prefers_jar_and_can_disable_sources_javadoc() {
+    let pom: Pom = crate::repository::maven::utils::parse_pom_bytes(
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.2.3</version>
+</project>
+"#
+        .to_vec(),
+    )
+    .expect("parse POM");
+
+    let prefetch = MavenProxyPrefetchConfig {
+        jar: true,
+        sources: false,
+        javadoc: false,
+    };
+    let files = project_download_files(&pom, &prefetch).expect("files");
+    assert_eq!(files, vec!["demo-1.2.3.jar"]);
+}
+
+#[test]
+fn maven_proxy_prefetch_config_deserializes_with_defaults() {
+    let parsed: MavenProxyConfig =
+        serde_json::from_str(r#"{ "routes": [] }"#).expect("deserialize");
+    assert!(parsed.prefetch.jar, "jar prefetch should default on");
+    assert!(!parsed.prefetch.sources, "sources prefetch should default off");
+    assert!(!parsed.prefetch.javadoc, "javadoc prefetch should default off");
 }

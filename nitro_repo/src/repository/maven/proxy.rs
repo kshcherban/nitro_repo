@@ -7,7 +7,6 @@ use std::{
 use axum::{body::Body, response::Response};
 use bytes::Bytes;
 use chrono::Utc;
-use futures::StreamExt;
 use http::{
     StatusCode,
     header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED},
@@ -27,8 +26,6 @@ use nr_storage::{DynStorage, FileContent, Storage, StorageFile};
 use parking_lot::RwLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tempfile::Builder;
-use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, instrument, warn};
 use uuid::Uuid;
 
@@ -47,6 +44,8 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MavenProxyConfig {
     pub routes: Vec<MavenProxyRepositoryRoute>,
+    #[serde(default)]
+    pub prefetch: MavenProxyPrefetchConfig,
 }
 impl MavenProxyConfig {
     pub fn sort(&mut self) {
@@ -58,6 +57,43 @@ impl MavenProxyConfig {
         });
     }
 }
+
+impl Default for MavenProxyConfig {
+    fn default() -> Self {
+        Self {
+            routes: Vec::new(),
+            prefetch: MavenProxyPrefetchConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MavenProxyPrefetchConfig {
+    /// Prefetch the main `*.jar` for a project when a `.pom` is requested.
+    #[serde(default = "default_true")]
+    pub jar: bool,
+    /// Prefetch `*-sources.jar` when a `.pom` is requested.
+    #[serde(default)]
+    pub sources: bool,
+    /// Prefetch `*-javadoc.jar` when a `.pom` is requested.
+    #[serde(default)]
+    pub javadoc: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for MavenProxyPrefetchConfig {
+    fn default() -> Self {
+        Self {
+            jar: true,
+            sources: false,
+            javadoc: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MavenProxyRepositoryRoute {
     pub url: ProxyURL,
@@ -67,62 +103,66 @@ pub struct MavenProxyRepositoryRoute {
     // TODO: Credentials
 }
 
-#[derive(Debug)]
-struct StreamedDownload {
-    path: tempfile::TempPath,
-    size: u64,
-}
-
 fn snapshot_routes(config: &RwLock<MavenProxyConfig>) -> Vec<MavenProxyRepositoryRoute> {
     config.read().routes.clone()
 }
 
-async fn stream_response_to_tempfile(
-    response: reqwest::Response,
-) -> Result<StreamedDownload, MavenError> {
-    let named = Builder::new().prefix("maven-proxy-").tempfile()?;
-    let (std_file, path) = named.into_parts();
-    let mut file = tokio::fs::File::from_std(std_file);
-
-    let mut total = 0u64;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        total += chunk.len() as u64;
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
-    file.sync_all().await?;
-
-    Ok(StreamedDownload { path, size: total })
+#[derive(Debug, Clone)]
+struct DownloadedBytes {
+    bytes: Bytes,
+    size: u64,
 }
 
-async fn persist_streamed_download(
+async fn read_response_bytes(response: reqwest::Response) -> Result<DownloadedBytes, MavenError> {
+    let bytes = response.bytes().await?;
+    Ok(DownloadedBytes {
+        size: bytes.len() as u64,
+        bytes,
+    })
+}
+
+async fn persist_downloaded_bytes(
     storage: &DynStorage,
     repository_id: Uuid,
     indexer: Option<&dyn ProxyIndexing>,
-    streamed: &StreamedDownload,
+    downloaded: &DownloadedBytes,
     to: &StoragePath,
 ) -> Result<(), MavenError> {
     storage
         .save_file(
             repository_id,
-            FileContent::Path(streamed.path.to_path_buf()),
+            FileContent::Bytes(downloaded.bytes.clone()),
             to,
         )
         .await?;
-    record_maven_proxy_cache_hit(indexer, to, streamed.size).await?;
+    record_maven_proxy_cache_hit(indexer, to, downloaded.size).await?;
     Ok(())
 }
-fn project_download_files(pom: &Pom) -> Result<Vec<String>, MavenError> {
+
+fn project_download_files(
+    pom: &Pom,
+    prefetch: &MavenProxyPrefetchConfig,
+) -> Result<Vec<String>, MavenError> {
+    if !prefetch.jar && !prefetch.sources && !prefetch.javadoc {
+        return Ok(Vec::new());
+    }
+
     let version = pom
         .get_version()
         .ok_or(MavenError::MissingFromPom("version"))?;
-    Ok(vec![
-        format!("{}-{}.jar", pom.artifact_id, version),
-        format!("{}-{}-sources.jar", pom.artifact_id, version),
-        format!("{}-{}-javadoc.jar", pom.artifact_id, version),
-    ])
+
+    let mut files = Vec::new();
+    if prefetch.jar {
+        files.push(format!("{}-{}.jar", pom.artifact_id, version));
+    }
+    if prefetch.sources {
+        files.push(format!("{}-{}-sources.jar", pom.artifact_id, version));
+    }
+    if prefetch.javadoc {
+        files.push(format!("{}-{}-javadoc.jar", pom.artifact_id, version));
+    }
+
+    Ok(files)
 }
 pub struct MavenProxyInner {
     pub storage: DynStorage,
@@ -133,6 +173,7 @@ pub struct MavenProxyInner {
     pub active: AtomicBool,
     pub config: RwLock<MavenProxyConfig>,
     pub indexer: Arc<dyn ProxyIndexing>,
+    pub http_client: reqwest::Client,
 }
 
 impl fmt::Debug for MavenProxyInner {
@@ -160,6 +201,10 @@ impl MavenProxy {
         site: NitroRepo,
         proxy_config: MavenProxyConfig,
     ) -> Result<Self, RepositoryFactoryError> {
+        let http_client = reqwest::Client::builder()
+            .user_agent("Nitro Repo")
+            .build()
+            .map_err(|err| RepositoryFactoryError::InvalidConfig("maven/proxy", err.to_string()))?;
         let indexer: Arc<dyn ProxyIndexing> =
             Arc::new(DatabaseProxyIndexer::new(site.clone(), repository.id));
         let inner = MavenProxyInner {
@@ -171,26 +216,39 @@ impl MavenProxy {
             storage,
             site,
             indexer,
+            http_client,
         };
         Ok(Self(Arc::new(inner)))
     }
-    #[instrument(skip(self), fields(nr.repository.id = %self.id, nr.repository.name = %self.name))]
+    #[instrument(
+        skip(self, pom),
+        fields(
+            nr.repository.id = %self.id,
+            nr.repository.name = %self.name,
+            pom.size = pom.len()
+        )
+    )]
     pub async fn proxy_project_download(
         &self,
         path: StoragePath,
         proxy_config: MavenProxyRepositoryRoute,
         pom: Bytes,
+        prefetch: MavenProxyPrefetchConfig,
     ) -> Result<(), MavenError> {
         let pom = self.parse_pom(pom.to_vec())?;
         let version_dir = path.clone().parent();
-        let http_client = reqwest::Client::builder()
-            .user_agent("Nitro Repo")
-            .build()?;
 
-        for file in project_download_files(&pom)? {
+        let http_client = self.http_client.clone();
+
+        for file in project_download_files(&pom, &prefetch)? {
             debug!(?file, "Downloading file");
             let mut path = version_dir.clone();
             path.push_mut(&file);
+
+            if self.storage.file_exists(self.id, &path).await? {
+                continue;
+            }
+
             let url_string = format!("{}/{}", proxy_config.url, path);
             let url = match url::Url::parse(&url_string) {
                 Ok(url) => url,
@@ -203,12 +261,12 @@ impl MavenProxy {
             match crate::utils::upstream::send(&http_client, http_client.get(url.clone())).await {
                 Ok(response) => {
                     if response.status().is_success() {
-                        let streamed = stream_response_to_tempfile(response).await?;
-                        persist_streamed_download(
+                        let downloaded = read_response_bytes(response).await?;
+                        persist_downloaded_bytes(
                             &self.storage,
                             self.id,
                             Some(self.indexer().as_ref()),
-                            &streamed,
+                            &downloaded,
                             &path,
                         )
                         .await?;
@@ -245,9 +303,8 @@ impl MavenProxy {
         //  Similar path being both starting with /dev/kingtux/tms/... They should be in the same proxy
         // TODO: Handle projects. When requesting a path such as /dev/kingtux/tms/1.0.0/tms-1.0.0.pom. Go ahead and download all files in that directory.
         let routes = snapshot_routes(&self.config);
-        let http_client = reqwest::Client::builder()
-            .user_agent("Nitro Repo")
-            .build()?;
+        let http_client = self.http_client.clone();
+        let prefetch = self.config.read().prefetch.clone();
         for route in routes {
             let mut path_as_string = path.to_string();
             if path_as_string.starts_with("/") {
@@ -272,26 +329,30 @@ impl MavenProxy {
                 };
             if response.status().is_success() {
                 let is_pom = path_as_string.ends_with(".pom");
-                let streamed = stream_response_to_tempfile(response).await?;
-                if is_pom {
-                    let pom_bytes = tokio::fs::read(&streamed.path).await?;
-                    self.proxy_project_download(
-                        path.clone(),
-                        route.clone(),
-                        Bytes::from(pom_bytes),
-                    )
-                    .await?;
-                }
-                persist_streamed_download(
+                let downloaded = read_response_bytes(response).await?;
+                persist_downloaded_bytes(
                     &self.storage,
                     self.id,
                     Some(self.indexer().as_ref()),
-                    &streamed,
+                    &downloaded,
                     &path,
                 )
                 .await?;
-                if path_as_string.ends_with(".pom") {
-                    // POM was already parsed and project files downloaded above
+
+                if is_pom {
+                    let this = self.clone();
+                    let route = route.clone();
+                    let path = path.clone();
+                    let pom = downloaded.bytes.clone();
+                    let prefetch = prefetch.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = this
+                            .proxy_project_download(path, route, pom, prefetch)
+                            .await
+                        {
+                            warn!(error = %err, "Failed to prefetch Maven project files");
+                        }
+                    });
                 }
                 return Ok(self.storage.open_file(self.id, &path).await?);
             } else {
