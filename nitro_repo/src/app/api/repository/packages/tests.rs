@@ -1420,8 +1420,15 @@ mod catalog_db_tests {
         version: &str,
         version_path: &str,
     ) {
-        insert_maven_version_named(pool, repository_id, project_key, project_key, version, version_path)
-            .await;
+        insert_maven_version_named(
+            pool,
+            repository_id,
+            project_key,
+            project_key,
+            version,
+            version_path,
+        )
+        .await;
     }
 
     async fn insert_maven_version_named(
@@ -1864,12 +1871,14 @@ mod catalog_db_tests {
             .await;
         }
 
-        let hosted_first = super::fetch_maven_catalog_page(db.pool(), hosted_repository_id, 2, 0, None)
-            .await
-            .expect("hosted first page");
-        let proxy_first = super::fetch_proxy_catalog_page(db.pool(), proxy_repository_id, 2, 0, None)
-            .await
-            .expect("proxy first page");
+        let hosted_first =
+            super::fetch_maven_catalog_page(db.pool(), hosted_repository_id, 2, 0, None)
+                .await
+                .expect("hosted first page");
+        let proxy_first =
+            super::fetch_proxy_catalog_page(db.pool(), proxy_repository_id, 2, 0, None)
+                .await
+                .expect("proxy first page");
         assert_eq!(
             hosted_first
                 .iter()
@@ -1923,24 +1932,14 @@ mod catalog_db_tests {
         assert_eq!(hosted_named[0].project_key, "aaa");
         assert_eq!(proxy_named[0].project_key, "aaa");
 
-        let hosted_version = super::fetch_maven_catalog_page(
-            db.pool(),
-            hosted_repository_id,
-            10,
-            0,
-            Some("2.0.0"),
-        )
-        .await
-        .expect("hosted version search");
-        let proxy_version = super::fetch_proxy_catalog_page(
-            db.pool(),
-            proxy_repository_id,
-            10,
-            0,
-            Some("2.0.0"),
-        )
-        .await
-        .expect("proxy version search");
+        let hosted_version =
+            super::fetch_maven_catalog_page(db.pool(), hosted_repository_id, 10, 0, Some("2.0.0"))
+                .await
+                .expect("hosted version search");
+        let proxy_version =
+            super::fetch_proxy_catalog_page(db.pool(), proxy_repository_id, 10, 0, Some("2.0.0"))
+                .await
+                .expect("proxy version search");
         assert_eq!(hosted_version.len(), 1);
         assert_eq!(proxy_version.len(), 1);
         assert_eq!(hosted_version[0].project_key, "bbb");

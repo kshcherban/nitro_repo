@@ -74,28 +74,32 @@ fn build_gemspec_rz_encodes_minimal_spec() {
         gem_version_string(obj.get("@version").unwrap()).as_deref(),
         Some("1.2.3")
     );
-    assert_eq!(
-        obj.get("@platform").unwrap().as_string().unwrap(),
-        "ruby"
-    );
+    assert_eq!(obj.get("@platform").unwrap().as_string().unwrap(), "ruby");
 
     let deps = obj.get("@dependencies").unwrap().as_array().unwrap();
     assert_eq!(deps.len(), 1);
     let dep_obj = deps[0].as_object().unwrap();
     assert_eq!(dep_obj.name.as_str().unwrap(), "Gem::Dependency");
+    assert_eq!(dep_obj.get("@name").unwrap().as_string().unwrap(), "rack");
     assert_eq!(
-        dep_obj.get("@name").unwrap().as_string().unwrap(),
-        "rack"
-    );
-    assert_eq!(
-        dep_obj.get("@type").unwrap().as_symbol().unwrap().as_str().unwrap(),
+        dep_obj
+            .get("@type")
+            .unwrap()
+            .as_symbol()
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "runtime"
     );
 
     let requirement = dep_obj.get("@requirement").unwrap().as_object().unwrap();
     assert_eq!(requirement.name.as_str().unwrap(), "Gem::Requirement");
 
-    let pairs = requirement.get("@requirements").unwrap().as_array().unwrap();
+    let pairs = requirement
+        .get("@requirements")
+        .unwrap()
+        .as_array()
+        .unwrap();
     assert_eq!(pairs.len(), 1);
     let pair = pairs[0].as_array().unwrap();
     assert_eq!(pair[0].as_string().unwrap(), "~>");

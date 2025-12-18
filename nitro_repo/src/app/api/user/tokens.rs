@@ -93,7 +93,7 @@ async fn create(
         (status = 200, description = "A New Auth Token was created", body=[AuthTokenFullResponse]),
     ),
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.get_id()))]
 async fn list(
     auth: OnlySessionAllowedAuthentication,
     State(site): State<NitroRepo>,
@@ -109,7 +109,7 @@ async fn list(
         (status = 200, description = "A New Auth Token was created", body=AuthTokenFullResponse),
     ),
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.get_id(), token_id = %id))]
 
 async fn get_token(
     auth: OnlySessionAllowedAuthentication,
@@ -127,7 +127,7 @@ async fn get_token(
         (status = 200, description = "Token Deleted"),
     ),
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.get_id(), token_id = %id))]
 async fn delete_token(
     auth: OnlySessionAllowedAuthentication,
     Path(id): Path<i32>,

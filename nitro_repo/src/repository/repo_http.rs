@@ -23,7 +23,7 @@ use crate::{
     },
     utils::{
         bad_request::BadRequestErrors, header::date_time::date_time_for_header,
-        request_logging::request_span::RequestSpan,
+        request_logging::{access_log::AccessLogContext, request_span::RequestSpan},
     },
 };
 pub mod repo_tracing;
@@ -616,6 +616,12 @@ async fn handle_repo_request_core(
         return Ok(RepoResponse::disabled_repository().into_response_default());
     }
     let (parts, body) = request.into_parts();
+    if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+        ctx.set_repository_id(repository.id());
+        if let Some(user) = authentication.get_user() {
+            ctx.set_user(user.username.as_ref().to_string());
+        }
+    }
     let path = path.unwrap_or_default();
     let trace =
         RepositoryRequestTracing::new(&repository, &parent_span, site.repository_metrics.clone());

@@ -27,30 +27,35 @@ struct UpstreamState {
 async fn start_upstream_server(state: UpstreamState) -> anyhow::Result<(ProxyURL, JoinHandle<()>)> {
     let app = Router::new().route(
         "/{*path}",
-        get(|State(state): State<UpstreamState>, headers: HeaderMap| async move {
-            state.counter.fetch_add(1, Ordering::SeqCst);
-            if let Some(value) = headers.get(http::header::RANGE).and_then(|v| v.to_str().ok()) {
-                *state.last_range.lock().await = Some(value.to_string());
-                if let Some(start) = range_start_bytes(value) {
-                    let start_u64 = start;
-                    let start: usize = start.try_into().unwrap_or(usize::MAX);
-                    let slice = state
-                        .payload
-                        .get(start..)
-                        .map(|bytes| Bytes::copy_from_slice(bytes))
-                        .unwrap_or_default();
-                    let total = state.payload.len();
-                    let end = total.saturating_sub(1);
-                    let content_range = format!("bytes {start_u64}-{end}/{total}");
-                    return ResponseBuilder::default()
-                        .status(StatusCode::PARTIAL_CONTENT)
-                        .header(http::header::ACCEPT_RANGES, "bytes")
-                        .header(http::header::CONTENT_RANGE, content_range)
-                        .body(slice);
+        get(
+            |State(state): State<UpstreamState>, headers: HeaderMap| async move {
+                state.counter.fetch_add(1, Ordering::SeqCst);
+                if let Some(value) = headers
+                    .get(http::header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    *state.last_range.lock().await = Some(value.to_string());
+                    if let Some(start) = range_start_bytes(value) {
+                        let start_u64 = start;
+                        let start: usize = start.try_into().unwrap_or(usize::MAX);
+                        let slice = state
+                            .payload
+                            .get(start..)
+                            .map(|bytes| Bytes::copy_from_slice(bytes))
+                            .unwrap_or_default();
+                        let total = state.payload.len();
+                        let end = total.saturating_sub(1);
+                        let content_range = format!("bytes {start_u64}-{end}/{total}");
+                        return ResponseBuilder::default()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header(http::header::ACCEPT_RANGES, "bytes")
+                            .header(http::header::CONTENT_RANGE, content_range)
+                            .body(slice);
+                    }
                 }
-            }
-            ResponseBuilder::ok().body(state.payload.clone())
-        }),
+                ResponseBuilder::ok().body(state.payload.clone())
+            },
+        ),
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -104,7 +109,11 @@ async fn cache_through_returns_hit_without_contacting_upstream() {
     let repo_id = Uuid::new_v4();
     let path = StoragePath::from("gems/rack-3.0.0.gem");
     storage
-        .save_file(repo_id, FileContent::Bytes(Bytes::from_static(b"cached")), &path)
+        .save_file(
+            repo_id,
+            FileContent::Bytes(Bytes::from_static(b"cached")),
+            &path,
+        )
         .await
         .expect("seed cache");
 
@@ -117,10 +126,9 @@ async fn cache_through_returns_hit_without_contacting_upstream() {
     let (upstream, _server) = start_upstream_server(state).await.expect("upstream");
 
     let client = reqwest::Client::new();
-    let outcome =
-        fetch_and_cache_if_missing(&client, &storage, repo_id, &upstream, &path, None)
-            .await
-            .expect("cache-through succeeds");
+    let outcome = fetch_and_cache_if_missing(&client, &storage, repo_id, &upstream, &path, None)
+        .await
+        .expect("cache-through succeeds");
     assert_eq!(outcome, CacheThroughOutcome::Hit);
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
@@ -155,10 +163,9 @@ async fn cache_through_fetches_upstream_on_miss_and_persists() {
     let (upstream, _server) = start_upstream_server(state).await.expect("upstream");
 
     let client = reqwest::Client::new();
-    let outcome =
-        fetch_and_cache_if_missing(&client, &storage, repo_id, &upstream, &path, None)
-            .await
-            .expect("cache-through succeeds");
+    let outcome = fetch_and_cache_if_missing(&client, &storage, repo_id, &upstream, &path, None)
+        .await
+        .expect("cache-through succeeds");
     assert!(matches!(outcome, CacheThroughOutcome::Fetched { .. }));
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 
@@ -172,7 +179,11 @@ async fn range_fetch_forwards_header_and_appends_when_suffix_matches_cache_size(
     let repo_id = Uuid::new_v4();
     let path = StoragePath::from("versions");
     storage
-        .save_file(repo_id, FileContent::Bytes(Bytes::from_static(b"abc")), &path)
+        .save_file(
+            repo_id,
+            FileContent::Bytes(Bytes::from_static(b"abc")),
+            &path,
+        )
         .await
         .expect("seed cache");
 
@@ -186,13 +197,7 @@ async fn range_fetch_forwards_header_and_appends_when_suffix_matches_cache_size(
 
     let client = reqwest::Client::new();
     let outcome = fetch_range_and_maybe_append(
-        &client,
-        &storage,
-        repo_id,
-        &upstream,
-        &path,
-        None,
-        "bytes=3-",
+        &client, &storage, repo_id, &upstream, &path, None, "bytes=3-",
     )
     .await
     .expect("range succeeds");

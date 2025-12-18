@@ -374,13 +374,13 @@ impl GoProxy {
 
         debug!("Proxying sumdb request to: {}", url);
 
-        let response = self
-            .0
-            .client
-            .get(&url)
-            .header("Accept", "text/plain, */*")
-            .send()
-            .await
+        let response = crate::utils::upstream::send(
+            &self.0.client,
+            self.0.client
+                .get(&url)
+                .header("Accept", "text/plain, */*"),
+        )
+        .await
             .map_err(|e| {
                 crate::repository::RepositoryHandlerError::Other(Box::new(
                     crate::utils::bad_request::BadRequestErrors::Other(format!(
@@ -551,16 +551,14 @@ impl GoProxy {
 
         debug!("Proxying Go module request to: {}", proxy_url);
 
-        let response = self
-            .0
-            .client
-            .get(&proxy_url)
-            .header(
+        let response = crate::utils::upstream::send(
+            &self.0.client,
+            self.0.client.get(&proxy_url).header(
                 "Accept",
                 "application/json, text/plain, application/zip, */*",
-            )
-            .send()
-            .await
+            ),
+        )
+        .await
             .map_err(|e| {
                 crate::repository::RepositoryHandlerError::Other(Box::new(
                     crate::utils::bad_request::BadRequestErrors::Other(format!(
@@ -606,16 +604,14 @@ impl GoProxy {
 
         debug!("Proxying Go module HEAD request to: {}", proxy_url);
 
-        let response = self
-            .0
-            .client
-            .head(&proxy_url)
-            .header(
+        let response = crate::utils::upstream::send(
+            &self.0.client,
+            self.0.client.head(&proxy_url).header(
                 "Accept",
                 "application/json, text/plain, application/zip, */*",
-            )
-            .send()
-            .await
+            ),
+        )
+        .await
             .map_err(|e| {
                 crate::repository::RepositoryHandlerError::Other(Box::new(
                     crate::utils::bad_request::BadRequestErrors::Other(format!(

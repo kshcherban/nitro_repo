@@ -28,12 +28,9 @@ fn gem_requirement(pairs: &[(&str, &str)]) -> RbAny {
             gem_version(version),
         ]));
     }
-    RbObject::new_from_slice(
-        "Gem::Requirement",
-        &[("@requirements", RbAny::from(reqs))],
-    )
-    .into_object()
-    .into()
+    RbObject::new_from_slice("Gem::Requirement", &[("@requirements", RbAny::from(reqs))])
+        .into_object()
+        .into()
 }
 
 fn dependency(name: &str, kind: &str, req: RbAny) -> RbAny {
@@ -56,7 +53,11 @@ fn gem_platform(cpu: &str, os: &str, version: Option<&str>) -> RbAny {
     };
     RbObject::new_from_slice(
         "Gem::Platform",
-        &[("@cpu", cpu.into()), ("@os", os.into()), ("@version", version_any)],
+        &[
+            ("@cpu", cpu.into()),
+            ("@os", os.into()),
+            ("@version", version_any),
+        ],
     )
     .into_object()
     .into()
@@ -244,5 +245,8 @@ required_rubygems_version: !ruby/object:Gem::Requirement
     assert_eq!(parsed.required_rubygems.as_deref(), Some(">= 3.0.0"));
     assert_eq!(parsed.dependencies.len(), 1);
     assert_eq!(parsed.dependencies[0].name, "rack");
-    assert_eq!(parsed.dependencies[0].requirements, vec!["~> 1.0".to_string()]);
+    assert_eq!(
+        parsed.dependencies[0].requirements,
+        vec!["~> 1.0".to_string()]
+    );
 }

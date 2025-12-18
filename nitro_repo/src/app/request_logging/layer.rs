@@ -18,7 +18,9 @@ use tracing::error;
 use super::{X_REQUEST_ID, response_body::TraceResponseBody};
 use crate::{
     app::{AppMetrics, NitroRepo},
-    utils::request_logging::{request_id::RequestId, request_span::RequestSpan},
+    utils::request_logging::{
+        access_log::AccessLogContext, request_id::RequestId, request_span::RequestSpan,
+    },
 };
 
 /// Tracks active requests using an up-down counter. Ensures we always decrement
@@ -82,13 +84,18 @@ where
             .extensions()
             .get::<MatchedPath>()
             .map_or(req.uri().path(), |p| p.as_str());
+        let http_route = path.to_owned();
+        let http_method = req.method().as_str().to_string();
         let request_id = RequestId::new_random();
         let attributes = vec![
-            KeyValue::new("http.route", path.to_owned()),
-            KeyValue::new("http.request.method", req.method().as_str().to_string()),
+            KeyValue::new("http.route", http_route.clone()),
+            KeyValue::new("http.request.method", http_method.clone()),
         ];
         let site: NitroRepo = self.site.clone();
         let body_size = req.body().size_hint().lower();
+
+        let access_log = AccessLogContext::default();
+        req.extensions_mut().insert(access_log.clone());
 
         // Track active request immediately; guard will decrement at end of stream or on error.
         let active_request = ActiveRequestGuard::start(&site.metrics, attributes.clone());
@@ -114,6 +121,9 @@ where
             attributes,
             request_id,
             active_request: Some(active_request),
+            access_log,
+            http_route,
+            http_method,
         }
     }
 }
@@ -130,6 +140,9 @@ pub struct TraceResponseFuture<F> {
 
     request_id: RequestId,
     active_request: Option<ActiveRequestGuard>,
+    access_log: AccessLogContext,
+    http_route: String,
+    http_method: String,
 }
 
 impl<F, E> Future for TraceResponseFuture<F>
@@ -191,14 +204,26 @@ where
                 let span = span.clone();
                 let attributes = std::mem::take(attributes);
                 let active_request = this.active_request.take();
+                let access_log = this.access_log.clone();
+                let http_route = this.http_route.clone();
+                let http_method = this.http_method.clone();
+                let request_id = *this.request_id;
+                let metrics = state.metrics.clone();
                 let res: Response<TraceResponseBody> = response.map(|body| TraceResponseBody {
                     inner: body,
-                    start: *this.instant,
+                    request_start: *this.instant,
+                    last_polled_at: *this.instant,
                     span,
-                    state: state.clone(),
+                    metrics,
                     attributes,
                     active_request,
                     total_bytes: 0,
+                    status_code: Some(status_code),
+                    http_route,
+                    http_method,
+                    access_log,
+                    access_logged: false,
+                    request_id,
                 });
 
                 Poll::Ready(Ok(res))
@@ -214,6 +239,17 @@ where
                 );
                 // Drop guard to ensure the active request counter is decremented for failed calls.
                 drop(this.active_request.take());
+
+                super::response_body::emit_access_log(
+                    &span,
+                    *this.instant,
+                    *this.request_id,
+                    &*this.http_method,
+                    &*this.http_route,
+                    Some(500),
+                    None,
+                    &*this.access_log,
+                );
 
                 Poll::Ready(Err(err))
             }

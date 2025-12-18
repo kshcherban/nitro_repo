@@ -3,10 +3,7 @@ use super::*;
 use crate::repository::test_helpers::test_storage;
 use axum::{Router, routing::get};
 use bytes::Bytes;
-use nr_core::{
-    repository::proxy_url::ProxyURL,
-    storage::StoragePath,
-};
+use nr_core::{repository::proxy_url::ProxyURL, storage::StoragePath};
 use nr_storage::FileContent;
 use std::sync::{
     Arc,
@@ -75,7 +72,11 @@ async fn cache_through_returns_hit_without_contacting_upstream() {
     let repo_id = Uuid::new_v4();
     let path = StoragePath::from("dists/stable/Release");
     storage
-        .save_file(repo_id, FileContent::Bytes(Bytes::from_static(b"cached")), &path)
+        .save_file(
+            repo_id,
+            FileContent::Bytes(Bytes::from_static(b"cached")),
+            &path,
+        )
         .await
         .expect("seed cache");
 
@@ -119,11 +120,10 @@ async fn cache_through_fetches_upstream_on_miss_and_persists() {
         panic!("expected file");
     };
     let nr_storage::FileFileType { file_size, .. } = meta.file_type();
-    let len: usize = (*file_size).try_into().expect("file size fits in usize for tests");
-    let bytes = content
-        .read_to_vec(len)
-        .await
-        .expect("read cached bytes");
+    let len: usize = (*file_size)
+        .try_into()
+        .expect("file size fits in usize for tests");
+    let bytes = content.read_to_vec(len).await.expect("read cached bytes");
     assert_eq!(bytes, b"upstream");
 }
 
@@ -162,9 +162,10 @@ async fn cache_through_preserves_upstream_path_prefix() {
     let path = StoragePath::from("dists/stable/Release");
 
     let counter = Arc::new(AtomicUsize::new(0));
-    let (upstream, _server) = start_upstream_server_with_prefix("packages", b"upstream", counter.clone())
-        .await
-        .expect("start upstream");
+    let (upstream, _server) =
+        start_upstream_server_with_prefix("packages", b"upstream", counter.clone())
+            .await
+            .expect("start upstream");
 
     let client = reqwest::Client::new();
     let outcome = fetch_and_cache_if_missing(&client, &storage, repo_id, &upstream, &path, None)

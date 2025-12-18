@@ -204,7 +204,7 @@ pub async fn find_repository_id(
         (status = 200, description = "Repository Types", body = DBRepositoryWithStorageName),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth, query), fields(repository_id = %repository))]
 pub async fn get_repository(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,
@@ -273,7 +273,7 @@ pub async fn get_repository(
         (status = 200, description = "List Repositories", body = [RepositoryListEntry]),
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site, query))]
 pub async fn list_repositories(
     auth: Option<Authentication>,
     State(site): State<NitroRepo>,
@@ -763,7 +763,7 @@ pub struct QueryRepositoryNames {
         (status = 403, description = "Missing permission"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth, query), fields(repository_id = %repository_id))]
 pub async fn get_repository_names(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,

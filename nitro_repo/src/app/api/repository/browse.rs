@@ -76,7 +76,10 @@ pub struct BrowsePath {
         (status = 403, description = "Missing permission"),
     ),
 )]
-#[instrument]
+#[instrument(
+    skip(site, auth, browse_path, params),
+    fields(repository_id = %browse_path.repository_id)
+)]
 async fn browse(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,
@@ -150,7 +153,10 @@ pub struct BrowseStreamPrimaryData {
     pub project_resolution: Option<ProjectResolution>,
     pub number_of_files: usize,
 }
-#[instrument]
+#[instrument(
+    skip(site, user_agent, addr),
+    fields(repository_id = %repository_id, request_id = %request_id)
+)]
 async fn browse_ws_handler(
     ws: WebSocketUpgrade,
     user_agent: Option<TypedHeader<UserAgent>>,

@@ -25,7 +25,10 @@ fn build_info_file_formats_dependencies_and_requirements() {
     }];
 
     let file = build_info_file(&entries);
-    assert_eq!(file, "---\n1.2.3 rack:>= 1.0&< 3.0|checksum:deadbeef,ruby:>= 2.7.0\n");
+    assert_eq!(
+        file,
+        "---\n1.2.3 rack:>= 1.0&< 3.0|checksum:deadbeef,ruby:>= 2.7.0\n"
+    );
 }
 
 #[test]
@@ -50,7 +53,10 @@ fn build_versions_file_formats_created_at_and_lines() {
         info_md5: "abcd".to_string(),
     }];
     let file = build_versions_file(created_at, &lines);
-    assert_eq!(file, "created_at: 2024-04-01T00:00:05Z\n---\nrack 1.0.0,1.1.0 abcd\n");
+    assert_eq!(
+        file,
+        "created_at: 2024-04-01T00:00:05Z\n---\nrack 1.0.0,1.1.0 abcd\n"
+    );
 }
 
 #[test]
@@ -98,8 +104,6 @@ fn build_compact_index_artifacts_generates_info_and_versions() {
     let expected_md5 = md5_hex(info.as_bytes());
     assert_eq!(
         artifacts.versions,
-        format!(
-            "created_at: 2024-04-01T00:00:05Z\n---\ndemo 1.0.0,1.1.0 {expected_md5}\n"
-        )
+        format!("created_at: 2024-04-01T00:00:05Z\n---\ndemo 1.0.0,1.1.0 {expected_md5}\n")
     );
 }

@@ -75,7 +75,8 @@ pub fn build_gemspec_rz(spec: &GemSpecEntry) -> Result<Vec<u8>, String> {
 
 fn marshal_rbany(value: &RbAny) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    to_writer(&mut out, value).map_err(|err| format!("Failed to serialize Ruby marshal data: {err}"))?;
+    to_writer(&mut out, value)
+        .map_err(|err| format!("Failed to serialize Ruby marshal data: {err}"))?;
     Ok(out)
 }
 
@@ -142,7 +143,11 @@ fn parse_single_constraint(input: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     match parts.as_slice() {
         [single] => {
-            if single.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+            if single
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_digit())
+            {
                 Some(("=".to_string(), (*single).to_string()))
             } else {
                 None

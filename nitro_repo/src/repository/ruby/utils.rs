@@ -57,4 +57,3 @@ pub fn parse_gem_file_name(file_name: &str) -> Option<ParsedGemFileName> {
 
     None
 }
-

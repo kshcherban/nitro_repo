@@ -59,8 +59,42 @@ The development compose file automatically configures tracing with:
 - `OTEL_SERVICE_NAME=nitro`
 - `NITRO_TRACING_ENABLED=true`
 
+#### Logging
+
+Logging is configured via TOML (not `RUST_LOG`). Global levels are set in `[log.levels]` (and `[log.levels.others]`), and each logger may optionally define its own `[...config.levels]`; per-logger levels inherit any missing targets from the global set.
+
+Recommended “Docker-friendly” console config:
+
+```toml
+[log.loggers.console]
+type = "Console"
+
+[log.loggers.console.config]
+format = "compact"
+ansi_color = false
+include_span_context = false
+```
+
+Exporting logs to OTLP (optional):
+
+```toml
+[opentelemetry]
+enabled = true
+traces = true
+logs = true
+```
+
+#### Instrumentation Guidelines
+
+- For Axum handlers, always `skip(...)` `State(site)`, `Authentication`, and request bodies (passwords/tokens/config JSON).
+- Prefer explicit `fields(...)` with small identifiers (e.g., `repository_id`, `user`), and avoid `?` debug on large structs.
+- Example:
+
+```rust
+#[instrument(skip(site, auth, request), fields(repository_id = %repository_id, user = %auth.id))]
+```
+
 #### Troubleshooting
 - If Docker upload operations are blocking the async runtime, check Jaeger traces for long-running spans
 - Use `docker-compose logs nitro` to view application logs
 - Restart services with `./dev.sh` after making configuration changes
-

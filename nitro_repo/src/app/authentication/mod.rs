@@ -31,6 +31,7 @@ pub mod header;
 pub mod jwks;
 
 use super::NitroRepo;
+use crate::utils::request_logging::access_log::AccessLogContext;
 use crate::utils::{IntoErrorResponse, ResponseBuilder, api_error_response::APIErrorResponse};
 
 pub mod layer;
@@ -168,6 +169,9 @@ where
                 let user = UserSafeData::get_by_id(session.user_id, &repo.database)
                     .await?
                     .ok_or(AuthenticationError::Unauthorized)?;
+                if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+                    ctx.set_user(user.username.as_ref().to_string());
+                }
                 return Ok(OnlySessionAllowedAuthentication { user, session });
             }
             other => {
@@ -233,12 +237,18 @@ where
             }
             AuthenticationRaw::AuthToken(token) => {
                 let (user, auth_token) = get_user_and_auth_token(&token, &repo.database).await?;
+                if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+                    ctx.set_user(user.username.as_ref().to_string());
+                }
                 Authentication::AuthToken(auth_token, user)
             }
             AuthenticationRaw::Session(session) => {
                 let user = UserSafeData::get_by_id(session.user_id, &repo.database)
                     .await?
                     .ok_or(AuthenticationError::Unauthorized)?;
+                if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+                    ctx.set_user(user.username.as_ref().to_string());
+                }
                 Authentication::Session(session, user)
             }
             other => {
@@ -270,12 +280,18 @@ where
             }
             AuthenticationRaw::AuthToken(token) => {
                 let (user, auth_token) = get_user_and_auth_token(&token, &repo.database).await?;
+                if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+                    ctx.set_user(user.username.as_ref().to_string());
+                }
                 Authentication::AuthToken(auth_token, user)
             }
             AuthenticationRaw::Session(session) => {
                 let user = UserSafeData::get_by_id(session.user_id, &repo.database)
                     .await?
                     .ok_or(AuthenticationError::Unauthorized)?;
+                if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+                    ctx.set_user(user.username.as_ref().to_string());
+                }
                 Authentication::Session(session, user)
             }
             other => {

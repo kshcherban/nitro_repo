@@ -77,12 +77,9 @@ pub trait MavenRepositoryExt: Repository + Debug {
             Ok(RepoResponse::from(None))
         }
     }
-    #[instrument(name = "MavenRepository::parse_pom")]
+    #[instrument(name = "MavenRepository::parse_pom", skip(pom), fields(pom.size = pom.len()))]
     fn parse_pom(&self, pom: Vec<u8>) -> Result<Pom, MavenError> {
-        let pom_file = String::from_utf8(pom).map_err(BadRequestErrors::from)?;
-        trace!(?pom_file, "Parsing POM file");
-        let pom: maven_rs::pom::Pom = maven_rs::quick_xml::de::from_str(&pom_file)?;
-        Ok(pom)
+        parse_pom_bytes(pom)
     }
     #[instrument]
     async fn post_pom_upload_inner(
@@ -200,6 +197,16 @@ pub trait MavenRepositoryExt: Repository + Debug {
         Ok(())
     }
 }
+
+pub(crate) fn parse_pom_bytes(pom: Vec<u8>) -> Result<Pom, MavenError> {
+    let pom_file = String::from_utf8(pom).map_err(BadRequestErrors::from)?;
+    trace!(pom.size = pom_file.len(), "Parsing POM file");
+    let pom: maven_rs::pom::Pom = maven_rs::quick_xml::de::from_str(&pom_file)?;
+    Ok(pom)
+}
+
+#[cfg(test)]
+mod tests;
 pub fn pom_to_db_project(
     project_path: StoragePath,
     repository: Uuid,

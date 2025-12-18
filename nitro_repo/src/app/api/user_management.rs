@@ -77,7 +77,7 @@ pub fn user_management_routes() -> axum::Router<NitroRepo> {
         (status = 200, description = "List All registered users", body = [UserSafeData])
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.id))]
 pub async fn list_users(
     auth: Authentication,
     State(site): State<NitroRepo>,

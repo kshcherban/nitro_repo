@@ -52,7 +52,7 @@ pub fn api_routes() -> axum::Router<NitroRepo> {
         (status = 200, description = "information about the Site", body = Instance)
     )
 )]
-#[instrument]
+#[instrument(skip(site))]
 pub async fn info(State(site): NitroRepoState) -> Json<Instance> {
     let site = site.instance.lock().clone();
     Json(site)

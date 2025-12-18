@@ -98,8 +98,10 @@ impl DebProxyRepository {
 
     pub async fn refresh_offline_mirror(
         &self,
-    ) -> Result<super::proxy_refresh::DebProxyRefreshSummary, super::proxy_refresh::DebProxyRefreshError>
-    {
+    ) -> Result<
+        super::proxy_refresh::DebProxyRefreshSummary,
+        super::proxy_refresh::DebProxyRefreshError,
+    > {
         super::proxy_refresh::refresh_deb_proxy_offline_mirror(
             &self.0.client,
             &self.storage(),
@@ -166,21 +168,26 @@ async fn fetch_and_cache_if_missing(
         return Ok(CacheThroughOutcome::UpstreamStatus(StatusCode::BAD_GATEWAY));
     };
 
-    let response = client.get(url.clone()).send().await.map_err(|err| {
-        super::DebRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    let response = crate::utils::upstream::send(client, client.get(url.clone()))
+        .await
+        .map_err(|err| super::DebRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     let status = response.status();
     if !status.is_success() {
         return Ok(CacheThroughOutcome::UpstreamStatus(status));
     }
 
-    let bytes = response.bytes().await.map_err(|err| {
-        super::DebRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| super::DebRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     storage
         .save_file(repository_id, FileContent::Bytes(bytes.clone()), path)
         .await?;
-    debug!(%url, path = %path.to_string(), "Cached deb proxy upstream response");
+    debug!(
+        url.full = %crate::utils::upstream::sanitize_url_for_logging(&url),
+        path = %path.to_string(),
+        "Cached deb proxy upstream response"
+    );
     Ok(CacheThroughOutcome::Fetched(bytes))
 }
 

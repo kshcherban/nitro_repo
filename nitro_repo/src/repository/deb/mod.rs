@@ -20,13 +20,13 @@ use crate::utils::{IntoErrorResponse, ResponseBuilder};
 
 pub mod configs;
 pub mod hosted;
+mod metadata;
+mod package;
 pub mod proxy;
 pub mod proxy_indexing;
 pub mod proxy_refresh;
 pub mod refresh_status;
 pub mod scheduler;
-mod metadata;
-mod package;
 
 pub use configs::*;
 pub use hosted::DebHostedRepository;
@@ -221,8 +221,8 @@ impl RepositoryType for DebRepositoryType {
                     Ok(DynRepository::Deb(DebRepository::Hosted(hosted)))
                 }
                 DebRepositoryConfig::Proxy(proxy_config) => {
-                    let proxy = DebProxyRepository::load(website, storage, repo, proxy_config)
-                        .await?;
+                    let proxy =
+                        DebProxyRepository::load(website, storage, repo, proxy_config).await?;
                     Ok(DynRepository::Deb(DebRepository::Proxy(proxy)))
                 }
             }

@@ -565,7 +565,7 @@ pub fn package_routes() -> axum::Router<NitroRepo> {
         (status = 403, description = "Missing permission")
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth, query), fields(repository_id = %repository_id))]
 pub async fn list_cached_packages(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,
@@ -3824,7 +3824,7 @@ impl From<StreamingDockerBatchDeletion> for DockerBatchDeletion {
 #[instrument(
     name = "collect_docker_deletions_batch",
     skip(storage, paths, indexer),
-    fields(repo_id = %repository_id, path_count = paths.len())
+    fields(repository_id = %repository_id, path_count = paths.len())
 )]
 async fn collect_docker_deletions_batch(
     storage: &nr_storage::DynStorage,
@@ -4083,7 +4083,10 @@ pub struct PackageDeleteResponse {
         (status = 404, description = "Repository not found"),
     )
 )]
-#[instrument(skip(site, auth, request), fields(repo_id = %repository_id, path_count = request.paths.len()))]
+#[instrument(
+    skip(site, auth, request),
+    fields(repository_id = %repository_id, user = %auth.id, path_count = request.paths.len())
+)]
 pub async fn delete_cached_packages(
     State(site): State<NitroRepo>,
     auth: Authentication,

@@ -1,16 +1,13 @@
 use bytes::Bytes;
 use http::StatusCode;
-use nr_core::{
-    repository::proxy_url::ProxyURL,
-    storage::StoragePath,
-};
+use nr_core::{repository::proxy_url::ProxyURL, storage::StoragePath};
 use nr_storage::{DynStorage, FileContent, Storage};
 use serde::Serialize;
 use sha2::Digest;
 use thiserror::Error;
 use tracing::{debug, warn};
-use utoipa::ToSchema;
 use url::Url;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{
@@ -85,14 +82,22 @@ async fn fetch_upstream_bytes(
     let Some(url) = build_upstream_url(upstream, path) else {
         return Err(DebProxyRefreshError::InvalidUpstreamUrl);
     };
-    let response = client.get(url.clone()).send().await?;
+    let response = crate::utils::upstream::send(client, client.get(url.clone())).await?;
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
-        debug!(%url, path = %path.to_string(), "Upstream returned 404 for refresh target");
+        debug!(
+            url.full = %crate::utils::upstream::sanitize_url_for_logging(&url),
+            path = %path.to_string(),
+            "Upstream returned 404 for refresh target"
+        );
         return Ok(None);
     }
     if !status.is_success() {
-        warn!(%url, status = ?status, "Upstream returned non-success during refresh");
+        warn!(
+            url.full = %crate::utils::upstream::sanitize_url_for_logging(&url),
+            status = ?status,
+            "Upstream returned non-success during refresh"
+        );
         return Err(DebProxyRefreshError::UpstreamStatus(status));
     }
     Ok(Some(response.bytes().await?))
@@ -246,8 +251,13 @@ pub async fn refresh_deb_proxy_offline_mirror(
                         else {
                             continue;
                         };
-                        save_bytes(storage, repository_id, &packages_path, packages_bytes.clone())
-                            .await?;
+                        save_bytes(
+                            storage,
+                            repository_id,
+                            &packages_path,
+                            packages_bytes.clone(),
+                        )
+                        .await?;
                         downloaded_files += 1;
 
                         let hash = sha256_hex(&packages_bytes);
@@ -302,7 +312,9 @@ pub async fn refresh_deb_proxy_offline_mirror(
 
             let mut parse_bytes: Option<Bytes> = None;
 
-            if let Some(bytes) = fetch_upstream_bytes(client, &config.upstream_url, &packages_path).await? {
+            if let Some(bytes) =
+                fetch_upstream_bytes(client, &config.upstream_url, &packages_path).await?
+            {
                 save_bytes(storage, repository_id, &packages_path, bytes.clone()).await?;
                 downloaded_files += 1;
                 parse_bytes = Some(bytes);
@@ -317,8 +329,13 @@ pub async fn refresh_deb_proxy_offline_mirror(
                 if parse_bytes.is_none() {
                     let decoded = gunzip(&gz_bytes)?;
                     let decoded_bytes = Bytes::from(decoded);
-                    save_bytes(storage, repository_id, &packages_path, decoded_bytes.clone())
-                        .await?;
+                    save_bytes(
+                        storage,
+                        repository_id,
+                        &packages_path,
+                        decoded_bytes.clone(),
+                    )
+                    .await?;
                     downloaded_files += 1;
                     parse_bytes = Some(decoded_bytes);
                 }

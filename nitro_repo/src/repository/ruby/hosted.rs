@@ -109,9 +109,7 @@ impl RubyHosted {
         }
     }
 
-    fn parse_quick_gemspec_file_name(
-        file_name: &str,
-    ) -> Option<super::utils::ParsedGemFileName> {
+    fn parse_quick_gemspec_file_name(file_name: &str) -> Option<super::utils::ParsedGemFileName> {
         let base = file_name.strip_suffix(".gemspec.rz")?;
         if base.is_empty() || base.contains('/') {
             return None;
@@ -130,25 +128,24 @@ impl RubyHosted {
             return Ok(None);
         };
 
-        let Some(version) =
-            DBProjectVersion::find_by_version_and_project(version_key, project.id, self.site().as_ref())
-                .await?
+        let Some(version) = DBProjectVersion::find_by_version_and_project(
+            version_key,
+            project.id,
+            self.site().as_ref(),
+        )
+        .await?
         else {
             return Ok(None);
         };
 
-        let metadata_value = version
-            .extra
-            .0
-            .extra
-            .ok_or_else(|| {
-                let message = format!(
-                    "Missing ruby metadata for {} {}",
-                    project.key, version.version
-                );
-                let err = std::io::Error::new(std::io::ErrorKind::Other, message);
-                RubyRepositoryError::Other(Box::new(crate::error::OtherInternalError::new(err)))
-            })?;
+        let metadata_value = version.extra.0.extra.ok_or_else(|| {
+            let message = format!(
+                "Missing ruby metadata for {} {}",
+                project.key, version.version
+            );
+            let err = std::io::Error::new(std::io::ErrorKind::Other, message);
+            RubyRepositoryError::Other(Box::new(crate::error::OtherInternalError::new(err)))
+        })?;
         let metadata: RubyPackageMetadata = serde_json::from_value(metadata_value)?;
         Ok(Some(metadata))
     }
@@ -167,7 +164,10 @@ impl RubyHosted {
             return Ok(None);
         };
 
-        let platform = parsed.platform.clone().unwrap_or_else(|| "ruby".to_string());
+        let platform = parsed
+            .platform
+            .clone()
+            .unwrap_or_else(|| "ruby".to_string());
         let spec = super::full_index::GemSpecEntry {
             name: parsed.name,
             version: parsed.version,
@@ -297,7 +297,11 @@ impl RubyHosted {
         for (gem_key, info) in artifacts.infos {
             let path = StoragePath::from(format!("info/{gem_key}"));
             storage
-                .save_file(repository_id, FileContent::Content(info.into_bytes()), &path)
+                .save_file(
+                    repository_id,
+                    FileContent::Content(info.into_bytes()),
+                    &path,
+                )
                 .await?;
         }
 
@@ -352,11 +356,11 @@ impl RubyHosted {
             });
         }
 
-        let specs_bytes = super::full_index::build_specs_gz(&specs)
-            .map_err(other_internal_error_from_message)?;
+        let specs_bytes =
+            super::full_index::build_specs_gz(&specs).map_err(other_internal_error_from_message)?;
         let latest_specs_bytes = specs_bytes.clone();
-        let prerelease_specs_bytes = super::full_index::build_empty_specs_gz()
-            .map_err(other_internal_error_from_message)?;
+        let prerelease_specs_bytes =
+            super::full_index::build_empty_specs_gz().map_err(other_internal_error_from_message)?;
 
         let storage = self.storage();
         let repository_id = self.id();
@@ -432,12 +436,14 @@ impl RubyHosted {
         request_body: crate::repository::RepositoryRequestBody,
     ) -> Result<(tempfile::TempPath, u64, String), RubyRepositoryError> {
         let temp_path = tempfile::NamedTempFile::new()
-            .map_err(|err| RubyRepositoryError::Other(Box::new(crate::error::OtherInternalError::new(err))))?
+            .map_err(|err| {
+                RubyRepositoryError::Other(Box::new(crate::error::OtherInternalError::new(err)))
+            })?
             .into_temp_path();
         let path_buf = temp_path.to_path_buf();
-        let mut file = tokio::fs::File::create(&path_buf)
-            .await
-            .map_err(|err| RubyRepositoryError::Other(Box::new(crate::error::OtherInternalError::new(err))))?;
+        let mut file = tokio::fs::File::create(&path_buf).await.map_err(|err| {
+            RubyRepositoryError::Other(Box::new(crate::error::OtherInternalError::new(err)))
+        })?;
 
         let mut size = 0u64;
         let mut hasher = sha2::Sha256::new();
@@ -537,7 +543,11 @@ impl RubyHosted {
             Self::gem_file_name(&package_key, &parsed.version, parsed.platform.as_deref());
         let gem_path = StoragePath::from(format!("gems/{file_name}"));
         self.storage()
-            .save_file(self.id(), FileContent::Path(temp_path.to_path_buf()), &gem_path)
+            .save_file(
+                self.id(),
+                FileContent::Path(temp_path.to_path_buf()),
+                &gem_path,
+            )
             .await?;
 
         let metadata = RubyPackageMetadata {
@@ -574,13 +584,10 @@ impl RubyHosted {
             platform = %parsed.platform.as_deref().unwrap_or("ruby"),
             "Published ruby gem"
         );
-        Ok(RepoResponse::Other(
-            ResponseBuilder::ok()
-                .body(format!(
-                    "Successfully registered gem: {} ({})",
-                    parsed.name, parsed.version
-                ))
-        ))
+        Ok(RepoResponse::Other(ResponseBuilder::ok().body(format!(
+            "Successfully registered gem: {} ({})",
+            parsed.name, parsed.version
+        ))))
     }
 
     #[instrument(
@@ -648,9 +655,12 @@ impl RubyHosted {
 
         let version_key = Self::version_key(&form.version, form.platform.as_deref());
 
-        let Some(version) =
-            DBProjectVersion::find_by_version_and_project(&version_key, project.id, self.site().as_ref())
-                .await?
+        let Some(version) = DBProjectVersion::find_by_version_and_project(
+            &version_key,
+            project.id,
+            self.site().as_ref(),
+        )
+        .await?
         else {
             tracing::Span::current().record("nr.ruby.yank.outcome", "version_not_found");
             return Ok(RepoResponse::basic_text_response(
@@ -667,12 +677,11 @@ impl RubyHosted {
         let gem_path = StoragePath::from(version.path);
         let _ = self.storage().delete_file(self.id(), &gem_path).await?;
 
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM project_versions WHERE project_id = $1",
-        )
-        .bind(project.id)
-        .fetch_one(&self.site().database)
-        .await?;
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM project_versions WHERE project_id = $1")
+                .bind(project.id)
+                .fetch_one(&self.site().database)
+                .await?;
         if remaining == 0 {
             let _ = sqlx::query("DELETE FROM projects WHERE id = $1")
                 .bind(project.id)
@@ -689,13 +698,10 @@ impl RubyHosted {
             platform = %form.platform.as_deref().unwrap_or("ruby"),
             "Yanked ruby gem"
         );
-        Ok(RepoResponse::Other(
-            ResponseBuilder::ok()
-                .body(format!(
-                    "Successfully yanked gem: {} ({})",
-                    form.gem_name, form.version
-                ))
-        ))
+        Ok(RepoResponse::Other(ResponseBuilder::ok().body(format!(
+            "Successfully yanked gem: {} ({})",
+            form.gem_name, form.version
+        ))))
     }
 }
 
@@ -748,7 +754,8 @@ impl Repository for RubyHosted {
     ) -> Result<nr_core::repository::project::ProjectResolution, Self::Error> {
         let directory = path.to_string();
         let Some(ids) =
-            DBProjectVersion::find_ids_by_version_dir(&directory, self.id(), self.site().as_ref()).await?
+            DBProjectVersion::find_ids_by_version_dir(&directory, self.id(), self.site().as_ref())
+                .await?
         else {
             return Ok(nr_core::repository::project::ProjectResolution::default());
         };
@@ -888,7 +895,11 @@ impl Repository for RubyHosted {
                 path_str.as_str(),
                 "specs.4.8.gz" | "latest_specs.4.8.gz" | "prerelease_specs.4.8.gz"
             ) {
-                if let Some(meta) = this.storage().get_file_information(this.id(), &path).await? {
+                if let Some(meta) = this
+                    .storage()
+                    .get_file_information(this.id(), &path)
+                    .await?
+                {
                     return Ok(meta.into());
                 }
                 let bytes = super::full_index::build_empty_specs_gz()
@@ -901,7 +912,11 @@ impl Repository for RubyHosted {
                 ));
             }
 
-            if let Some(meta) = this.storage().get_file_information(this.id(), &path).await? {
+            if let Some(meta) = this
+                .storage()
+                .get_file_information(this.id(), &path)
+                .await?
+            {
                 return Ok(meta.into());
             }
             Ok(crate::repository::RepoResponse::basic_text_response(

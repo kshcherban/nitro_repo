@@ -1,5 +1,6 @@
 pub mod request_id;
 pub mod request_span;
+pub mod access_log;
 pub trait HttpTraceValue {
     fn value(&self) -> impl tracing::Value;
 }

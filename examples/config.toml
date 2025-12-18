@@ -138,14 +138,18 @@ default = "Debug"
 # Console logger configuration
 [log.loggers.console]
 type = "Console"
-pretty = true
 
-[log.loggers.console.rules]
+[log.loggers.console.config]
+# Options: "compact" | "pretty" | "json" | "full"
+format = "compact"
+# Legacy alias (prefer `format`); kept for backwards-compat.
+# pretty = true
 include_time = true
 include_level = true
 include_line_numbers = false
 include_file = false
 include_target = true
+include_span_context = false
 ansi_color = true
 include_thread_ids = false
 include_thread_names = false
@@ -153,16 +157,17 @@ include_thread_names = false
 # Optional: Rolling file logger
 # [log.loggers.file]
 # type = "RollingFile"
+# 
+# [log.loggers.file.config]
 # path = "/logs"
 # file_prefix = "nitro_repo"
 # interval = "Daily"  # Options: "Minutely", "Hourly", "Daily", "Never"
-
-# [log.loggers.file.rules]
 # include_time = true
 # include_level = true
 # include_line_numbers = true
 # include_file = true
 # include_target = true
+# include_span_context = true
 # ansi_color = false
 # include_thread_ids = false
 # include_thread_names = false

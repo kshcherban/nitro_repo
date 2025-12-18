@@ -87,9 +87,11 @@ impl crate::utils::IntoErrorResponse for RubyRepositoryError {
         use http::StatusCode;
 
         match *self {
-            RubyRepositoryError::InvalidPath(message) => crate::utils::ResponseBuilder::bad_request()
-                .body(message)
-                .into_response(),
+            RubyRepositoryError::InvalidPath(message) => {
+                crate::utils::ResponseBuilder::bad_request()
+                    .body(message)
+                    .into_response()
+            }
             RubyRepositoryError::InvalidRequest(message) => {
                 crate::utils::ResponseBuilder::bad_request()
                     .body(message)

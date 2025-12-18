@@ -1,4 +1,5 @@
 mod otel;
+use std::fmt;
 use std::path::PathBuf;
 
 use ahash::{HashMap, HashMapExt};
@@ -6,10 +7,7 @@ use nr_core::logging::{LevelSerde, LoggingLevels};
 pub use otel::*;
 use serde::{Deserialize, Serialize};
 use tracing_appender::rolling::Rotation;
-use tracing_subscriber::fmt::{
-    format::{self, Format},
-    time::SystemTime,
-};
+use tracing_subscriber::{Layer, Registry, filter::Targets};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -56,7 +54,7 @@ impl AppLoggerType for AppLogger {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StandardLoggerFmtRules {
     pub include_time: bool,
@@ -64,6 +62,7 @@ pub struct StandardLoggerFmtRules {
     pub include_line_numbers: bool,
     pub include_file: bool,
     pub include_target: bool,
+    pub include_span_context: bool,
     pub ansi_color: bool,
     pub include_thread_ids: bool,
     pub include_thread_names: bool,
@@ -76,6 +75,7 @@ impl Default for StandardLoggerFmtRules {
             include_line_numbers: false,
             include_file: false,
             include_target: true,
+            include_span_context: true,
             ansi_color: true,
             include_thread_ids: false,
             include_thread_names: false,
@@ -83,37 +83,254 @@ impl Default for StandardLoggerFmtRules {
     }
 }
 impl StandardLoggerFmtRules {
-    pub fn layer_pretty<S>(
+    pub(crate) fn fmt_layer_for_registry(
         &self,
-    ) -> tracing_subscriber::fmt::Layer<S, format::Pretty, format::Format<format::Pretty, SystemTime>>
-    {
-        self.layer().pretty()
+        format: ConsoleLogFormat,
+        filter: Targets,
+    ) -> Box<dyn Layer<Registry> + Send + Sync> {
+        match format {
+            ConsoleLogFormat::Compact => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_ansi(self.ansi_color)
+                    .event_format(CompactTextEventFormat { rules: *self });
+                layer.with_filter(filter).boxed()
+            }
+            ConsoleLogFormat::Json => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_ansi(self.ansi_color)
+                    .with_target(self.include_target)
+                    .with_line_number(self.include_line_numbers)
+                    .with_file(self.include_file)
+                    .with_level(self.include_level)
+                    .with_thread_ids(self.include_thread_ids)
+                    .with_thread_names(self.include_thread_names)
+                    .json()
+                    .with_current_span(self.include_span_context)
+                    .with_span_list(self.include_span_context);
+                if self.include_time {
+                    layer.with_filter(filter).boxed()
+                } else {
+                    layer.without_time().with_filter(filter).boxed()
+                }
+            }
+            ConsoleLogFormat::Pretty => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_ansi(self.ansi_color)
+                    .with_target(self.include_target)
+                    .with_line_number(self.include_line_numbers)
+                    .with_file(self.include_file)
+                    .with_level(self.include_level)
+                    .with_thread_ids(self.include_thread_ids)
+                    .with_thread_names(self.include_thread_names)
+                    .pretty();
+                if self.include_time {
+                    layer.with_filter(filter).boxed()
+                } else {
+                    layer.without_time().with_filter(filter).boxed()
+                }
+            }
+            ConsoleLogFormat::Full => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_ansi(self.ansi_color)
+                    .with_target(self.include_target)
+                    .with_line_number(self.include_line_numbers)
+                    .with_file(self.include_file)
+                    .with_level(self.include_level)
+                    .with_thread_ids(self.include_thread_ids)
+                    .with_thread_names(self.include_thread_names);
+                if self.include_time {
+                    layer.with_filter(filter).boxed()
+                } else {
+                    layer.without_time().with_filter(filter).boxed()
+                }
+            }
+        }
     }
-    pub fn layer_compact<S>(
+
+    pub(crate) fn fmt_layer_for_registry_with_writer<W>(
         &self,
-    ) -> tracing_subscriber::fmt::Layer<S, format::DefaultFields, Format<format::Compact, SystemTime>>
+        format: ConsoleLogFormat,
+        filter: Targets,
+        writer: W,
+    ) -> Box<dyn Layer<Registry> + Send + Sync>
+    where
+        W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
     {
-        self.layer().compact()
+        match format {
+            ConsoleLogFormat::Compact => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_writer(writer)
+                    .with_ansi(self.ansi_color)
+                    .event_format(CompactTextEventFormat { rules: *self });
+                layer.with_filter(filter).boxed()
+            }
+            ConsoleLogFormat::Json => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_writer(writer)
+                    .with_ansi(self.ansi_color)
+                    .with_target(self.include_target)
+                    .with_line_number(self.include_line_numbers)
+                    .with_file(self.include_file)
+                    .with_level(self.include_level)
+                    .with_thread_ids(self.include_thread_ids)
+                    .with_thread_names(self.include_thread_names)
+                    .json()
+                    .with_current_span(self.include_span_context)
+                    .with_span_list(self.include_span_context);
+                if self.include_time {
+                    layer.with_filter(filter).boxed()
+                } else {
+                    layer.without_time().with_filter(filter).boxed()
+                }
+            }
+            ConsoleLogFormat::Pretty => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_writer(writer)
+                    .with_ansi(self.ansi_color)
+                    .with_target(self.include_target)
+                    .with_line_number(self.include_line_numbers)
+                    .with_file(self.include_file)
+                    .with_level(self.include_level)
+                    .with_thread_ids(self.include_thread_ids)
+                    .with_thread_names(self.include_thread_names)
+                    .pretty();
+                if self.include_time {
+                    layer.with_filter(filter).boxed()
+                } else {
+                    layer.without_time().with_filter(filter).boxed()
+                }
+            }
+            ConsoleLogFormat::Full => {
+                let layer = tracing_subscriber::fmt::layer::<Registry>()
+                    .with_writer(writer)
+                    .with_ansi(self.ansi_color)
+                    .with_target(self.include_target)
+                    .with_line_number(self.include_line_numbers)
+                    .with_file(self.include_file)
+                    .with_level(self.include_level)
+                    .with_thread_ids(self.include_thread_ids)
+                    .with_thread_names(self.include_thread_names);
+                if self.include_time {
+                    layer.with_filter(filter).boxed()
+                } else {
+                    layer.without_time().with_filter(filter).boxed()
+                }
+            }
+        }
     }
-    pub fn layer<S>(
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsoleLogFormat {
+    Compact,
+    Pretty,
+    Json,
+    Full,
+}
+impl Default for ConsoleLogFormat {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompactTextEventFormat {
+    rules: StandardLoggerFmtRules,
+}
+
+impl<S, N> tracing_subscriber::fmt::format::FormatEvent<S, N> for CompactTextEventFormat
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::format::FormatFields<'a> + 'static,
+{
+    fn format_event(
         &self,
-    ) -> tracing_subscriber::fmt::Layer<S, format::DefaultFields, Format<format::Full, SystemTime>>
-    {
-        tracing_subscriber::fmt::layer::<S>()
-            .with_ansi(self.ansi_color)
-            .with_target(self.include_target)
-            .with_line_number(self.include_line_numbers)
-            .with_file(self.include_file)
-            .with_level(self.include_level)
-            .with_thread_ids(self.include_thread_ids)
-            .with_thread_names(self.include_thread_names)
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> fmt::Result {
+        use tracing_subscriber::fmt::FormatFields as _;
+        use tracing_subscriber::fmt::time::FormatTime as _;
+
+        let meta = event.metadata();
+
+        if self.rules.include_time {
+            let timer = tracing_subscriber::fmt::time::SystemTime;
+            timer.format_time(&mut writer)?;
+            writer.write_char(' ')?;
+        }
+
+        if self.rules.include_level {
+            if self.rules.ansi_color {
+                let (prefix, suffix) = match *meta.level() {
+                    tracing::Level::ERROR => ("\x1b[31m", "\x1b[0m"),
+                    tracing::Level::WARN => ("\x1b[33m", "\x1b[0m"),
+                    tracing::Level::INFO => ("\x1b[32m", "\x1b[0m"),
+                    tracing::Level::DEBUG => ("\x1b[34m", "\x1b[0m"),
+                    tracing::Level::TRACE => ("\x1b[35m", "\x1b[0m"),
+                };
+                write!(writer, "{prefix}{}{suffix} ", meta.level())?;
+            } else {
+                write!(writer, "{} ", meta.level())?;
+            }
+        }
+
+        if self.rules.include_thread_names {
+            if let Some(name) = std::thread::current().name() {
+                write!(writer, "{} ", name)?;
+            }
+        }
+
+        if self.rules.include_thread_ids {
+            write!(writer, "{:?} ", std::thread::current().id())?;
+        }
+
+        if self.rules.include_span_context {
+            if let Some(scope) = ctx.event_scope() {
+                let mut wrote_any = false;
+                for span in scope.from_root() {
+                    if !wrote_any {
+                        writer.write_str("[")?;
+                        wrote_any = true;
+                    } else {
+                        writer.write_str("::")?;
+                    }
+                    writer.write_str(span.name())?;
+                }
+                if wrote_any {
+                    writer.write_str("] ")?;
+                }
+            }
+        }
+
+        if self.rules.include_target {
+            writer.write_str(meta.target())?;
+            writer.write_str(": ")?;
+        }
+
+        if self.rules.include_file {
+            if let Some(file) = meta.file() {
+                writer.write_str(file)?;
+                if self.rules.include_line_numbers {
+                    if let Some(line) = meta.line() {
+                        write!(writer, ":{line}")?;
+                    }
+                }
+                writer.write_str(": ")?;
+            }
+        }
+
+        ctx.format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConsoleLogger {
-    pub pretty: bool,
+    pub format: Option<ConsoleLogFormat>,
+    pub pretty: Option<bool>,
     #[serde(flatten)]
     pub rules: StandardLoggerFmtRules,
     pub levels: LoggingLevels,
@@ -184,3 +401,6 @@ pub fn default_log_levels() -> LoggingLevels {
         others,
     }
 }
+
+#[cfg(test)]
+mod tests;

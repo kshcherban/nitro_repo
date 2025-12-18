@@ -41,8 +41,8 @@ use crate::{
         npm::{NPMRegistryConfigType, NpmRegistryType},
         php::{PhpRepositoryConfigType, PhpRepositoryType},
         python::{PythonRepositoryConfigType, PythonRepositoryType},
-        ruby::{RubyRepositoryConfigType, RubyRepositoryType},
         repo_tracing::RepositoryMetricsMeter,
+        ruby::{RubyRepositoryConfigType, RubyRepositoryType},
     },
     utils::ip_addr::HasForwardedHeader,
 };

@@ -3,15 +3,12 @@ use super::*;
 
 use crate::repository::NewRepository;
 use once_cell::sync::Lazy;
-use sqlx::{PgPool, postgres::PgPoolOptions};
 use sqlx::Row;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
 use uuid::Uuid;
 
-use nr_core::{
-    database::entities::storage::NewDBStorage,
-    storage::StorageName,
-};
+use nr_core::{database::entities::storage::NewDBStorage, storage::StorageName};
 
 static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
@@ -121,10 +118,7 @@ async fn try_mark_refresh_started_is_exclusive() {
     let second = try_mark_deb_proxy_refresh_started(db.pool(), repo_id)
         .await
         .expect("start ok");
-    assert!(matches!(
-        second,
-        DebProxyRefreshLockOutcome::AlreadyRunning
-    ));
+    assert!(matches!(second, DebProxyRefreshLockOutcome::AlreadyRunning));
 
     lock.release().await.expect("release");
 }

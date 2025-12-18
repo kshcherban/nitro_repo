@@ -3,15 +3,11 @@ use super::*;
 
 use crate::repository::NewRepository;
 use http::StatusCode;
-use once_cell::sync::Lazy;
 use nr_core::{
-    database::{
-        DatabaseConfig,
-        entities::storage::NewDBStorage,
-        migration::run_migrations,
-    },
+    database::{DatabaseConfig, entities::storage::NewDBStorage, migration::run_migrations},
     storage::StorageName,
 };
+use once_cell::sync::Lazy;
 use sqlx::{Connection, PgPool, postgres::PgPoolOptions};
 use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
 use uuid::Uuid;
@@ -119,7 +115,10 @@ async fn insert_deb_proxy_repo(pool: &PgPool, storage_id: Uuid) -> Uuid {
     repo.insert(storage_id, pool).await.expect("insert repo").id
 }
 
-fn sample_user(user_id: i32, system_manager: bool) -> nr_core::database::entities::user::UserSafeData {
+fn sample_user(
+    user_id: i32,
+    system_manager: bool,
+) -> nr_core::database::entities::user::UserSafeData {
     use chrono::{DateTime, FixedOffset};
     use nr_core::user::{Email, Username, permissions::RepositoryActions};
 
@@ -201,8 +200,8 @@ async fn deb_refresh_requires_edit_permission() {
         auth,
         axum::extract::Path(repo_id),
     )
-        .await
-        .expect("handler ok");
+    .await
+    .expect("handler ok");
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     site.close().await;
@@ -244,9 +243,7 @@ async fn deb_refresh_returns_conflict_when_advisory_lock_is_held() {
     .await
     .expect("create site");
 
-    let mut conn = sqlx::PgConnection::connect(&db.url)
-        .await
-        .expect("connect");
+    let mut conn = sqlx::PgConnection::connect(&db.url).await.expect("connect");
     let key = crate::repository::deb::refresh_status::deb_proxy_refresh_advisory_key(repo_id);
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(key)
@@ -260,8 +257,8 @@ async fn deb_refresh_returns_conflict_when_advisory_lock_is_held() {
         auth,
         axum::extract::Path(repo_id),
     )
-        .await
-        .expect("handler ok");
+    .await
+    .expect("handler ok");
 
     // Expected once deb refresh uses an advisory lock. Without it this will attempt a refresh and
     // likely fail upstream fetch with 5xx.

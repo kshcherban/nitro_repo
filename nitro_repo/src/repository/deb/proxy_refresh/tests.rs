@@ -5,10 +5,7 @@ use crate::repository::test_helpers::test_storage;
 use async_trait::async_trait;
 use axum::{Router, routing::get};
 use bytes::Bytes;
-use nr_core::{
-    repository::proxy_url::ProxyURL,
-    storage::StoragePath,
-};
+use nr_core::{repository::proxy_url::ProxyURL, storage::StoragePath};
 use nr_storage::Storage;
 use sha2::Digest;
 use std::sync::{
@@ -30,10 +27,7 @@ async fn start_upstream_server(
     let deb_bytes_route = deb_bytes.clone();
 
     let app = Router::new()
-        .route(
-            "/dists/stable/Release",
-            get(move || async move { release }),
-        )
+        .route("/dists/stable/Release", get(move || async move { release }))
         .route(
             "/dists/stable/InRelease",
             get(move || async move { in_release }),
@@ -291,10 +285,9 @@ async fn refresh_downloads_packages_and_creates_by_hash_aliases() {
 
     let indexer = RecordingIndexer::default();
     let client = reqwest::Client::new();
-    let summary =
-        refresh_deb_proxy_offline_mirror(&client, &storage, repo_id, &config, &indexer)
-            .await
-            .expect("refresh ok");
+    let summary = refresh_deb_proxy_offline_mirror(&client, &storage, repo_id, &config, &indexer)
+        .await
+        .expect("refresh ok");
 
     assert_eq!(summary.downloaded_packages, 1);
     assert!(summary.downloaded_files >= 3); // Release, InRelease, Packages, + deb
@@ -415,10 +408,9 @@ async fn refresh_supports_flat_layout_root_packages() {
 
     let indexer = RecordingIndexer::default();
     let client = reqwest::Client::new();
-    let summary =
-        refresh_deb_proxy_offline_mirror(&client, &storage, repo_id, &config, &indexer)
-            .await
-            .expect("refresh ok");
+    let summary = refresh_deb_proxy_offline_mirror(&client, &storage, repo_id, &config, &indexer)
+        .await
+        .expect("refresh ok");
 
     assert_eq!(summary.downloaded_packages, 1);
     assert!(summary.downloaded_files >= 2); // Packages + deb
@@ -488,10 +480,9 @@ async fn refresh_supports_upstream_url_with_path_prefix() {
 
     let indexer = RecordingIndexer::default();
     let client = reqwest::Client::new();
-    let summary =
-        refresh_deb_proxy_offline_mirror(&client, &storage, repo_id, &config, &indexer)
-            .await
-            .expect("refresh ok");
+    let summary = refresh_deb_proxy_offline_mirror(&client, &storage, repo_id, &config, &indexer)
+        .await
+        .expect("refresh ok");
 
     assert_eq!(summary.downloaded_packages, 1);
     assert_eq!(counter.load(Ordering::SeqCst), 1);

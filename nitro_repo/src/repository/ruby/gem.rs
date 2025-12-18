@@ -55,7 +55,9 @@ fn parse_gemspec_from_reader<R: Read>(reader: R) -> Result<ParsedGemSpec, GemPar
         let mut limited = entry.take(MAX_METADATA_GZIP_BYTES + 1);
         limited.read_to_end(&mut compressed)?;
         if compressed.len() as u64 > MAX_METADATA_GZIP_BYTES {
-            return Err(GemParseError::Invalid("Gem metadata is too large".to_string()));
+            return Err(GemParseError::Invalid(
+                "Gem metadata is too large".to_string(),
+            ));
         }
 
         let decoder = GzDecoder::new(&compressed[..]);
@@ -63,9 +65,13 @@ fn parse_gemspec_from_reader<R: Read>(reader: R) -> Result<ParsedGemSpec, GemPar
         decoder
             .take((MAX_METADATA_BYTES as u64) + 1)
             .read_to_end(&mut metadata)
-            .map_err(|err| GemParseError::Invalid(format!("Failed to decompress gem metadata: {err}")))?;
+            .map_err(|err| {
+                GemParseError::Invalid(format!("Failed to decompress gem metadata: {err}"))
+            })?;
         if metadata.len() > MAX_METADATA_BYTES {
-            return Err(GemParseError::Invalid("Gem metadata is too large".to_string()));
+            return Err(GemParseError::Invalid(
+                "Gem metadata is too large".to_string(),
+            ));
         }
 
         return parse_gemspec_metadata(&metadata);
@@ -95,20 +101,18 @@ fn parse_gemspec_metadata(metadata: &[u8]) -> Result<ParsedGemSpec, GemParseErro
 }
 
 fn extract_gemspec(gemspec: RbAny) -> Result<ParsedGemSpec, String> {
-    let object = gemspec.as_object().ok_or_else(|| {
-        "Gemspec metadata is not an object".to_string()
-    })?;
+    let object = gemspec
+        .as_object()
+        .ok_or_else(|| "Gemspec metadata is not an object".to_string())?;
 
-    let name = get_string_field(object, "@name").ok_or_else(|| {
-        "Gemspec missing @name".to_string()
-    })?;
+    let name =
+        get_string_field(object, "@name").ok_or_else(|| "Gemspec missing @name".to_string())?;
 
-    let version_value = object.get("@version").ok_or_else(|| {
-        "Gemspec missing @version".to_string()
-    })?;
-    let version = extract_gem_version(version_value).ok_or_else(|| {
-        "Gemspec @version is invalid".to_string()
-    })?;
+    let version_value = object
+        .get("@version")
+        .ok_or_else(|| "Gemspec missing @version".to_string())?;
+    let version = extract_gem_version(version_value)
+        .ok_or_else(|| "Gemspec @version is invalid".to_string())?;
 
     let platform = object
         .get("@platform")
@@ -252,12 +256,11 @@ fn extract_string(value: &RbAny) -> Option<String> {
 }
 
 fn parse_yaml_gemspec(metadata: &[u8]) -> Result<ParsedGemSpec, GemParseError> {
-    let spec: Value = serde_yaml::from_slice(metadata).map_err(|err| {
-        GemParseError::Invalid(format!("Failed to parse gemspec YAML: {err}"))
-    })?;
-    let map = spec.as_mapping().ok_or_else(|| {
-        GemParseError::Invalid("Gemspec YAML is not a mapping".to_string())
-    })?;
+    let spec: Value = serde_yaml::from_slice(metadata)
+        .map_err(|err| GemParseError::Invalid(format!("Failed to parse gemspec YAML: {err}")))?;
+    let map = spec
+        .as_mapping()
+        .ok_or_else(|| GemParseError::Invalid("Gemspec YAML is not a mapping".to_string()))?;
 
     let name = yaml_string(map, "name")
         .ok_or_else(|| GemParseError::Invalid("Gemspec missing name".to_string()))?;
@@ -313,7 +316,9 @@ fn yaml_version(value: &Value) -> Option<String> {
     })
 }
 
-fn extract_yaml_dependencies(values: &[Value]) -> Result<Vec<RubyDependencyMetadata>, GemParseError> {
+fn extract_yaml_dependencies(
+    values: &[Value],
+) -> Result<Vec<RubyDependencyMetadata>, GemParseError> {
     let mut dependencies = Vec::new();
     for value in values {
         let Some(map) = value.as_mapping() else {

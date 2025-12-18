@@ -168,7 +168,9 @@ impl PythonProxy {
             let Some(url) = build_url(&route.url, path.clone(), query) else {
                 continue;
             };
-            match self.0.client.get(url.clone()).send().await {
+            match crate::utils::upstream::send(&self.0.client, self.0.client.get(url.clone()))
+                .await
+            {
                 Ok(response) => {
                     if response.status().is_success() {
                         let bytes = response.bytes().await.map_err(|err| {
@@ -249,7 +251,9 @@ impl PythonProxy {
                 continue;
             };
             if !include_body {
-                match self.0.client.head(url.clone()).send().await {
+                match crate::utils::upstream::send(&self.0.client, self.0.client.head(url.clone()))
+                    .await
+                {
                     Ok(response) if response.status().is_success() => {
                         return Ok(Some(build_head_response(response)));
                     }
@@ -274,7 +278,9 @@ impl PythonProxy {
                 }
             }
 
-            match self.0.client.get(url.clone()).send().await {
+            match crate::utils::upstream::send(&self.0.client, self.0.client.get(url.clone()))
+                .await
+            {
                 Ok(response) => {
                     if response.status().is_success() {
                         if include_body {

@@ -191,11 +191,19 @@ impl MavenProxy {
             debug!(?file, "Downloading file");
             let mut path = version_dir.clone();
             path.push_mut(&file);
-            let url = format!("{}/{}", proxy_config.url, path);
-            match http_client.get(&url).send().await {
-                Ok(ok) => {
-                    if ok.status().is_success() {
-                        let streamed = stream_response_to_tempfile(ok).await?;
+            let url_string = format!("{}/{}", proxy_config.url, path);
+            let url = match url::Url::parse(&url_string) {
+                Ok(url) => url,
+                Err(err) => {
+                    warn!(%err, "Failed to parse upstream URL");
+                    continue;
+                }
+            };
+            let sanitized_url = crate::utils::upstream::sanitize_url_for_logging(&url);
+            match crate::utils::upstream::send(&http_client, http_client.get(url.clone())).await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        let streamed = stream_response_to_tempfile(response).await?;
                         persist_streamed_download(
                             &self.storage,
                             self.id,
@@ -205,11 +213,21 @@ impl MavenProxy {
                         )
                         .await?;
                     } else {
-                        warn!(?url, ?file, ?ok, "Failed to download file");
+                        warn!(
+                            url.full = %sanitized_url,
+                            file = %file,
+                            http.response.status_code = response.status().as_u16() as i64,
+                            "Failed to download maven project file"
+                        );
                     }
                 }
                 Err(err) => {
-                    warn!(?url, ?file, ?err, "Failed to download file");
+                    warn!(
+                        url.full = %sanitized_url,
+                        file = %file,
+                        error = %err,
+                        "Failed to download maven project file"
+                    );
                 }
             }
         }
@@ -236,21 +254,22 @@ impl MavenProxy {
                 path_as_string = path_as_string[1..].into();
             }
             let url_string = format!("{}/{}", route.url, path_as_string);
-            debug!(?url_string, "Proxying request");
             let url = match url::Url::parse(&url_string) {
                 Ok(ok) => ok,
                 Err(err) => {
-                    error!(?err, ?url_string, "Failed to parse URL");
+                    error!(%err, route = route.name.as_deref(), "Failed to parse upstream URL");
                     continue;
                 }
             };
-            let response = match http_client.get(url).send().await {
-                Ok(ok) => ok,
-                Err(err) => {
-                    error!(?err, ?url_string, "Failed to send request");
-                    continue;
-                }
-            };
+            let sanitized_url = crate::utils::upstream::sanitize_url_for_logging(&url);
+            debug!(url.full = %sanitized_url, "Proxying request");
+            let response =
+                match crate::utils::upstream::send(&http_client, http_client.get(url.clone()))
+                    .await
+                {
+                    Ok(ok) => ok,
+                    Err(_) => continue,
+                };
             if response.status().is_success() {
                 let is_pom = path_as_string.ends_with(".pom");
                 let streamed = stream_response_to_tempfile(response).await?;
@@ -276,7 +295,21 @@ impl MavenProxy {
                 }
                 return Ok(self.storage.open_file(self.id, &path).await?);
             } else {
-                warn!(?response, ?url_string, "Failed to proxy request");
+                let content_type = response
+                    .headers()
+                    .get(CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok());
+                let content_length = response
+                    .headers()
+                    .get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok());
+                debug!(
+                    url.full = %sanitized_url,
+                    http.response.status_code = response.status().as_u16() as i64,
+                    http.response.header.content_type = content_type,
+                    http.response.header.content_length = content_length,
+                    "Maven proxy upstream returned non-success"
+                );
             }
         }
         Ok(None)
@@ -307,19 +340,20 @@ impl MavenProxy {
                 path_as_string = path_as_string[1..].into();
             }
             let url_string = format!("{}/{}", route.url, path_as_string);
-            debug!(?url_string, "HEAD proxying request");
             let url = match url::Url::parse(&url_string) {
                 Ok(ok) => ok,
                 Err(err) => {
-                    error!(?err, ?url_string, "Failed to parse URL");
+                    error!(%err, route = route.name.as_deref(), "Failed to parse upstream URL");
                     continue;
                 }
             };
 
-            let response = match http_client.head(url).send().await {
+            let response = match crate::utils::upstream::send(&http_client, http_client.head(url))
+                .await
+            {
                 Ok(ok) => ok,
                 Err(err) => {
-                    warn!(?err, ?url_string, "Failed to send HEAD request");
+                    warn!(%err, "Failed to send HEAD request");
                     continue;
                 }
             };

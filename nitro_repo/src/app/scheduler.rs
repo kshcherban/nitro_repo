@@ -16,7 +16,8 @@ pub fn start_background_scheduler(site: NitroRepo) -> JoinHandle<()> {
             interval.tick().await;
             let now = Utc::now();
 
-            match crate::repository::deb::scheduler::deb_proxy_scheduler_tick(site.clone(), now).await
+            match crate::repository::deb::scheduler::deb_proxy_scheduler_tick(site.clone(), now)
+                .await
             {
                 Ok(summary) => {
                     if summary.started > 0 || summary.skipped_running > 0 || summary.failed > 0 {
@@ -30,4 +31,3 @@ pub fn start_background_scheduler(site: NitroRepo) -> JoinHandle<()> {
         }
     })
 }
-

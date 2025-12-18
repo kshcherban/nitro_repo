@@ -29,7 +29,8 @@ fn build_minimal_deb(package: &str, version: &str, arch: &str) -> Vec<u8> {
 
     let mut control_gz = Vec::new();
     {
-        let mut encoder = flate2::write::GzEncoder::new(&mut control_gz, flate2::Compression::fast());
+        let mut encoder =
+            flate2::write::GzEncoder::new(&mut control_gz, flate2::Compression::fast());
         encoder.write_all(&control_tar).expect("write tar");
         encoder.finish().expect("finish gz");
     }

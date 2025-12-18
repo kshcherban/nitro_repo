@@ -60,9 +60,10 @@ impl RepositoryConfigType for RubyRepositoryConfigType {
         ConfigDescription {
             name: "Ruby Repository Config",
             description: Some("Handles the type of Ruby (RubyGems) repository."),
-            documentation_link: Some("https://nitro-repo.kingtux.dev/repositoryTypes/ruby/configs/"),
+            documentation_link: Some(
+                "https://nitro-repo.kingtux.dev/repositoryTypes/ruby/configs/",
+            ),
             ..Default::default()
         }
     }
 }
-

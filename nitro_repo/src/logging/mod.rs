@@ -1,8 +1,8 @@
 pub mod config;
 
 use config::{
-    AppLogger, AppLoggerType, ConsoleLogger, LoggingConfig, MetricsConfig, OtelConfig,
-    RollingFileLogger,
+    AppLogger, AppLoggerType, ConsoleLogFormat, ConsoleLogger, LoggingConfig, MetricsConfig,
+    OtelConfig, RollingFileLogger,
 };
 use nr_core::logging::LoggingLevels;
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -66,8 +66,6 @@ fn tracer(config: OtelConfig) -> anyhow::Result<Option<TracerResult>> {
 }
 
 fn metrics(config: MetricsConfig) -> anyhow::Result<SdkMeterProvider> {
-    println!("Loading Tracing {config:#?}");
-
     let resources: Resource = config.config.into();
 
     let exporter = MetricExporter::builder()
@@ -141,19 +139,20 @@ pub fn init(log_config: LoggingConfig, otel_config: OtelConfig) -> anyhow::Resul
             }
             AppLogger::Console(config) => {
                 let ConsoleLogger {
+                    format,
                     pretty,
                     levels,
                     rules,
                 } = config;
                 let logging_levels: Targets = levels.into();
-                if pretty {
-                    let fmt_layer = rules.layer_pretty().with_filter(logging_levels);
-                    layers.push(fmt_layer.boxed());
-                } else {
-                    let fmt_layer = rules.layer().with_filter(logging_levels);
-
-                    layers.push(fmt_layer.boxed());
-                }
+                let format = format.unwrap_or_else(|| {
+                    if pretty.unwrap_or(false) {
+                        ConsoleLogFormat::Pretty
+                    } else {
+                        ConsoleLogFormat::Full
+                    }
+                });
+                layers.push(rules.fmt_layer_for_registry(format, logging_levels));
             }
             AppLogger::RollingFile(config) => {
                 let RollingFileLogger {
@@ -167,13 +166,11 @@ pub fn init(log_config: LoggingConfig, otel_config: OtelConfig) -> anyhow::Resul
 
                 let file_appender =
                     RollingFileAppender::new(interval.into(), path.clone(), file_prefix.clone());
-
-                let fmt_layer = rules
-                    .layer()
-                    .with_writer(file_appender)
-                    .with_filter(logging_levels);
-
-                layers.push(fmt_layer.boxed());
+                layers.push(rules.fmt_layer_for_registry_with_writer(
+                    ConsoleLogFormat::Full,
+                    logging_levels,
+                    file_appender,
+                ));
             }
         }
     }
@@ -257,11 +254,12 @@ impl LoggingState {
         Ok(())
     }
 
-    fn set_global_text_propagator(&self) {
+    fn set_global_text_propagator(&mut self) {
         if self.has_set_global_text_propagator {
             return;
         }
         global::set_text_map_propagator(TraceContextPropagator::new());
+        self.has_set_global_text_propagator = true;
     }
 }
 #[derive(Debug)]

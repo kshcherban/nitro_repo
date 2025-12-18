@@ -26,3 +26,6 @@ impl<S> Layer<S> for AppTracingLayer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

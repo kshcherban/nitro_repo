@@ -28,7 +28,7 @@ pub fn s3_storage_api() -> axum::Router<NitroRepo> {
         (status = 200, description = "A list of available regions for the S3 storage", body = Vec<S3StorageRegion>)
     )
 )]
-#[instrument]
+#[instrument(skip(auth), fields(user = %auth.id))]
 pub async fn region_list(auth: Authentication) -> Result<Response, InternalError> {
     if !auth.is_admin_or_system_manager() {
         return Ok(MissingPermission::StorageManager.into_response());

@@ -7,6 +7,7 @@ pub use response::*;
 pub mod header;
 pub mod other;
 pub mod request_logging;
+pub mod upstream;
 pub use requests::*;
 
 use self::builder::error::ResponseBuildError;

@@ -270,7 +270,7 @@ impl PhpProxy {
             let Some(url) = build_url(&route.url, metadata_path.clone(), query) else {
                 continue;
             };
-            let response = match self.client().get(url.clone()).send().await {
+            let response = match crate::utils::upstream::send(self.client(), self.client().get(url.clone())).await {
                 Ok(resp) => resp,
                 Err(err) => {
                     warn!(?err, %url, "PHP proxy metadata fetch failed");
@@ -566,11 +566,13 @@ impl PhpProxy {
     }
 
     async fn fetch_upstream_dist(&self, url: &str) -> Result<reqwest::Response, reqwest::Error> {
-        self.client()
-            .get(url)
-            .header(http::header::ACCEPT, "application/octet-stream")
-            .send()
-            .await
+        crate::utils::upstream::send(
+            self.client(),
+            self.client()
+                .get(url)
+                .header(http::header::ACCEPT, "application/octet-stream"),
+        )
+        .await
     }
 
     async fn resolve_upstream_meta(
@@ -697,7 +699,7 @@ impl PhpProxy {
 
         if let Some(meta) = self.resolve_upstream_meta(&storage_path).await? {
             if let Some(url) = meta.upstream_url {
-                let response = match self.client().head(url.clone()).send().await {
+                let response = match crate::utils::upstream::send(self.client(), self.client().head(url.clone())).await {
                     Ok(resp) => resp,
                     Err(err) => {
                         warn!(?err, %url, "PHP proxy HEAD upstream failed");

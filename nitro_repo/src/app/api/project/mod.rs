@@ -49,11 +49,11 @@ pub fn project_routes() -> axum::Router<NitroRepo> {
         (status = 403, description = "Missing permission"),
     ),
 )]
-#[instrument]
+#[instrument(skip(site, _auth), fields(project_id = %project_id))]
 pub async fn get_project(
     Path(project_id): Path<Uuid>,
     State(site): State<NitroRepo>,
-    auth: Option<Authentication>,
+    _auth: Option<Authentication>,
 ) -> Result<Response, InternalError> {
     let Some(project) = DBProject::find_by_id(project_id, site.as_ref()).await? else {
         return Ok(ResponseBuilder::not_found().empty());
@@ -75,11 +75,11 @@ pub async fn get_project(
         (status = 403, description = "Missing permission"),
     ),
 )]
-#[instrument]
+#[instrument(skip(site, _auth), fields(project_id = %project_id))]
 pub async fn get_project_versions(
     Path(project_id): Path<Uuid>,
     State(site): State<NitroRepo>,
-    auth: Option<Authentication>,
+    _auth: Option<Authentication>,
 ) -> Result<Response, InternalError> {
     let versions = VersionHistoryItem::find_by_project_id(project_id, site.as_ref()).await?;
 
@@ -100,11 +100,14 @@ pub async fn get_project_versions(
         (status = 403, description = "Missing permission"),
     ),
 )]
-#[instrument]
+#[instrument(
+    skip(site, _auth, project_key),
+    fields(repository_id = %repository_id)
+)]
 pub async fn get_project_by_key(
     Path((repository_id, project_key)): Path<(Uuid, String)>,
     State(site): State<NitroRepo>,
-    auth: Option<Authentication>,
+    _auth: Option<Authentication>,
 ) -> Result<Response, InternalError> {
     let Some(project) =
         DBProject::find_by_project_key(&project_key, repository_id, site.as_ref()).await?

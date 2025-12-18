@@ -200,7 +200,9 @@ impl NpmProxyRegistry {
             let Some(url) = build_url(&route.url, path.clone(), query) else {
                 continue;
             };
-            match self.0.client.get(url.clone()).send().await {
+            match crate::utils::upstream::send(&self.0.client, self.0.client.get(url.clone()))
+                .await
+            {
                 Ok(response) => {
                     if response.status().is_success() {
                         let bytes =
@@ -295,7 +297,9 @@ impl NpmProxyRegistry {
         url: &Url,
         cache_path: &StoragePath,
     ) -> Result<(), NPMRegistryError> {
-        let response = self.0.client.get(url.clone()).send().await.map_err(|err| {
+        let response = crate::utils::upstream::send(&self.0.client, self.0.client.get(url.clone()))
+            .await
+            .map_err(|err| {
             NPMRegistryError::ProxyFetch {
                 url: url.to_string(),
                 error: err.to_string(),
@@ -353,7 +357,9 @@ impl NpmProxyRegistry {
                 continue;
             };
             if !include_body {
-                match self.0.client.head(url.clone()).send().await {
+                match crate::utils::upstream::send(&self.0.client, self.0.client.head(url.clone()))
+                    .await
+                {
                     Ok(response) if response.status().is_success() => {
                         return Ok(Some(build_head_response(response)));
                     }
@@ -378,7 +384,9 @@ impl NpmProxyRegistry {
                 }
             }
 
-            match self.0.client.get(url.clone()).send().await {
+            match crate::utils::upstream::send(&self.0.client, self.0.client.get(url.clone()))
+                .await
+            {
                 Ok(response) => {
                     if response.status().is_success() {
                         if include_body {

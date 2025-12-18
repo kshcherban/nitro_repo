@@ -5,9 +5,7 @@ use super::RubyRepositoryConfigType;
 
 #[test]
 fn default_config_is_hosted() {
-    let config = RubyRepositoryConfigType
-        .default()
-        .expect("default config");
+    let config = RubyRepositoryConfigType.default().expect("default config");
     assert_eq!(config, json!({ "type": "Hosted" }));
 }
 
@@ -37,6 +35,8 @@ fn validate_rejects_missing_type_tag() {
         .validate_config(json!({}))
         .expect_err("missing type should error");
     let message = err.to_string();
-    assert!(!message.trim().is_empty(), "error message should not be empty");
+    assert!(
+        !message.trim().is_empty(),
+        "error message should not be empty"
+    );
 }
-

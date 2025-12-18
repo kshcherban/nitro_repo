@@ -25,8 +25,7 @@ pub enum DebProxyIndexingError {
 
 impl crate::utils::IntoErrorResponse for DebProxyIndexingError {
     fn into_response_boxed(self: Box<Self>) -> axum::response::Response {
-        ResponseBuilder::internal_server_error()
-            .body(format!("Deb proxy indexing error: {}", self))
+        ResponseBuilder::internal_server_error().body(format!("Deb proxy indexing error: {}", self))
     }
 }
 
@@ -61,7 +60,10 @@ impl DatabaseDebProxyIndexer {
         }
     }
 
-    async fn ensure_project(&self, record: &DebProxyPackageRecord) -> Result<DBProject, sqlx::Error> {
+    async fn ensure_project(
+        &self,
+        record: &DebProxyPackageRecord,
+    ) -> Result<DBProject, sqlx::Error> {
         let db = &self.site.database;
         if let Some(project) =
             DBProject::find_by_project_key(&record.package_key, self.repository_id, db).await?

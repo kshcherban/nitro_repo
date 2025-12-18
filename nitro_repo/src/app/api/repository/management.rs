@@ -36,7 +36,10 @@ pub fn management_routes() -> Router<NitroRepo> {
         .route("/{repository_id}/config/{key}", put(update_config))
         .route("/{repository_id}/config/{key}", get(get_config))
         .route("/{repository_id}/deb/refresh", post(deb_refresh))
-        .route("/{repository_id}/deb/refresh/status", get(deb_refresh_status))
+        .route(
+            "/{repository_id}/deb/refresh/status",
+            get(deb_refresh_status),
+        )
         .route("/{repository_id}", delete(delete_repository))
 }
 
@@ -87,7 +90,10 @@ pub struct NewRepositoryRequest {
         (status = 200, description = "Create new Repository", body = DBRepository),
     )
 )]
-#[instrument]
+#[instrument(
+    skip(site, auth, request),
+    fields(user = %auth.id, repository_type = %repository_type, storage_id = %request.storage)
+)]
 pub async fn new_repository(
     State(site): State<NitroRepo>,
     auth: Authentication,
@@ -185,7 +191,7 @@ pub async fn new_repository(
         (status = 200, description = "List Configs for Repository", body = [String]),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth), fields(user = %auth.id, repository_id = %repository))]
 pub async fn get_configs_for_repository(
     State(site): State<NitroRepo>,
     auth: Authentication,
@@ -201,9 +207,9 @@ pub async fn get_configs_for_repository(
         return Ok(RepositoryNotFound::Uuid(repository).into_response());
     };
 
-    let repository = repository.config_types();
-    info!("Repository Configs: {:?}", repository);
-    Ok(ResponseBuilder::ok().json(&repository))
+    let config_types = repository.config_types();
+    debug!(configs = ?config_types, "Repository config types");
+    Ok(ResponseBuilder::ok().json(&config_types))
 }
 #[derive(Deserialize, Default, Debug)]
 #[serde(default)]
@@ -222,7 +228,10 @@ pub struct GetConfigParams {
     )
 )]
 #[debug_handler]
-#[instrument]
+#[instrument(
+    skip(site, auth, params),
+    fields(repository_id = %repository, config_key = %config)
+)]
 pub async fn get_config(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,
@@ -282,7 +291,7 @@ pub async fn get_config(
         (status = 409, description = "Refresh already running"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth), fields(user = %auth.id, repository_id = %repository_id))]
 pub async fn deb_refresh(
     State(site): State<NitroRepo>,
     auth: Authentication,
@@ -317,16 +326,12 @@ pub async fn deb_refresh(
 
     let refresh_result = proxy.refresh_offline_mirror().await;
     let status_update: Result<(), InternalError> = match &refresh_result {
-        Ok(summary) => {
-            mark_deb_proxy_refresh_succeeded(&site.database, repository_id, *summary)
-                .await
-                .map_err(|err| err.into())
-        }
-        Err(err) => {
-            mark_deb_proxy_refresh_failed(&site.database, repository_id, &err.to_string())
-                .await
-                .map_err(|err| err.into())
-        }
+        Ok(summary) => mark_deb_proxy_refresh_succeeded(&site.database, repository_id, *summary)
+            .await
+            .map_err(|err| err.into()),
+        Err(err) => mark_deb_proxy_refresh_failed(&site.database, repository_id, &err.to_string())
+            .await
+            .map_err(|err| err.into()),
     };
 
     let response = match refresh_result {
@@ -366,7 +371,7 @@ pub struct DebProxyRefreshStatusResponse {
         (status = 403, description = "Missing permissions"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth), fields(user = %auth.id, repository_id = %repository_id))]
 pub async fn deb_refresh_status(
     State(site): State<NitroRepo>,
     auth: Authentication,
@@ -424,20 +429,27 @@ pub async fn deb_refresh_status(
         .filter(|refresh| refresh.enabled)
         .map(|refresh| &refresh.schedule);
 
-    let (last_started_at, in_progress, last_finished_at, last_success_at, last_error, last_downloaded_packages, last_downloaded_files) =
-        if let Some(status) = status {
-            (
-                status.last_started_at,
-                status.in_progress,
-                status.last_finished_at,
-                status.last_success_at,
-                status.last_error,
-                status.last_downloaded_packages,
-                status.last_downloaded_files,
-            )
-        } else {
-            (None, false, None, None, None, None, None)
-        };
+    let (
+        last_started_at,
+        in_progress,
+        last_finished_at,
+        last_success_at,
+        last_error,
+        last_downloaded_packages,
+        last_downloaded_files,
+    ) = if let Some(status) = status {
+        (
+            status.last_started_at,
+            status.in_progress,
+            status.last_finished_at,
+            status.last_success_at,
+            status.last_error,
+            status.last_downloaded_packages,
+            status.last_downloaded_files,
+        )
+    } else {
+        (None, false, None, None, None, None, None)
+    };
 
     let due = schedule
         .map(|schedule| {
@@ -477,7 +489,10 @@ pub async fn deb_refresh_status(
         (status = 400, description="Invalid Config value for the repository"),
     )
 )]
-#[instrument]
+#[instrument(
+    skip(site, auth, config),
+    fields(user = %auth.id, repository_id = %repository, config_key = %config_key)
+)]
 pub async fn update_config(
     State(site): State<NitroRepo>,
     auth: Authentication,

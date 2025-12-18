@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use sqlx::{FromRow, PgPool};
+use std::str::FromStr;
 use tracing::{instrument, warn};
 use uuid::Uuid;
-use std::str::FromStr;
 
 use crate::{
     app::NitroRepo,
@@ -14,8 +14,8 @@ use super::{
     DebProxyRepository,
     configs::{DebProxyRefreshSchedule, DebRepositoryConfig, normalize_cron_expression},
     refresh_status::{
-        DebProxyRefreshLockOutcome, mark_deb_proxy_refresh_failed, mark_deb_proxy_refresh_succeeded,
-        try_mark_deb_proxy_refresh_started,
+        DebProxyRefreshLockOutcome, mark_deb_proxy_refresh_failed,
+        mark_deb_proxy_refresh_succeeded, try_mark_deb_proxy_refresh_started,
     },
 };
 
@@ -80,7 +80,9 @@ pub fn next_run_at(
 ) -> Option<DateTime<Utc>> {
     match schedule {
         DebProxyRefreshSchedule::IntervalSeconds(interval) => match last_started_at {
-            Some(last) => Some(fixed_to_utc(last) + chrono::Duration::seconds(interval.interval_seconds as i64)),
+            Some(last) => Some(
+                fixed_to_utc(last) + chrono::Duration::seconds(interval.interval_seconds as i64),
+            ),
             None => Some(now),
         },
         DebProxyRefreshSchedule::Cron(cron) => {
@@ -175,12 +177,8 @@ async fn run_deb_proxy_scheduled_refresh(
             }
         }
         Err(err) => {
-            if let Err(status_err) = mark_deb_proxy_refresh_failed(
-                &site.database,
-                repository_id,
-                &err.to_string(),
-            )
-            .await
+            if let Err(status_err) =
+                mark_deb_proxy_refresh_failed(&site.database, repository_id, &err.to_string()).await
             {
                 let _ = lock.release().await;
                 return Err(status_err.into());

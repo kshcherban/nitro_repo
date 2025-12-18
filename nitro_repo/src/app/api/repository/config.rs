@@ -41,7 +41,7 @@ impl IntoResponse for InvalidConfigType {
         ("key" = String, Path, description = "Config Key"),
     ),
 )]
-#[instrument]
+#[instrument(skip(site), fields(config_key = %key))]
 pub async fn config_schema(
     State(site): State<NitroRepo>,
     Path(key): Path<String>,
@@ -71,7 +71,7 @@ pub async fn config_schema(
         ("key" = String, Path, description = "Config Key"),
     ),
 )]
-#[instrument]
+#[instrument(skip(site, auth, config), fields(user = %auth.id, config_key = %key))]
 pub async fn config_validate(
     State(site): State<NitroRepo>,
     Path(key): Path<String>,
@@ -100,7 +100,7 @@ pub async fn config_validate(
         ("key" = String, Path, description = "Config Key"),
     ),
 )]
-#[instrument]
+#[instrument(skip(site), fields(config_key = %key))]
 pub async fn config_default(
     State(site): State<NitroRepo>,
     Path(key): Path<String>,

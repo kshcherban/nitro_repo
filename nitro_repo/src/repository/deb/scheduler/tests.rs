@@ -2,17 +2,13 @@
 use super::*;
 
 use crate::repository::NewRepository;
-use once_cell::sync::Lazy;
 use nr_core::{
-    database::{
-        DatabaseConfig,
-        entities::storage::NewDBStorage,
-        migration::run_migrations,
-    },
+    database::{DatabaseConfig, entities::storage::NewDBStorage, migration::run_migrations},
     storage::StorageName,
 };
-use sqlx::{Connection, PgPool, postgres::PgPoolOptions};
+use once_cell::sync::Lazy;
 use sha2::Digest;
+use sqlx::{Connection, PgPool, postgres::PgPoolOptions};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -336,8 +332,7 @@ async fn scheduler_triggers_interval_refresh_for_due_repo() {
     .expect("start upstream");
 
     let storage_id = insert_local_storage(db.pool(), root.path()).await;
-    let repo_id =
-        insert_scheduled_deb_proxy_repo(db.pool(), storage_id, &upstream_url, 3600).await;
+    let repo_id = insert_scheduled_deb_proxy_repo(db.pool(), storage_id, &upstream_url, 3600).await;
 
     let site = build_site(&db, root.path()).await;
     let now = Utc::now();
@@ -396,8 +391,7 @@ async fn scheduler_skips_refresh_when_advisory_lock_held() {
     .expect("start upstream");
 
     let storage_id = insert_local_storage(db.pool(), root.path()).await;
-    let repo_id =
-        insert_scheduled_deb_proxy_repo(db.pool(), storage_id, &upstream_url, 3600).await;
+    let repo_id = insert_scheduled_deb_proxy_repo(db.pool(), storage_id, &upstream_url, 3600).await;
 
     let mut conn = sqlx::PgConnection::connect(&db.url).await.expect("connect");
     let key = crate::repository::deb::refresh_status::deb_proxy_refresh_advisory_key(repo_id);
@@ -418,12 +412,13 @@ async fn scheduler_skips_refresh_when_advisory_lock_held() {
     assert_eq!(summary.skipped_running, 1);
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-    let status: Option<bool> =
-        sqlx::query_scalar("SELECT in_progress FROM deb_proxy_refresh_status WHERE repository_id = $1")
-            .bind(repo_id)
-            .fetch_optional(&site.database)
-            .await
-            .expect("query status");
+    let status: Option<bool> = sqlx::query_scalar(
+        "SELECT in_progress FROM deb_proxy_refresh_status WHERE repository_id = $1",
+    )
+    .bind(repo_id)
+    .fetch_optional(&site.database)
+    .await
+    .expect("query status");
     assert!(status.is_none(), "status row should not be created");
 
     let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
@@ -445,16 +440,14 @@ fn cron_due_evaluation_respects_last_started_at() {
     let last_started_at =
         chrono::DateTime::parse_from_rfc3339("2025-12-12T04:00:00+00:00").expect("parse");
 
-    let now_before =
-        chrono::DateTime::parse_from_rfc3339("2025-12-13T02:00:00+00:00").unwrap();
+    let now_before = chrono::DateTime::parse_from_rfc3339("2025-12-13T02:00:00+00:00").unwrap();
     assert!(!is_due(
         now_before.with_timezone(&Utc),
         &schedule,
         Some(last_started_at)
     ));
 
-    let now_after =
-        chrono::DateTime::parse_from_rfc3339("2025-12-13T04:00:00+00:00").unwrap();
+    let now_after = chrono::DateTime::parse_from_rfc3339("2025-12-13T04:00:00+00:00").unwrap();
     assert!(is_due(
         now_after.with_timezone(&Utc),
         &schedule,
@@ -464,11 +457,13 @@ fn cron_due_evaluation_respects_last_started_at() {
 
 #[test]
 fn next_run_at_interval_is_now_when_never_started() {
-    let schedule = DebProxyRefreshSchedule::IntervalSeconds(super::super::configs::DebProxyIntervalSchedule {
-        interval_seconds: 60,
-    });
-    let now =
-        chrono::DateTime::parse_from_rfc3339("2025-12-13T12:00:00+00:00").unwrap().with_timezone(&Utc);
+    let schedule =
+        DebProxyRefreshSchedule::IntervalSeconds(super::super::configs::DebProxyIntervalSchedule {
+            interval_seconds: 60,
+        });
+    let now = chrono::DateTime::parse_from_rfc3339("2025-12-13T12:00:00+00:00")
+        .unwrap()
+        .with_timezone(&Utc);
     let next = next_run_at(now, &schedule, None).expect("next");
     assert_eq!(next, now);
 }
@@ -478,8 +473,9 @@ fn next_run_at_cron_returns_future_time() {
     let schedule = DebProxyRefreshSchedule::Cron(super::super::configs::DebProxyCronSchedule {
         expression: "0 3 * * *".into(),
     });
-    let now =
-        chrono::DateTime::parse_from_rfc3339("2025-12-13T12:00:00+00:00").unwrap().with_timezone(&Utc);
+    let now = chrono::DateTime::parse_from_rfc3339("2025-12-13T12:00:00+00:00")
+        .unwrap()
+        .with_timezone(&Utc);
     let next = next_run_at(now, &schedule, None).expect("next");
     assert!(next > now);
 }
@@ -519,13 +515,9 @@ async fn scheduler_triggers_cron_refresh_when_due() {
     .expect("start upstream");
 
     let storage_id = insert_local_storage(db.pool(), root.path()).await;
-    let repo_id = insert_scheduled_deb_proxy_repo_cron(
-        db.pool(),
-        storage_id,
-        &upstream_url,
-        "*/1 * * * *",
-    )
-    .await;
+    let repo_id =
+        insert_scheduled_deb_proxy_repo_cron(db.pool(), storage_id, &upstream_url, "*/1 * * * *")
+            .await;
 
     // Seed last_started_at to 2 minutes ago so the next scheduled time is in the past and due.
     sqlx::query(

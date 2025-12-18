@@ -75,4 +75,3 @@ async fn create_new_ruby_rejects_config_missing_type() {
         other => panic!("expected invalid config error, got: {other:?}"),
     }
 }
-

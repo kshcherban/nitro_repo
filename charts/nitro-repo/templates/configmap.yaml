@@ -162,9 +162,10 @@ data:
 
     [log.loggers.console]
     type = "Console"
-    pretty = {{ .Values.logging.console.pretty }}
-
-    [log.loggers.console.rules]
+    [log.loggers.console.config]
+    # Options: "compact" | "pretty" | "json" | "full"
+    format = {{ ternary "pretty" "compact" .Values.logging.console.pretty | quote }}
+    include_span_context = false
     include_time = {{ .Values.logging.console.includeTime }}
     include_level = {{ .Values.logging.console.includeLevel }}
     include_line_numbers = false

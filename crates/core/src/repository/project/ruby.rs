@@ -32,4 +32,3 @@ pub struct RubyDependencyMetadata {
     #[serde(default)]
     pub requirements: Vec<String>,
 }
-

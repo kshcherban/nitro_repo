@@ -58,7 +58,9 @@ impl Serialize for DebRepositoryConfig {
         match self {
             // Keep backward compatibility for hosted repositories: serialize using the legacy shape.
             Self::Hosted(config) => config.serialize(serializer),
-            Self::Proxy(config) => DebRepositoryConfigTagged::Proxy(config.clone()).serialize(serializer),
+            Self::Proxy(config) => {
+                DebRepositoryConfigTagged::Proxy(config.clone()).serialize(serializer)
+            }
         }
     }
 }
@@ -161,9 +163,8 @@ fn validate_refresh_config(refresh: &DebProxyRefreshConfig) -> Result<(), Reposi
         DebProxyRefreshSchedule::Cron(cron) => {
             let normalized = normalize_cron_expression(&cron.expression)
                 .map_err(RepositoryConfigError::InvalidConfig)?;
-            cron::Schedule::from_str(&normalized).map_err(|_| {
-                RepositoryConfigError::InvalidConfig("Invalid cron expression")
-            })?;
+            cron::Schedule::from_str(&normalized)
+                .map_err(|_| RepositoryConfigError::InvalidConfig("Invalid cron expression"))?;
         }
     }
     Ok(())
@@ -205,15 +206,18 @@ impl RepositoryConfigType for DebRepositoryConfigType {
             DebRepositoryConfig::Proxy(proxy) => {
                 match proxy.layout {
                     DebProxyLayout::Dists(dists) => {
-                    validate_identifier_list(
-                        &dists.distributions,
-                        "At least one distribution is required",
-                    )?;
-                    validate_identifier_list(&dists.components, "At least one component is required")?;
-                    validate_identifier_list(
-                        &dists.architectures,
-                        "At least one architecture is required",
-                    )?;
+                        validate_identifier_list(
+                            &dists.distributions,
+                            "At least one distribution is required",
+                        )?;
+                        validate_identifier_list(
+                            &dists.components,
+                            "At least one component is required",
+                        )?;
+                        validate_identifier_list(
+                            &dists.architectures,
+                            "At least one architecture is required",
+                        )?;
                     }
                     DebProxyLayout::Flat(flat) => {
                         if flat.distribution.trim().is_empty() {

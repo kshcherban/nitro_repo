@@ -50,7 +50,7 @@ pub fn page_apis() -> axum::Router<NitroRepo> {
         (status = 404, description = "Repository not found"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth), fields(repository_id = %repository))]
 pub async fn get_repository_page_by_id(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,
@@ -106,7 +106,7 @@ pub async fn get_repository_page_by_id(
         (status = 404, description = "Repository not found"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth, names))]
 pub async fn get_repository_page_by_names(
     State(site): State<NitroRepo>,
     auth: Option<Authentication>,

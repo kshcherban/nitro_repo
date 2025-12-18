@@ -45,7 +45,7 @@ pub enum LocalStoragePathHelperResponse {
         (status = 200, description = "a path suggestion", body = LocalStoragePathHelperResponse)
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site, request), fields(user = %auth.id))]
 pub async fn path_helper(
     auth: Authentication,
     State(site): State<NitroRepo>,

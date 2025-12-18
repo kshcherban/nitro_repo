@@ -5,10 +5,7 @@ use http::StatusCode;
 use nr_core::{
     database::entities::repository::DBRepository,
     repository::{
-        Visibility,
-        config::RepositoryConfigType,
-        project::ProxyArtifactMeta,
-        proxy_url::ProxyURL,
+        Visibility, config::RepositoryConfigType, project::ProxyArtifactMeta, proxy_url::ProxyURL,
     },
     storage::StoragePath,
 };
@@ -138,16 +135,14 @@ fn is_supported_rubygems_path(path: &StoragePath) -> bool {
         return suffix.ends_with(".gem") && suffix.len() > ".gem".len();
     }
     if let Some(suffix) = path.strip_prefix("quick/Marshal.4.8/") {
-        return suffix.ends_with(".gemspec.rz") && suffix.len() > ".gemspec.rz".len() && !suffix.contains('/');
+        return suffix.ends_with(".gemspec.rz")
+            && suffix.len() > ".gemspec.rz".len()
+            && !suffix.contains('/');
     }
     false
 }
 
-fn build_upstream_url(
-    upstream: &ProxyURL,
-    path: &StoragePath,
-    query: Option<&str>,
-) -> Option<Url> {
+fn build_upstream_url(upstream: &ProxyURL, path: &StoragePath, query: Option<&str>) -> Option<Url> {
     let mut url = upstream.add_storage_path(path.clone()).ok()?;
     url.set_query(query);
     Some(url)
@@ -167,22 +162,24 @@ async fn download_to_tempfile(
         .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?
         .into_temp_path();
     let path_buf = temp_path.to_path_buf();
-    let mut file = tokio::fs::File::create(&path_buf).await.map_err(|err| {
-        RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    let mut file = tokio::fs::File::create(&path_buf)
+        .await
+        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
 
     let mut written = 0u64;
-    while let Some(chunk) = response.chunk().await.map_err(|err| {
-        RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?
+    {
         written = written.saturating_add(chunk.len() as u64);
-        file.write_all(&chunk).await.map_err(|err| {
-            RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-        })?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     }
-    file.flush().await.map_err(|err| {
-        RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    file.flush()
+        .await
+        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     Ok((temp_path, written))
 }
 
@@ -222,9 +219,9 @@ async fn fetch_and_cache_if_missing(
     };
     tracing::Span::current().record("nr.ruby.cache.url", &url.to_string());
 
-    let response = client.get(url.clone()).send().await.map_err(|err| {
-        RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    let response = crate::utils::upstream::send(client, client.get(url.clone()))
+        .await
+        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     let status = response.status();
     tracing::Span::current().record("nr.ruby.cache.upstream_status", status.as_u16());
     if !status.is_success() {
@@ -234,7 +231,11 @@ async fn fetch_and_cache_if_missing(
 
     let (temp_path, size) = download_to_tempfile(response).await?;
     storage
-        .save_file(repository_id, FileContent::Path(temp_path.to_path_buf()), path)
+        .save_file(
+            repository_id,
+            FileContent::Path(temp_path.to_path_buf()),
+            path,
+        )
         .await?;
     tracing::Span::current().record("nr.ruby.cache.outcome", "fetched");
     tracing::Span::current().record("nr.ruby.cache.size_bytes", size);
@@ -274,14 +275,15 @@ async fn fetch_range_and_maybe_append(
         });
     };
 
-    let response = client.get(url.clone()).header(RANGE, range).send().await.map_err(|err| {
-        RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    let response = crate::utils::upstream::send(client, client.get(url.clone()).header(RANGE, range))
+        .await
+        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     let status = response.status();
     let headers = response.headers().clone();
-    let body = response.bytes().await.map_err(|err| {
-        RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-    })?;
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
 
     if status == StatusCode::PARTIAL_CONTENT {
         if let Some(start) = range_start_bytes(range) {
@@ -457,9 +459,7 @@ impl Repository for RubyProxy {
         request: RepositoryRequest,
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
         let this = self.clone();
-        async move {
-            this.handle_get_internal(request).await
-        }
+        async move { this.handle_get_internal(request).await }
     }
 
     fn handle_head(
@@ -467,9 +467,7 @@ impl Repository for RubyProxy {
         request: RepositoryRequest,
     ) -> impl std::future::Future<Output = Result<RepoResponse, Self::Error>> + Send {
         let this = self.clone();
-        async move {
-            this.handle_head_internal(request).await
-        }
+        async move { this.handle_head_internal(request).await }
     }
 }
 
@@ -545,7 +543,8 @@ impl RubyProxy {
                 &range,
             )
             .await?;
-            tracing::Span::current().record("nr.ruby.cache.upstream_status", outcome.status.as_u16());
+            tracing::Span::current()
+                .record("nr.ruby.cache.upstream_status", outcome.status.as_u16());
 
             return Ok(build_passthrough_response(
                 outcome.status,
@@ -692,9 +691,9 @@ impl RubyProxy {
         };
         tracing::Span::current().record("nr.ruby.cache.url", &url.to_string());
 
-        let response = self.0.client.head(url.clone()).send().await.map_err(|err| {
-            RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
-        })?;
+        let response = crate::utils::upstream::send(&self.0.client, self.0.client.head(url.clone()))
+            .await
+            .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
         let status = response.status();
         tracing::Span::current().record("nr.ruby.cache.upstream_status", status.as_u16());
         let headers = response.headers().clone();

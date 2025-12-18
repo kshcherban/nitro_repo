@@ -69,7 +69,7 @@ pub struct StorageListRequest {
         (status = 403, description = "Does not have permission to view storages")
     )
 )]
-#[instrument]
+#[instrument(skip(site, auth, request), fields(user = %auth.id))]
 pub async fn list_storages(
     State(site): State<NitroRepo>,
     auth: Authentication,
@@ -111,7 +111,10 @@ pub struct UpdateStorageRequest {
         ("storage_type" = String, Path, description = "Storage Type"),
     )
 )]
-#[instrument]
+#[instrument(
+    skip(auth, site, request),
+    fields(user = %auth.id, storage_type = %storage_type)
+)]
 pub async fn new_storage(
     auth: Authentication,
     State(site): State<NitroRepo>,
@@ -176,7 +179,7 @@ pub async fn new_storage(
         ("id" = Uuid, Path, description = "Storage ID"),
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site, request), fields(user = %auth.id, storage_id = %id))]
 pub async fn update_storage(
     auth: Authentication,
     State(site): State<NitroRepo>,
@@ -243,7 +246,7 @@ pub async fn update_storage(
         (status = 404, description = "Storage not found")
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.id, storage_id = %id))]
 pub async fn get_storage(
     auth: Authentication,
     Path(id): Path<Uuid>,

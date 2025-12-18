@@ -46,4 +46,3 @@ fn rejects_missing_version() {
     assert_eq!(parse_gem_file_name("rack.gem"), None);
     assert_eq!(parse_gem_file_name("rack-.gem"), None);
 }
-

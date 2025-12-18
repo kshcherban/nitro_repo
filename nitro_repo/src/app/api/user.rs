@@ -109,7 +109,7 @@ pub fn user_routes() -> axum::Router<NitroRepo> {
         ("session" = [])
     )
 )]
-#[instrument]
+#[instrument(skip(auth), fields(user = %auth.id))]
 pub async fn me(auth: Authentication) -> Response {
     match auth {
         Authentication::AuthToken(_, _) => plain_response(
@@ -129,7 +129,7 @@ pub async fn me(auth: Authentication) -> Response {
         (status = 200, description = "Get All the permissions for the current user", body = [FullUserPermissions])
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.id))]
 pub async fn me_permissions(
     auth: Authentication,
     State(site): State<NitroRepo>,
@@ -142,7 +142,7 @@ pub async fn me_permissions(
     };
     Ok(Json(user).into_response())
 }
-#[instrument]
+#[instrument(skip(auth), fields(user = %auth.id))]
 #[utoipa::path(
     get,
     path = "/whoami",
@@ -167,7 +167,7 @@ pub async fn whoami(auth: Authentication) -> Json<UserSafeData> {
         (status = 200, description = "List All Active Sessions", body = [Session])
     )
 )]
-#[instrument]
+#[instrument(skip(auth, site), fields(user = %auth.id))]
 pub async fn get_sessions(
     auth: Authentication,
     State(site): State<NitroRepo>,
@@ -210,7 +210,7 @@ fn login_success_response(cookie: Cookie<'static>, user_with_session: MeWithSess
         (status = 401, description = "Unauthorized"),
     )
 )]
-#[instrument]
+#[instrument(skip(site, user_agent, addr, login))]
 pub async fn login(
     State(site): State<NitroRepo>,
     TypedHeader(user_agent): TypedHeader<UserAgent>,
