@@ -440,4 +440,66 @@ describe("RepositoryPackagesPublic.vue", () => {
       vi.useRealTimers();
     }
   });
+
+  it("shows blob digest for Helm proxied packages", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "acme",
+          name: "1.2.3",
+          size: 4096,
+          cache_path: "charts/acme-1.2.3.tgz",
+          modified: "2025-11-05T09:30:00Z",
+          blob_digest: "sha256:deadbeef",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-helm",
+        repositoryType: "helm",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('th[data-column="digest"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("Blob Digest");
+    expect(wrapper.get('[data-testid="package-row"]').text()).toContain("sha256:deadbeef");
+  });
+
+  it("shows blob digest column for non-Helm repositories", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "pkg-alpha",
+          name: "Alpha",
+          size: 1024,
+          cache_path: "cache/pkg-alpha",
+          modified: "2025-11-05T09:30:00Z",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-python",
+        repositoryType: "python",
+        repositoryKind: "hosted",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('th[data-column="digest"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("Blob Digest");
+  });
 });

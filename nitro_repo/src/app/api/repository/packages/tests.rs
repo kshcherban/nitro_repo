@@ -106,6 +106,86 @@ async fn map_ordered_concurrent_preserves_input_order() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn package_file_entry_serializes_blob_digest_for_helm() {
+    let modified = FixedOffset::east_opt(0)
+        .expect("offset")
+        .with_ymd_and_hms(2025, 11, 5, 9, 30, 0)
+        .single()
+        .expect("datetime");
+
+    let entry_with_digest = PackageFileEntry {
+        package: "acme".to_string(),
+        name: "1.2.3".to_string(),
+        cache_path: "charts/acme-1.2.3.tgz".to_string(),
+        blob_digest: Some("sha256:deadbeef".to_string()),
+        size: 4096,
+        modified,
+    };
+
+    let with_value = serde_json::to_value(&entry_with_digest).expect("serialize entry");
+    assert_eq!(
+        with_value
+            .get("blob_digest")
+            .and_then(|value| value.as_str()),
+        Some("sha256:deadbeef")
+    );
+
+    let entry_without_digest = PackageFileEntry {
+        blob_digest: None,
+        ..entry_with_digest
+    };
+    let without_value = serde_json::to_value(&entry_without_digest).expect("serialize entry");
+    assert!(
+        without_value.get("blob_digest").is_none(),
+        "blob_digest should be omitted when not present"
+    );
+}
+
+#[test]
+fn sha256_digest_from_base64_formats_oci_style() {
+    // base64(sha256("")) where sha256("") is e3b0c442...b855
+    let base64 = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+    let digest = super::sha256_digest_from_base64(base64).expect("digest should decode");
+    assert_eq!(
+        digest,
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+}
+
+#[test]
+fn normalize_sha256_digest_prefixes_plain_values() {
+    assert_eq!(
+        super::normalize_sha256_digest("deadbeef").as_deref(),
+        Some("sha256:deadbeef")
+    );
+    assert_eq!(
+        super::normalize_sha256_digest("sha256:deadbeef").as_deref(),
+        Some("sha256:deadbeef")
+    );
+    assert!(super::normalize_sha256_digest("  ").is_none());
+}
+
+#[test]
+fn cargo_package_entry_exposes_checksum_as_blob_digest() {
+    let updated_at = FixedOffset::east_opt(0)
+        .expect("offset")
+        .with_ymd_and_hms(2025, 11, 5, 9, 30, 0)
+        .single()
+        .expect("datetime");
+
+    let metadata = CargoPackageMetadata {
+        checksum: "deadbeef".to_string(),
+        crate_size: 42,
+        yanked: false,
+        features: Default::default(),
+        dependencies: Vec::new(),
+        extra: None,
+    };
+    let entry = super::build_cargo_package_entry("acme", "acme", "1.2.3", updated_at, &metadata);
+    assert_eq!(entry.blob_digest.as_deref(), Some("sha256:deadbeef"));
+}
+
 #[tokio::test]
 async fn gather_package_dirs_lists_nested_packages() -> Result<()> {
     let (storage, _tempdir) = local_storage().await?;

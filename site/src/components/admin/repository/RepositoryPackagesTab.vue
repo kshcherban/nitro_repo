@@ -87,6 +87,10 @@
           <v-code class="text-caption">{{ value }}</v-code>
         </template>
 
+        <template v-slot:item.blobDigest="{ value }">
+          <v-code class="text-caption">{{ value }}</v-code>
+        </template>
+
         <template v-slot:item.modified="{ value }">
           <div class="text-no-wrap">
             {{ new Date(value).toLocaleString() }}
@@ -158,6 +162,7 @@ interface PackageEntry {
   name: string;
   size: number;
   cachePath: string;
+  blobDigest?: string | null;
   modified: string;
   package: string;
 }
@@ -234,40 +239,49 @@ watch(packages, async () => {
 });
 
 // Define table headers based on repository type
-const headers = computed(() => [
-  {
-    title: packageColumnTitle.value,
-    key: 'package',
-    sortable: true,
-  },
-  {
-    title: nameColumnTitle.value,
-    key: 'name',
-    sortable: true,
-  },
-  {
-    title: 'Size',
-    key: 'size',
-    sortable: true,
-    align: 'end' as const,
-  },
-  {
-    title: pathColumnTitle.value,
-    key: 'cachePath',
-    sortable: true,
-  },
-  {
-    title: timestampColumnTitle.value,
-    key: 'modified',
-    sortable: true,
-  },
-]);
+const headers = computed(() => {
+  const base = [
+    {
+      title: packageColumnTitle.value,
+      key: "package",
+      sortable: true,
+    },
+    {
+      title: nameColumnTitle.value,
+      key: "name",
+      sortable: true,
+    },
+    {
+      title: "Blob Digest",
+      key: "blobDigest",
+      sortable: true,
+    },
+    {
+      title: "Size",
+      key: "size",
+      sortable: true,
+      align: "end" as const,
+    },
+    {
+      title: pathColumnTitle.value,
+      key: "cachePath",
+      sortable: true,
+    },
+    {
+      title: timestampColumnTitle.value,
+      key: "modified",
+      sortable: true,
+    },
+  ];
+  return base;
+});
 
 // Convert packages to v-data-table format
 const tableItems = computed(() => {
   return packages.value.map((pkg) => ({
     package: pkg.package,
     name: pkg.name,
+    blobDigest: pkg.blobDigest ?? null,
     size: pkg.size,
     cachePath: pkg.cachePath,
     modified: pkg.modified,
@@ -386,6 +400,7 @@ async function loadPackages() {
       name: item.name,
       size: item.size,
       cachePath: item.cache_path,
+      blobDigest: item.blob_digest ?? null,
       modified: item.modified,
       package: item.package,
     }));

@@ -58,6 +58,7 @@ use nr_core::{
         CargoPackageMetadata, DebPackageMetadata, ProxyArtifactKey, VersionData,
     },
     storage::StoragePath,
+    utils::base64_utils,
 };
 
 #[derive(Debug, Clone, Deserialize, IntoParams)]
@@ -91,11 +92,41 @@ fn normalize_search_term(term: &Option<String>) -> Option<String> {
 
 const GO_FILE_SUFFIXES: [&str; 3] = [".zip", ".mod", ".info"];
 
+fn normalize_sha256_digest(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("sha256:") {
+        return Some(trimmed.to_string());
+    }
+    Some(format!("sha256:{trimmed}"))
+}
+
+fn sha256_digest_from_base64(value: &str) -> Option<String> {
+    let bytes = base64_utils::decode(value).ok()?;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{:02x}", byte);
+    }
+    Some(format!("sha256:{hex}"))
+}
+
+fn blob_digest_from_file_type(file: &nr_storage::FileFileType) -> Option<String> {
+    file.file_hash
+        .sha2_256
+        .as_deref()
+        .and_then(sha256_digest_from_base64)
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct PackageFileEntry {
     pub package: String,
     pub name: String,
     pub cache_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob_digest: Option<String>,
     pub size: u64,
     pub modified: DateTime<FixedOffset>,
 }
@@ -220,6 +251,7 @@ fn build_package_page_from_objects(
                 package: display_name,
                 name: file_name.to_string(),
                 cache_path: key,
+                blob_digest: None,
                 size: obj.size,
                 modified: obj.modified,
             });
@@ -239,10 +271,15 @@ fn build_package_page_from_objects(
 fn matches_search(entry: &PackageFileEntry, term: &str) -> bool {
     let needle = term.to_lowercase();
     let haystack = format!(
-        "{} {} {}",
+        "{} {} {} {}",
         entry.package.to_lowercase(),
         entry.name.to_lowercase(),
-        entry.cache_path.to_lowercase()
+        entry.cache_path.to_lowercase(),
+        entry
+            .blob_digest
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
     );
     haystack.contains(&needle)
 }
@@ -849,6 +886,7 @@ async fn load_single_file_entry(
             package,
             name: file_name_from_path(&cache_path),
             cache_path,
+            blob_digest: blob_digest_from_file_type(&meta.file_type),
             size: meta.file_type.file_size,
             modified: meta.modified,
         });
@@ -858,6 +896,7 @@ async fn load_single_file_entry(
         package,
         name: file_name_from_path(&cache_path),
         cache_path,
+        blob_digest: None,
         size: 0,
         modified: updated_at,
     })
@@ -1503,6 +1542,7 @@ fn build_package_entries_from_directory(
                 package: display_name.to_string(),
                 name: meta.name().to_string(),
                 cache_path,
+                blob_digest: blob_digest_from_file_type(file_meta),
                 size: file_meta.file_size,
                 modified: meta.modified().clone(),
             });
@@ -1529,6 +1569,7 @@ fn build_go_entries_from_directory(
                     package: display_name.to_string(),
                     name: version.clone(),
                     cache_path,
+                    blob_digest: blob_digest_from_file_type(file_meta),
                     size: file_meta.file_size,
                     modified: entry.modified().clone(),
                 };
@@ -1713,6 +1754,7 @@ async fn list_helm_packages(
             package: chart_name,
             name: version,
             cache_path,
+            blob_digest: Some(chart_extra.digest),
             size: chart_extra.size_bytes,
             modified: updated_at,
         });
@@ -1891,6 +1933,7 @@ fn build_cargo_package_entry(
         package: crate_name.to_string(),
         name: version.to_string(),
         cache_path: cargo_cache_path(project_key, version),
+        blob_digest: normalize_sha256_digest(&metadata.checksum),
         size: metadata.crate_size,
         modified: updated_at,
     }
@@ -2359,17 +2402,19 @@ async fn list_go_catalog_packages(
 }
 
 fn go_entry_from_proxy_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
-    let (size, modified) = match row.version_data.0.proxy_artifact() {
+    let (size, modified, blob_digest) = match row.version_data.0.proxy_artifact() {
         Some(proxy_meta) => (
             proxy_meta.size.unwrap_or_default(),
             DateTime::<FixedOffset>::from(proxy_meta.fetched_at),
+            proxy_meta.upstream_digest.clone(),
         ),
-        None => (0, row.updated_at),
+        None => (0, row.updated_at, None),
     };
     Some(PackageFileEntry {
         package: row.project_key.clone(),
         name: row.version.clone(),
         cache_path: row.cache_path.clone(),
+        blob_digest,
         size,
         modified,
     })
@@ -2458,18 +2503,29 @@ async fn list_go_proxy_catalog_packages(
 }
 
 fn docker_entry_from_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
-    let (package, size, modified) = match row.version_data.0.proxy_artifact() {
+    let (package, size, modified, blob_digest) = match row.version_data.0.proxy_artifact() {
         Some(proxy_meta) => (
             proxy_meta.package_name,
             proxy_meta.size.unwrap_or_default(),
             DateTime::<FixedOffset>::from(proxy_meta.fetched_at),
+            proxy_meta.upstream_digest.clone(),
         ),
-        None => (row.project_key.clone(), 0, row.updated_at),
+        None => (
+            row.project_key.clone(),
+            0,
+            row.updated_at,
+            if row.version.starts_with("sha256:") {
+                Some(row.version.clone())
+            } else {
+                None
+            },
+        ),
     };
     Some(PackageFileEntry {
         package,
         name: row.version.clone(),
         cache_path: row.cache_path.clone(),
+        blob_digest,
         size,
         modified,
     })
@@ -2768,6 +2824,7 @@ async fn load_maven_version_entries(
                     package: package_label.clone(),
                     name: meta.name().to_string(),
                     cache_path,
+                    blob_digest: blob_digest_from_file_type(file_meta),
                     size: file_meta.file_size,
                     modified: meta.modified().clone(),
                 });
@@ -2788,6 +2845,7 @@ async fn load_maven_version_entries(
             package: package_label,
             name: file_name,
             cache_path: proxy_meta.cache_path.clone(),
+            blob_digest: proxy_meta.upstream_digest.clone(),
             size: proxy_meta.size.unwrap_or_default(),
             modified,
         }]);
@@ -2806,6 +2864,7 @@ async fn load_maven_version_entries(
             package: package_label,
             name,
             cache_path: version_path,
+            blob_digest: blob_digest_from_file_type(&meta.file_type),
             size: meta.file_type.file_size,
             modified: meta.modified,
         }]);
@@ -2853,6 +2912,7 @@ async fn load_maven_proxy_version_entries(
                     package: package_label.clone(),
                     name: meta.name().to_string(),
                     cache_path: child_path,
+                    blob_digest: blob_digest_from_file_type(file_meta),
                     size: file_meta.file_size,
                     modified: meta.modified().clone(),
                 });
@@ -2867,6 +2927,7 @@ async fn load_maven_proxy_version_entries(
             package: package_label,
             name: file_name_from_path(&proxy_meta.cache_path),
             cache_path: proxy_meta.cache_path,
+            blob_digest: proxy_meta.upstream_digest,
             size: proxy_meta.size.unwrap_or_default(),
             modified,
         }]);
@@ -2880,6 +2941,7 @@ async fn load_maven_proxy_version_entries(
             package: package_label,
             name: file_name_from_path(&cache_path),
             cache_path,
+            blob_digest: blob_digest_from_file_type(&meta.file_type),
             size: meta.file_type.file_size,
             modified: meta.modified,
         }]);
@@ -2920,6 +2982,7 @@ async fn load_php_version_entries(
                 package: proxy_meta.package_key.clone(),
                 name: label,
                 cache_path: proxy_meta.cache_path.clone(),
+                blob_digest: proxy_meta.upstream_digest.clone(),
                 size,
                 modified,
             }]);
@@ -2937,6 +3000,7 @@ async fn load_php_version_entries(
             package: project_key,
             name: version,
             cache_path: version_path,
+            blob_digest: blob_digest_from_file_type(&meta.file_type),
             size: meta.file_type.file_size,
             modified: meta.modified,
         }]);
@@ -2947,25 +3011,28 @@ async fn load_php_version_entries(
         package: project_key,
         name: version,
         cache_path: version_path,
+        blob_digest: None,
         size: 0,
         modified,
     }])
 }
 
 fn proxy_entry_from_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
-    let (cache_path, size, modified) = match row.version_data.0.proxy_artifact() {
+    let (cache_path, size, modified, blob_digest) = match row.version_data.0.proxy_artifact() {
         Some(proxy_meta) => (
             proxy_meta.cache_path,
             proxy_meta.size.unwrap_or_default(),
             DateTime::<FixedOffset>::from(proxy_meta.fetched_at),
+            proxy_meta.upstream_digest,
         ),
-        None => (row.cache_path.clone(), 0, row.updated_at),
+        None => (row.cache_path.clone(), 0, row.updated_at, None),
     };
 
     Some(PackageFileEntry {
         package: row.project_key.clone(),
         name: file_name_from_path(&cache_path),
         cache_path,
+        blob_digest,
         size,
         modified,
     })
@@ -3094,6 +3161,7 @@ async fn list_deb_packages(
                 package: row.project_name.clone(),
                 name: row.version.clone(),
                 cache_path: metadata.filename.clone(),
+                blob_digest: normalize_sha256_digest(&metadata.sha256),
                 size: metadata.size,
                 modified: row.created_at,
             });
@@ -3338,6 +3406,7 @@ async fn build_maven_proxy_package_list(
                     package: package_label.clone(),
                     name: entry.name().to_string(),
                     cache_path,
+                    blob_digest: blob_digest_from_file_type(file_meta),
                     size: file_meta.file_size,
                     modified: entry.modified().clone(),
                 };
@@ -3456,6 +3525,11 @@ async fn list_docker_packages(
                     package: entry.repository.clone(),
                     name: entry.reference.clone(),
                     cache_path: entry.cache_path.clone(),
+                    blob_digest: if entry.reference.starts_with("sha256:") {
+                        Some(entry.reference.clone())
+                    } else {
+                        None
+                    },
                     size: entry.size,
                     modified: entry.modified,
                 };
@@ -3516,6 +3590,11 @@ async fn list_docker_packages(
                     package: repository.to_string(),
                     name: reference.to_string(),
                     cache_path: obj.key,
+                    blob_digest: if reference.starts_with("sha256:") {
+                        Some(reference.to_string())
+                    } else {
+                        None
+                    },
                     size: obj.size,
                     modified: obj.last_modified.unwrap_or(now),
                 })
@@ -3561,6 +3640,11 @@ async fn list_docker_packages(
             package: entry.repository.clone(),
             name: entry.reference.clone(),
             cache_path: entry.cache_path.clone(),
+            blob_digest: if entry.reference.starts_with("sha256:") {
+                Some(entry.reference.clone())
+            } else {
+                None
+            },
             size: entry.size,
             modified: entry.modified,
         })

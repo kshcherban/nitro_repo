@@ -305,4 +305,76 @@ describe("RepositoryPackagesTab.vue", () => {
     const nameHeader = headers.find((header) => header.key === "name");
     expect(nameHeader?.title).toBe("Version");
   });
+
+  it("adds blob digest column for Helm package listings", async () => {
+    (http.get as vi.Mock).mockResolvedValueOnce({
+      data: {
+        total_packages: 1,
+        items: [
+          {
+            name: "1.2.3",
+            size: 2048,
+            cache_path: "charts/acme-1.2.3.tgz",
+            modified: "2025-11-05T09:30:00Z",
+            package: "acme",
+            blob_digest: "sha256:deadbeef",
+          },
+        ],
+      },
+      headers: {},
+    });
+
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "repo-helm",
+        repositoryType: "helm",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const headers = wrapper.vm.headers as any[];
+    expect(headers.some((header) => header.key === "blobDigest")).toBe(true);
+
+    const tableItems = wrapper.vm.tableItems as any[];
+    expect(tableItems[0]?.blobDigest).toBe("sha256:deadbeef");
+  });
+
+  it("adds blob digest column for non-Helm listings", async () => {
+    (http.get as vi.Mock).mockResolvedValueOnce({
+      data: {
+        total_packages: 1,
+        items: [
+          {
+            name: "1.0.0",
+            size: 128,
+            cache_path: "packages/example/example-1.0.0.whl",
+            modified: "2025-11-05T09:30:00Z",
+            package: "example",
+          },
+        ],
+      },
+      headers: {},
+    });
+
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "repo-python",
+        repositoryType: "python",
+        repositoryKind: "hosted",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const headers = wrapper.vm.headers as any[];
+    expect(headers.some((header) => header.key === "blobDigest")).toBe(true);
+  });
 });

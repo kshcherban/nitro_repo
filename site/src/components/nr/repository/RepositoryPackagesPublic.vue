@@ -147,7 +147,7 @@
               <div
                 class="packages__cell-content"
                 :title="cellTitle(column.key, pkg)">
-                <template v-if="column.key === 'path'">
+                <template v-if="column.key === 'path' || column.key === 'digest'">
                   <code>{{ cellText(column.key, pkg) }}</code>
                 </template>
                 <template v-else>
@@ -208,11 +208,12 @@ interface PackageEntry {
   name: string;
   size: number;
   cachePath: string;
+  blobDigest: string;
   modified: string;
   package: string;
 }
 
-type ColumnKey = "package" | "name" | "size" | "path" | "timestamp";
+type ColumnKey = "package" | "name" | "digest" | "size" | "path" | "timestamp";
 type SortDirection = "asc" | "desc";
 
 interface ColumnDefinition {
@@ -335,13 +336,17 @@ const pathColumnTitle = computed(() => {
 });
 const timestampColumnTitle = "Uploaded At";
 
-const columns = computed<ColumnDefinition[]>(() => [
-  { key: "package", label: packageColumnTitle.value, optional: false },
-  { key: "name", label: nameColumnTitle.value, optional: false },
-  { key: "size", label: "Size", optional: false, align: "right" },
-  { key: "path", label: pathColumnTitle.value, optional: true },
-  { key: "timestamp", label: timestampColumnTitle, optional: true },
-]);
+const columns = computed<ColumnDefinition[]>(() => {
+  const base: ColumnDefinition[] = [
+    { key: "package", label: packageColumnTitle.value, optional: false },
+    { key: "name", label: nameColumnTitle.value, optional: false },
+    { key: "digest", label: "Blob Digest", optional: true },
+    { key: "size", label: "Size", optional: false, align: "right" },
+    { key: "path", label: pathColumnTitle.value, optional: true },
+    { key: "timestamp", label: timestampColumnTitle, optional: true },
+  ];
+  return base;
+});
 
 const optionalColumns = computed(() => columns.value.filter((column) => column.optional));
 
@@ -359,6 +364,7 @@ const orderedPackages = computed(() => {
   const extractor: Record<ColumnKey, (pkg: PackageEntry) => string | number> = {
     package: (pkg) => pkg.package.toLowerCase(),
     name: (pkg) => pkg.name.toLowerCase(),
+    digest: (pkg) => pkg.blobDigest.toLowerCase(),
     size: (pkg) => pkg.size,
     path: (pkg) => pkg.cachePath.toLowerCase(),
     timestamp: (pkg) => new Date(pkg.modified).getTime(),
@@ -441,6 +447,7 @@ async function loadPackages() {
       name: item.name ?? "",
       size: Number(item.size ?? 0),
       cachePath: item.cache_path ?? "",
+      blobDigest: item.blob_digest ?? "",
       modified: item.modified ?? "",
       package: item.package ?? "",
     }));
@@ -557,6 +564,8 @@ function cellText(column: ColumnKey, pkg: PackageEntry): string {
       return pkg.package;
     case "name":
       return pkg.name;
+    case "digest":
+      return pkg.blobDigest;
     case "size":
       return formatBytes(pkg.size);
     case "path":
