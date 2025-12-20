@@ -244,9 +244,7 @@ fn ansi_color_true_in_compact_does_not_style_fields() {
         output.contains("\u{1b}[32mINFO\u{1b}[0m"),
         "output was: {output}"
     );
-    let without_level = output
-        .replace("\u{1b}[32m", "")
-        .replace("\u{1b}[0m", "");
+    let without_level = output.replace("\u{1b}[32m", "").replace("\u{1b}[0m", "");
     assert!(
         !without_level.contains("\u{1b}["),
         "unexpected ANSI styling in output: {output}"

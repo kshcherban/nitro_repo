@@ -6,16 +6,16 @@ use std::{
 
 use http_body::{Body, Frame};
 use opentelemetry::KeyValue;
+use opentelemetry::trace::TraceContextExt as _;
 use pin_project::{pin_project, pinned_drop};
 use tracing::Span;
-use opentelemetry::trace::TraceContextExt as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use uuid::Uuid;
 
 use super::{layer::ActiveRequestGuard, request_span};
 use crate::app::AppMetrics;
-use crate::utils::request_logging::request_id::RequestId;
 use crate::utils::request_logging::access_log::AccessLogContext;
+use crate::utils::request_logging::request_id::RequestId;
 
 #[pin_project(PinnedDrop)]
 pub struct TraceResponseBody {
@@ -139,12 +139,7 @@ pub(crate) fn emit_access_log(
     ctx: &AccessLogContext,
 ) {
     let duration_ms = request_start.elapsed().as_millis() as i64;
-    let trace_id = span
-        .context()
-        .span()
-        .span_context()
-        .trace_id()
-        .to_string();
+    let trace_id = span.context().span().span_context().trace_id().to_string();
     let status_code = status_code.unwrap_or(500);
     let snapshot = ctx.snapshot();
 

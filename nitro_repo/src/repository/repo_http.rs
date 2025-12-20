@@ -22,7 +22,8 @@ use crate::{
         },
     },
     utils::{
-        bad_request::BadRequestErrors, header::date_time::date_time_for_header,
+        bad_request::BadRequestErrors,
+        header::date_time::date_time_for_header,
         request_logging::{access_log::AccessLogContext, request_span::RequestSpan},
     },
 };
@@ -696,22 +697,48 @@ async fn handle_repo_request_core(
         }
 
         let response = match method {
-            Method::GET => repository.handle_get(request).instrument(trace.span.clone()).await,
-            Method::POST => repository.handle_post(request).instrument(trace.span.clone()).await,
-            Method::PUT => repository.handle_put(request).instrument(trace.span.clone()).await,
-            Method::DELETE => repository
-                .handle_delete(request)
-                .instrument(trace.span.clone())
-                .await,
-            Method::PATCH => repository
-                .handle_patch(request)
-                .instrument(trace.span.clone())
-                .await,
-            Method::HEAD => repository.handle_head(request).instrument(trace.span.clone()).await,
-            _ => repository
-                .handle_other(request)
-                .instrument(trace.span.clone())
-                .await,
+            Method::GET => {
+                repository
+                    .handle_get(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
+            Method::POST => {
+                repository
+                    .handle_post(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
+            Method::PUT => {
+                repository
+                    .handle_put(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
+            Method::DELETE => {
+                repository
+                    .handle_delete(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
+            Method::PATCH => {
+                repository
+                    .handle_patch(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
+            Method::HEAD => {
+                repository
+                    .handle_head(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
+            _ => {
+                repository
+                    .handle_other(request)
+                    .instrument(trace.span.clone())
+                    .await
+            }
         };
 
         match &response {

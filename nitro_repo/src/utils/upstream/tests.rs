@@ -1,9 +1,8 @@
-use opentelemetry::{
-    global,
-    trace::{SpanContext, TraceId, TraceState},
-    Context as OtelContext,
-};
 use opentelemetry::trace::TraceContextExt as _;
+use opentelemetry::{
+    Context as OtelContext, global,
+    trace::{SpanContext, TraceId, TraceState},
+};
 use reqwest::header::HeaderMap;
 use url::Url;
 

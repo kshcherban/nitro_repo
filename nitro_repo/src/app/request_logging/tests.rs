@@ -50,8 +50,10 @@ fn read_buffer(writer: &BufferWriter) -> String {
     String::from_utf8_lossy(&locked).to_string()
 }
 
-fn json_layer_for_target(writer: BufferWriter, target: &'static str) -> impl tracing_subscriber::Layer<Registry>
-{
+fn json_layer_for_target(
+    writer: BufferWriter,
+    target: &'static str,
+) -> impl tracing_subscriber::Layer<Registry> {
     let targets: Targets = Targets::new()
         .with_default(tracing::level_filters::LevelFilter::OFF)
         .with_target(target, tracing::level_filters::LevelFilter::INFO);
@@ -144,7 +146,10 @@ fn access_log_emits_required_fields_once() {
         output.contains("\"repository_id\":\""),
         "output was: {output}"
     );
-    assert!(output.contains("\"user\":\"alice\""), "output was: {output}");
+    assert!(
+        output.contains("\"user\":\"alice\""),
+        "output was: {output}"
+    );
 }
 
 #[test]

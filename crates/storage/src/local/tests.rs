@@ -75,8 +75,7 @@ async fn save_file_waits_for_lock_without_truncating() -> anyhow::Result<()> {
     // If save_file truncates the file before taking the lock, the content will already be gone.
     let content_during_lock = std::fs::read(&file_path)?;
     assert_eq!(
-        content_during_lock,
-        b"original",
+        content_during_lock, b"original",
         "save_file must not truncate an in-use file before acquiring the lock"
     );
 
@@ -89,8 +88,7 @@ async fn save_file_waits_for_lock_without_truncating() -> anyhow::Result<()> {
 
     let content_after = std::fs::read(&file_path)?;
     assert_eq!(
-        content_after,
-        b"replacement",
+        content_after, b"replacement",
         "save_file should replace the content once it acquires the lock"
     );
 

@@ -68,4 +68,3 @@ fn parse_pom_does_not_log_entire_body() {
     );
     assert!(output.contains("\"pom.size\":"), "output was: {output}");
 }
-

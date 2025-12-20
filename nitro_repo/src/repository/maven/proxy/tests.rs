@@ -231,6 +231,12 @@ fn maven_proxy_prefetch_config_deserializes_with_defaults() {
     let parsed: MavenProxyConfig =
         serde_json::from_str(r#"{ "routes": [] }"#).expect("deserialize");
     assert!(parsed.prefetch.jar, "jar prefetch should default on");
-    assert!(!parsed.prefetch.sources, "sources prefetch should default off");
-    assert!(!parsed.prefetch.javadoc, "javadoc prefetch should default off");
+    assert!(
+        !parsed.prefetch.sources,
+        "sources prefetch should default off"
+    );
+    assert!(
+        !parsed.prefetch.javadoc,
+        "javadoc prefetch should default off"
+    );
 }

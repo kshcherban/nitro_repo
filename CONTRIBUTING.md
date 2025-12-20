@@ -52,6 +52,16 @@ Rust:
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets`
 
+## Git Hooks (Recommended)
+
+Install the repo's versioned git hooks:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+This enables the `pre-commit` hook that runs `cargo fmt --all` before each commit.
+
 Frontend:
 - `npm --prefix site run test`
 - `npm --prefix site run lint`

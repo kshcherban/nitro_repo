@@ -275,9 +275,10 @@ async fn fetch_range_and_maybe_append(
         });
     };
 
-    let response = crate::utils::upstream::send(client, client.get(url.clone()).header(RANGE, range))
-        .await
-        .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
+    let response =
+        crate::utils::upstream::send(client, client.get(url.clone()).header(RANGE, range))
+            .await
+            .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
     let status = response.status();
     let headers = response.headers().clone();
     let body = response
@@ -691,9 +692,12 @@ impl RubyProxy {
         };
         tracing::Span::current().record("nr.ruby.cache.url", &url.to_string());
 
-        let response = crate::utils::upstream::send(&self.0.client, self.0.client.head(url.clone()))
-            .await
-            .map_err(|err| RubyRepositoryError::Other(Box::new(OtherInternalError::new(err))))?;
+        let response =
+            crate::utils::upstream::send(&self.0.client, self.0.client.head(url.clone()))
+                .await
+                .map_err(|err| {
+                    RubyRepositoryError::Other(Box::new(OtherInternalError::new(err)))
+                })?;
         let status = response.status();
         tracing::Span::current().record("nr.ruby.cache.upstream_status", status.as_u16());
         let headers = response.headers().clone();

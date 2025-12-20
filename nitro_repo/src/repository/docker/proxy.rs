@@ -250,8 +250,7 @@ impl ProxyUpstream {
                 query.append_pair("scope", scope);
             }
         }
-        let token_resp =
-            crate::utils::upstream::send(&self.client, self.client.get(realm)).await?;
+        let token_resp = crate::utils::upstream::send(&self.client, self.client.get(realm)).await?;
         if !token_resp.status().is_success() {
             return Err(DockerError::InvalidManifest(format!(
                 "Upstream auth failed with status {}",

@@ -2,10 +2,7 @@ use std::time::Instant;
 
 use http::HeaderValue;
 use opentelemetry::{
-    global,
-    propagation::Injector,
-    trace::TraceContextExt as _,
-    Context as OtelContext,
+    Context as OtelContext, global, propagation::Injector, trace::TraceContextExt as _,
 };
 use reqwest::header::HeaderMap;
 use tracing::{Instrument as _, Span, info_span};

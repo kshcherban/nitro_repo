@@ -320,13 +320,15 @@ impl MavenProxy {
             };
             let sanitized_url = crate::utils::upstream::sanitize_url_for_logging(&url);
             debug!(url.full = %sanitized_url, "Proxying request");
-            let response =
-                match crate::utils::upstream::send(&http_client, http_client.get(url.clone()))
-                    .await
-                {
-                    Ok(ok) => ok,
-                    Err(_) => continue,
-                };
+            let response = match crate::utils::upstream::send(
+                &http_client,
+                http_client.get(url.clone()),
+            )
+            .await
+            {
+                Ok(ok) => ok,
+                Err(_) => continue,
+            };
             if response.status().is_success() {
                 let is_pom = path_as_string.ends_with(".pom");
                 let downloaded = read_response_bytes(response).await?;
@@ -409,15 +411,14 @@ impl MavenProxy {
                 }
             };
 
-            let response = match crate::utils::upstream::send(&http_client, http_client.head(url))
-                .await
-            {
-                Ok(ok) => ok,
-                Err(err) => {
-                    warn!(%err, "Failed to send HEAD request");
-                    continue;
-                }
-            };
+            let response =
+                match crate::utils::upstream::send(&http_client, http_client.head(url)).await {
+                    Ok(ok) => ok,
+                    Err(err) => {
+                        warn!(%err, "Failed to send HEAD request");
+                        continue;
+                    }
+                };
 
             if response.status().is_success() {
                 let mut builder = Response::builder().status(response.status());

@@ -3,10 +3,11 @@ use std::sync::{
     atomic::{self, AtomicBool},
 };
 
-use digest::Digest;
 use derive_more::derive::Deref;
+use digest::Digest;
 use futures::StreamExt;
 use maven_rs::pom::Pom;
+use nr_core::storage::FileHashes;
 use nr_core::{
     database::entities::{
         project::{DBProject, ProjectDBType, info::ProjectInfo, versions::DBProjectVersion},
@@ -24,7 +25,6 @@ use nr_core::{
     user::permissions::{HasPermissions, RepositoryActions},
     utils::base64_utils,
 };
-use nr_core::storage::FileHashes;
 use nr_storage::{DynStorage, Storage, StorageFile, local::LocalStorage};
 use parking_lot::RwLock;
 use tokio::io::{AsyncWriteExt, BufWriter};

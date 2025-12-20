@@ -84,28 +84,26 @@ impl AsyncRead for StorageFileReader {
         match self.get_mut() {
             StorageFileReader::File(file) => Pin::new(file).poll_read(cx, buf),
             StorageFileReader::AsyncReader(reader) => Pin::new(reader).poll_read(cx, buf),
-            StorageFileReader::Bytes(bytes) => {
-                match bytes {
-                    FileContentBytes::Content(content) => {
-                        let len = std::cmp::min(buf.remaining(), content.len());
-                        if len == 0 {
-                            return Poll::Ready(Ok(()));
-                        }
-                        buf.put_slice(&content[..len]);
-                        content.drain(..len);
-                        Poll::Ready(Ok(()))
+            StorageFileReader::Bytes(bytes) => match bytes {
+                FileContentBytes::Content(content) => {
+                    let len = std::cmp::min(buf.remaining(), content.len());
+                    if len == 0 {
+                        return Poll::Ready(Ok(()));
                     }
-                    FileContentBytes::Bytes(bytes) => {
-                        let len = std::cmp::min(buf.remaining(), bytes.len());
-                        if len == 0 {
-                            return Poll::Ready(Ok(()));
-                        }
-                        let chunk = bytes.split_to(len);
-                        buf.put_slice(&chunk);
-                        Poll::Ready(Ok(()))
-                    }
+                    buf.put_slice(&content[..len]);
+                    content.drain(..len);
+                    Poll::Ready(Ok(()))
                 }
-            }
+                FileContentBytes::Bytes(bytes) => {
+                    let len = std::cmp::min(buf.remaining(), bytes.len());
+                    if len == 0 {
+                        return Poll::Ready(Ok(()));
+                    }
+                    let chunk = bytes.split_to(len);
+                    buf.put_slice(&chunk);
+                    Poll::Ready(Ok(()))
+                }
+            },
         }
     }
 }

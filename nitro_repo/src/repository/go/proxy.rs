@@ -376,19 +376,17 @@ impl GoProxy {
 
         let response = crate::utils::upstream::send(
             &self.0.client,
-            self.0.client
-                .get(&url)
-                .header("Accept", "text/plain, */*"),
+            self.0.client.get(&url).header("Accept", "text/plain, */*"),
         )
         .await
-            .map_err(|e| {
-                crate::repository::RepositoryHandlerError::Other(Box::new(
-                    crate::utils::bad_request::BadRequestErrors::Other(format!(
-                        "Failed to reach sumdb upstream: {}",
-                        e
-                    )),
-                ))
-            })?;
+        .map_err(|e| {
+            crate::repository::RepositoryHandlerError::Other(Box::new(
+                crate::utils::bad_request::BadRequestErrors::Other(format!(
+                    "Failed to reach sumdb upstream: {}",
+                    e
+                )),
+            ))
+        })?;
 
         let status = response.status();
         let headers = response.headers().clone();
@@ -559,14 +557,14 @@ impl GoProxy {
             ),
         )
         .await
-            .map_err(|e| {
-                crate::repository::RepositoryHandlerError::Other(Box::new(
-                    crate::utils::bad_request::BadRequestErrors::Other(format!(
-                        "Failed to fetch from proxy: {}",
-                        e
-                    )),
-                ))
-            })?;
+        .map_err(|e| {
+            crate::repository::RepositoryHandlerError::Other(Box::new(
+                crate::utils::bad_request::BadRequestErrors::Other(format!(
+                    "Failed to fetch from proxy: {}",
+                    e
+                )),
+            ))
+        })?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -612,14 +610,14 @@ impl GoProxy {
             ),
         )
         .await
-            .map_err(|e| {
-                crate::repository::RepositoryHandlerError::Other(Box::new(
-                    crate::utils::bad_request::BadRequestErrors::Other(format!(
-                        "Failed to fetch HEAD from proxy: {}",
-                        e
-                    )),
-                ))
-            })?;
+        .map_err(|e| {
+            crate::repository::RepositoryHandlerError::Other(Box::new(
+                crate::utils::bad_request::BadRequestErrors::Other(format!(
+                    "Failed to fetch HEAD from proxy: {}",
+                    e
+                )),
+            ))
+        })?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
