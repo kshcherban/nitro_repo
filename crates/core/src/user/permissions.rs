@@ -6,7 +6,7 @@ use sqlx::{
     Execute, PgPool, QueryBuilder,
     prelude::{FromRow, Type},
 };
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{Instrument as _, debug, info, instrument, trace, warn};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -202,14 +202,15 @@ impl UpdatePermissions {
             tracing::Level::DEBUG,
             "UpdatePermissions::update_permissions::repository_permissions"
         );
-        let _guard = span.enter();
         for (repository, actions) in self.repository_permissions {
             if actions.is_empty() {
                 debug!(
                     "Removing entry for repository {} for user {}. Because actions is empty",
                     repository, user_id
                 );
-                UserRepositoryPermissions::delete(user_id, repository, db).await?;
+                UserRepositoryPermissions::delete(user_id, repository, db)
+                    .instrument(span.clone())
+                    .await?;
                 continue;
             }
 
@@ -218,7 +219,7 @@ impl UpdatePermissions {
                 repository_id: repository,
                 actions,
             };
-            permissions.insert(db).await?;
+            permissions.insert(db).instrument(span.clone()).await?;
         }
         return Ok(());
     }

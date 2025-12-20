@@ -3,7 +3,9 @@ use std::sync::{
     atomic::{self, AtomicBool},
 };
 
+use digest::Digest;
 use derive_more::derive::Deref;
+use futures::StreamExt;
 use maven_rs::pom::Pom;
 use nr_core::{
     database::entities::{
@@ -20,9 +22,12 @@ use nr_core::{
     },
     storage::StoragePath,
     user::permissions::{HasPermissions, RepositoryActions},
+    utils::base64_utils,
 };
-use nr_storage::{DynStorage, Storage, StorageFile};
+use nr_core::storage::FileHashes;
+use nr_storage::{DynStorage, Storage, StorageFile, local::LocalStorage};
 use parking_lot::RwLock;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tracing::{debug, error, event, info, instrument};
 use uuid::Uuid;
 
@@ -56,6 +61,89 @@ pub struct MavenHosted(Arc<MavenHostedInner>);
 impl MavenRepositoryExt for MavenHosted {}
 impl RepositoryExt for MavenHosted {}
 impl MavenHosted {
+    async fn stream_body_to_file_and_hashes(
+        body: crate::repository::repo_http::RepositoryRequestBody,
+        file: tokio::fs::File,
+    ) -> Result<(u64, FileHashes), MavenError> {
+        let mut writer = BufWriter::new(file);
+        let mut stream = body.into_byte_stream();
+
+        let mut md5 = md5::Md5::new();
+        let mut sha1 = sha1::Sha1::new();
+        let mut sha2_256 = sha2::Sha256::new();
+        let mut sha3_256 = sha3::Sha3_256::new();
+
+        let mut total_bytes = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(MavenError::from)?;
+            if chunk.is_empty() {
+                continue;
+            }
+            writer.write_all(&chunk).await.map_err(MavenError::from)?;
+            total_bytes += chunk.len() as u64;
+
+            md5.update(chunk.as_ref());
+            sha1.update(chunk.as_ref());
+            sha2_256.update(chunk.as_ref());
+            sha3_256.update(chunk.as_ref());
+        }
+        writer.flush().await.map_err(MavenError::from)?;
+
+        let hashes = FileHashes {
+            md5: Some(base64_utils::encode(md5.finalize())),
+            sha1: Some(base64_utils::encode(sha1.finalize())),
+            sha2_256: Some(base64_utils::encode(sha2_256.finalize())),
+            sha3_256: Some(base64_utils::encode(sha3_256.finalize())),
+        };
+
+        Ok((total_bytes, hashes))
+    }
+
+    async fn stream_upload_to_local_storage(
+        &self,
+        local: &LocalStorage,
+        repository_id: Uuid,
+        path: &StoragePath,
+        body: crate::repository::repo_http::RepositoryRequestBody,
+    ) -> Result<(u64, bool), MavenError> {
+        let created = !local
+            .file_exists(repository_id, path)
+            .await
+            .map_err(nr_storage::StorageError::from)?;
+        let temp_path = StoragePath::from(format!("{path}.nr-upload-{}", Uuid::new_v4()));
+
+        let (file, _) = local
+            .open_append_handle(repository_id, &temp_path)
+            .await
+            .map_err(nr_storage::StorageError::from)?;
+
+        let (total_bytes, hashes) = match Self::stream_body_to_file_and_hashes(body, file).await {
+            Ok(ok) => ok,
+            Err(err) => {
+                let _ = local
+                    .delete_file(repository_id, &temp_path)
+                    .await
+                    .map_err(nr_storage::StorageError::from);
+                return Err(err);
+            }
+        };
+        local.register_precomputed_hash(repository_id, path, hashes);
+
+        let moved = local
+            .move_file(repository_id, &temp_path, path)
+            .await
+            .map_err(nr_storage::StorageError::from)?;
+        if !moved {
+            let _ = local
+                .delete_file(repository_id, &temp_path)
+                .await
+                .map_err(nr_storage::StorageError::from);
+            return Err(std::io::Error::other("Temp file disappeared before rename").into());
+        }
+
+        Ok((total_bytes, created))
+    }
+
     #[instrument(skip(self))]
     pub async fn standard_maven_deploy(
         &self,
@@ -104,16 +192,34 @@ impl MavenHosted {
         };
         info!("Saving File: {}", path);
 
-        let body = body.body_as_bytes().await?;
-        trace.metrics.project_write_bytes(body.len() as u64);
         // TODO: Validate Against Push Rules
-        let pom = if path.has_extension("pom") {
+        let is_pom = path.has_extension("pom");
+
+        let (created, pom) = if is_pom {
+            let body = body.body_as_bytes().await?;
+            trace.metrics.project_write_bytes(body.len() as u64);
             let pom: Pom = self.parse_pom(body.to_vec())?;
-            Some(pom)
+
+            if let DynStorage::Local(local) = &self.storage {
+                let hashes = nr_storage::generate_from_bytes(body.as_ref());
+                local.register_precomputed_hash(self.id, &path, hashes);
+            }
+
+            let (_size, created) = self.storage.save_file(self.id, body.into(), &path).await?;
+            (created, Some(pom))
+        } else if let DynStorage::Local(local) = &self.storage {
+            let (bytes_written, created) = self
+                .stream_upload_to_local_storage(local, self.id, &path, body)
+                .await?;
+            trace.metrics.project_write_bytes(bytes_written);
+            (created, None)
         } else {
-            None
+            let body = body.body_as_bytes().await?;
+            trace.metrics.project_write_bytes(body.len() as u64);
+            let (_size, created) = self.storage.save_file(self.id, body.into(), &path).await?;
+            (created, None)
         };
-        let (_size, created) = self.storage.save_file(self.id, body.into(), &path).await?;
+
         // Trigger Push Event if it is the .pom file
         let save_path = format!(
             "/repositories/{}/{}/{}",

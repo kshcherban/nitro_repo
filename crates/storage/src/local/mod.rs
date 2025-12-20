@@ -1,6 +1,6 @@
 use std::{
     fs::{self},
-    io::{self, ErrorKind},
+    io::{self, ErrorKind, Seek, SeekFrom},
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
@@ -21,7 +21,7 @@ use tokio::{
     time::sleep,
 };
 use tracing::{
-    Level, Span, debug, debug_span, error, event,
+    Instrument as _, Level, Span, debug, debug_span, error, event,
     field::{Empty, debug},
     info, info_span, instrument, trace, warn,
 };
@@ -456,25 +456,28 @@ impl LocalStorage {
             otel.exception = Empty,
             otel.status_code = Empty,
         );
-        tokio::task::spawn(async move {
-            let _guard = post_save_span.enter();
-            match self
-                .0
-                .update_meta_and_parent_metas(&path, new_directory_start)
-                .await
-            {
-                Ok(ok) => {
-                    post_save_span.record("metas.updated", ok);
-                    post_save_span.record("otel.status_code", "OK");
-                    debug!(metas.updated = ok, "Updated Metas");
-                }
-                Err(err) => {
-                    span.record("exception.message", err.to_string());
-                    span.record("otel.status_code", "ERROR");
-                    event!(Level::ERROR, ?err, "Error Updating Metas");
+        let post_save_span_for_records = post_save_span.clone();
+        tokio::task::spawn(
+            async move {
+                match self
+                    .0
+                    .update_meta_and_parent_metas(&path, new_directory_start)
+                    .await
+                {
+                    Ok(ok) => {
+                        post_save_span_for_records.record("metas.updated", ok);
+                        post_save_span_for_records.record("otel.status_code", "OK");
+                        debug!(metas.updated = ok, "Updated Metas");
+                    }
+                    Err(err) => {
+                        span.record("exception.message", err.to_string());
+                        span.record("otel.status_code", "ERROR");
+                        event!(Level::ERROR, ?err, "Error Updating Metas");
+                    }
                 }
             }
-        });
+            .instrument(post_save_span),
+        );
         Ok(())
     }
 
@@ -543,8 +546,14 @@ impl Storage for LocalStorage {
         current_span.record("file.new", new_file);
         current_span.record("file.path", debug(&path));
         debug!(?path, "Saving File");
-        let mut file = fs::File::create(&path)?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
         file.lock_exclusive()?;
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
         let write_result = content.write_to(&mut file);
         let unlock_result = file.unlock();
         let bytes_written = write_result?;

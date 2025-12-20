@@ -28,6 +28,76 @@ pub async fn generic_test() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn save_file_waits_for_lock_without_truncating() -> anyhow::Result<()> {
+    let temp = tempdir()?;
+    let storage =
+        <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(StorageConfig {
+            storage_config: StorageConfigInner::test_config(),
+            type_config: StorageTypeConfig::Local(LocalConfig {
+                path: temp.path().to_path_buf(),
+            }),
+        })
+        .await?;
+
+    let repository = Uuid::new_v4();
+    let location = StoragePath::from("locks/save.bin");
+    let file_path = storage.get_path(&repository, &location);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&file_path, b"original")?;
+
+    let guard_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&file_path)?;
+    guard_file.lock_exclusive()?;
+
+    let storage_clone = storage.clone();
+    let location_clone = location.clone();
+    let handle = tokio::spawn(async move {
+        storage_clone
+            .save_file(
+                repository,
+                FileContent::from(b"replacement".as_slice()),
+                &location_clone,
+            )
+            .await
+            .unwrap();
+    });
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !handle.is_finished(),
+        "save_file should wait for the OS lock to release"
+    );
+
+    // If save_file truncates the file before taking the lock, the content will already be gone.
+    let content_during_lock = std::fs::read(&file_path)?;
+    assert_eq!(
+        content_during_lock,
+        b"original",
+        "save_file must not truncate an in-use file before acquiring the lock"
+    );
+
+    guard_file.unlock()?;
+    drop(guard_file);
+    tokio::time::timeout(Duration::from_secs(1), handle)
+        .await
+        .expect("save_file should complete once the lock is released")
+        .unwrap();
+
+    let content_after = std::fs::read(&file_path)?;
+    assert_eq!(
+        content_after,
+        b"replacement",
+        "save_file should replace the content once it acquires the lock"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn append_waits_for_lock_release() -> anyhow::Result<()> {
     let temp = tempdir()?;
     let storage =

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, Read},
+    io::{self, BufReader, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -20,26 +20,55 @@ use crate::{
     fs::utils::MetadataUtils, local::error::LocalStorageError, meta::RepositoryMeta,
     path::PathUtils,
 };
+use uuid::Uuid;
 pub static HIDDEN_FILE_EXTENSIONS: &[&str] = &["nr-meta"];
 pub static NITRO_REPO_META_EXTENSION: &str = "nr-meta";
 pub static NITRO_REPO_META_FILE: &str = ".nr-meta";
 pub fn is_hidden_file(path: &Path) -> bool {
-    if let Some(extension) = path.extension().and_then(|v| v.to_str()) {
-        HIDDEN_FILE_EXTENSIONS.contains(&extension)
-    } else if let Some(file_name) = path.file_name().and_then(|v| v.to_str()) {
-        file_name.eq(NITRO_REPO_META_FILE)
-    } else {
-        false
+    if let Some(file_name) = path.file_name().and_then(|v| v.to_str())
+        && (file_name.eq(NITRO_REPO_META_FILE) || file_name.contains(".nr-meta.tmp-"))
+    {
+        return true;
     }
+    if let Some(extension) = path.extension().and_then(|v| v.to_str()) {
+        return HIDDEN_FILE_EXTENSIONS.contains(&extension);
+    }
+    false
 }
 
 pub fn generate_hashes_from_path(path: impl AsRef<Path>) -> Result<FileHashes, io::Error> {
-    let mut buffer = Vec::new();
-    {
-        let mut file = std::fs::File::open(path)?;
-        file.read_to_end(&mut buffer)?;
+    use md5::Md5;
+    use sha1::Sha1;
+    use sha2::Sha256;
+    use sha3::Sha3_256;
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    let mut md5 = Md5::new();
+    let mut sha1 = Sha1::new();
+    let mut sha2_256 = Sha256::new();
+    let mut sha3_256 = Sha3_256::new();
+
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buf[..read];
+        md5.update(chunk);
+        sha1.update(chunk);
+        sha2_256.update(chunk);
+        sha3_256.update(chunk);
     }
-    Ok(generate_from_bytes(&buffer))
+
+    Ok(FileHashes {
+        md5: Some(base64_utils::encode(md5.finalize())),
+        sha1: Some(base64_utils::encode(sha1.finalize())),
+        sha2_256: Some(base64_utils::encode(sha2_256.finalize())),
+        sha3_256: Some(base64_utils::encode(sha3_256.finalize())),
+    })
 }
 #[instrument(skip(buffer))]
 pub fn generate_from_bytes(buffer: &[u8]) -> FileHashes {
@@ -317,8 +346,41 @@ impl LocationMeta {
         let meta_path = meta_path(path)?;
         span.record("path.meta", debug(&meta_path));
         span.record("created", !meta_path.exists());
-        let file = File::create(meta_path)?;
-        postcard::to_io(self, file)?;
+
+        let bytes = postcard::to_allocvec(self)?;
+        let file_name = meta_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid meta file name"))?;
+        let tmp_name = format!(
+            "{file_name}.tmp-{}.{}",
+            Uuid::new_v4(),
+            NITRO_REPO_META_EXTENSION
+        );
+        let tmp_path = meta_path.with_file_name(tmp_name);
+
+        let mut tmp_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        tmp_file.write_all(&bytes)?;
+        tmp_file.sync_all()?;
+
+        let rename_result = std::fs::rename(&tmp_path, &meta_path);
+        let rename_result = match rename_result {
+            Ok(()) => Ok(()),
+            Err(_err) if cfg!(windows) && meta_path.exists() => {
+                std::fs::remove_file(&meta_path)?;
+                std::fs::rename(&tmp_path, &meta_path)
+            }
+            Err(err) => Err(err),
+        };
+
+        if let Err(err) = rename_result {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err.into());
+        }
+
         event!(Level::DEBUG, "Saved Meta File");
         Ok(())
     }

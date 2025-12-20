@@ -41,7 +41,7 @@ use http_body_util::BodyExt;
 use nr_core::storage::{InvalidStoragePath, StoragePath};
 use nr_storage::{FileFileType, FileType, StorageFile, StorageFileMeta, StorageFileReader};
 use serde::Deserialize;
-use tracing::{Level, Span, debug, debug_span, error, event, info, instrument};
+use tracing::{Instrument as _, Level, Span, debug, debug_span, error, event, info, instrument};
 mod header;
 mod repo_auth;
 pub use header::*;
@@ -578,29 +578,114 @@ async fn handle_repo_request_core(
         request_path = ?request_path,
         authentication = ?authentication
     );
-    let entered_guard = request_debug.enter();
-    debug!(?request_path, "Repository Request Happening");
-    let RepoRequestPath {
-        storage,
-        repository,
-        path,
-        docker_scope,
-    } = request_path;
-    let is_docker_request = docker_scope.is_some();
-    let docker_scope = docker_scope.unwrap_or_else(|| format!("{}/{}", storage, repository));
-    let method = request.method().clone();
-    let names = RepositoryStorageName::from((storage, repository));
-    let Some(repository) = site.get_repository_from_names(&names).await? else {
-        if matches!(
+    async move {
+        debug!(?request_path, "Repository Request Happening");
+        let RepoRequestPath {
+            storage,
+            repository,
+            path,
+            docker_scope,
+        } = request_path;
+        let is_docker_request = docker_scope.is_some();
+        let docker_scope = docker_scope.unwrap_or_else(|| format!("{}/{}", storage, repository));
+        let method = request.method().clone();
+        let names = RepositoryStorageName::from((storage, repository));
+        let Some(repository) = site.get_repository_from_names(&names).await? else {
+            if matches!(
+                authentication,
+                RepositoryAuthentication::NoIdentification | RepositoryAuthentication::Other(_, _)
+            ) {
+                if is_docker_request {
+                    let actions: &[&str] = match method {
+                        Method::GET | Method::HEAD => &["pull"],
+                        _ => &["pull", "push"],
+                    };
+                    let challenge =
+                        build_docker_bearer_challenge(&site, None, &docker_scope, actions);
+                    let body = docker_unauthorized_body(&docker_scope, actions);
+                    let response = docker_v2_unauthorized_response(&challenge, &body);
+                    return Ok(response);
+                } else {
+                    return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
+                        .into_response_default());
+                }
+            }
+            let not_found = RepositoryNotFound::from(names);
+            return Ok(not_found.into_response());
+        };
+        if !repository.is_active() {
+            return Ok(RepoResponse::disabled_repository().into_response_default());
+        }
+        let (parts, body) = request.into_parts();
+        if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+            ctx.set_repository_id(repository.id());
+            if let Some(user) = authentication.get_user() {
+                ctx.set_user(user.username.as_ref().to_string());
+            }
+        }
+        let path = path.unwrap_or_default();
+        let trace = RepositoryRequestTracing::new(
+            &repository,
+            &parent_span,
+            site.repository_metrics.clone(),
+        );
+        trace.path(&path);
+        let auth_config = match site.get_repository_auth_config(repository.id()).await {
+            Ok(config) => config,
+            Err(err) => {
+                error!(?err, "Failed to load repository auth config");
+                return Ok(RepoResponse::internal_error(err).into_response_default());
+            }
+        };
+
+        let request = RepositoryRequest {
+            parts,
+            body: RepositoryRequestBody(body),
+            path: path.clone(),
             authentication,
-            RepositoryAuthentication::NoIdentification | RepositoryAuthentication::Other(_, _)
-        ) {
-            if is_docker_request {
-                let actions: &[&str] = match method {
-                    Method::GET | Method::HEAD => &["pull"],
-                    _ => &["pull", "push"],
+            auth_config: auth_config.clone(),
+            trace: trace.clone(),
+        };
+
+        // Authentication logic:
+        // - If auth is disabled: allow reads (GET/HEAD) without auth, but require auth for writes
+        // - If auth is enabled: require auth for all operations
+        let is_authenticated = matches!(
+            request.authentication,
+            RepositoryAuthentication::AuthToken(..)
+                | RepositoryAuthentication::Session(..)
+                | RepositoryAuthentication::Basic(..)
+        );
+
+        let is_read_operation = matches!(method, Method::GET | Method::HEAD);
+        let is_npm_login = matches!(repository, DynRepository::NPM(_))
+            && crate::repository::npm::login::is_npm_login_path(&path);
+        let is_npm_proxy_like = matches!(
+            repository,
+            DynRepository::NPM(crate::repository::npm::NPMRegistry::Proxy(_))
+                | DynRepository::NPM(crate::repository::npm::NPMRegistry::Virtual(_))
+        );
+
+        let requires_auth = should_require_auth(
+            &auth_config,
+            is_read_operation,
+            is_npm_login,
+            is_npm_proxy_like,
+        );
+
+        if requires_auth && !is_authenticated {
+            if matches!(repository, DynRepository::Docker(_)) {
+                let actions: &[&str] = if is_read_operation {
+                    &["pull"][..]
+                } else {
+                    &["pull", "push"][..]
                 };
-                let challenge = build_docker_bearer_challenge(&site, None, &docker_scope, actions);
+                let challenge = build_docker_bearer_challenge(
+                    &site,
+                    Some(&request.parts.headers),
+                    &docker_scope,
+                    actions,
+                );
                 let body = docker_unauthorized_body(&docker_scope, actions);
                 let response = docker_v2_unauthorized_response(&challenge, &body);
                 return Ok(response);
@@ -609,118 +694,42 @@ async fn handle_repo_request_core(
                     .into_response_default());
             }
         }
-        let not_found = RepositoryNotFound::from(names);
-        return Ok(not_found.into_response());
-    };
-    if !repository.is_active() {
-        return Ok(RepoResponse::disabled_repository().into_response_default());
-    }
-    let (parts, body) = request.into_parts();
-    if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
-        ctx.set_repository_id(repository.id());
-        if let Some(user) = authentication.get_user() {
-            ctx.set_user(user.username.as_ref().to_string());
-        }
-    }
-    let path = path.unwrap_or_default();
-    let trace =
-        RepositoryRequestTracing::new(&repository, &parent_span, site.repository_metrics.clone());
-    trace.path(&path);
-    let auth_config = match site.get_repository_auth_config(repository.id()).await {
-        Ok(config) => config,
-        Err(err) => {
-            error!(?err, "Failed to load repository auth config");
-            return Ok(RepoResponse::internal_error(err).into_response_default());
-        }
-    };
 
-    let request = RepositoryRequest {
-        parts,
-        body: RepositoryRequestBody(body),
-        path: path.clone(),
-        authentication,
-        auth_config: auth_config.clone(),
-        trace: trace.clone(),
-    };
-
-    // Authentication logic:
-    // - If auth is disabled: allow reads (GET/HEAD) without auth, but require auth for writes
-    // - If auth is enabled: require auth for all operations
-    let is_authenticated = matches!(
-        request.authentication,
-        RepositoryAuthentication::AuthToken(..)
-            | RepositoryAuthentication::Session(..)
-            | RepositoryAuthentication::Basic(..)
-    );
-
-    let is_read_operation = matches!(method, Method::GET | Method::HEAD);
-    let is_npm_login = matches!(repository, DynRepository::NPM(_))
-        && crate::repository::npm::login::is_npm_login_path(&path);
-    let is_npm_proxy_like = matches!(
-        repository,
-        DynRepository::NPM(crate::repository::npm::NPMRegistry::Proxy(_))
-            | DynRepository::NPM(crate::repository::npm::NPMRegistry::Virtual(_))
-    );
-
-    let requires_auth = should_require_auth(
-        &auth_config,
-        is_read_operation,
-        is_npm_login,
-        is_npm_proxy_like,
-    );
-
-    if requires_auth && !is_authenticated {
-        if matches!(repository, DynRepository::Docker(_)) {
-            let actions: &[&str] = if is_read_operation {
-                &["pull"][..]
-            } else {
-                &["pull", "push"][..]
-            };
-            let challenge = build_docker_bearer_challenge(
-                &site,
-                Some(&request.parts.headers),
-                &docker_scope,
-                actions,
-            );
-            let body = docker_unauthorized_body(&docker_scope, actions);
-            let response = docker_v2_unauthorized_response(&challenge, &body);
-            return Ok(response);
-        } else {
-            return Ok(RepoResponse::www_authenticate("Basic realm=\"Nitro Repo\"")
-                .into_response_default());
-        }
-    }
-    drop(entered_guard);
-    let response = {
-        let _guard = trace.span.enter();
         let response = match method {
-            Method::GET => repository.handle_get(request).await,
-            Method::POST => repository.handle_post(request).await,
-            Method::PUT => repository.handle_put(request).await,
-            Method::DELETE => repository.handle_delete(request).await,
-            Method::PATCH => repository.handle_patch(request).await,
-            Method::HEAD => repository.handle_head(request).await,
-            _ => repository.handle_other(request).await,
+            Method::GET => repository.handle_get(request).instrument(trace.span.clone()).await,
+            Method::POST => repository.handle_post(request).instrument(trace.span.clone()).await,
+            Method::PUT => repository.handle_put(request).instrument(trace.span.clone()).await,
+            Method::DELETE => repository
+                .handle_delete(request)
+                .instrument(trace.span.clone())
+                .await,
+            Method::PATCH => repository
+                .handle_patch(request)
+                .instrument(trace.span.clone())
+                .await,
+            Method::HEAD => repository.handle_head(request).instrument(trace.span.clone()).await,
+            _ => repository
+                .handle_other(request)
+                .instrument(trace.span.clone())
+                .await,
         };
+
         match &response {
-            Ok(_) => {
-                trace.ok();
-            }
-            Err(err) => {
-                trace.error(err);
-            }
+            Ok(_) => trace.ok(),
+            Err(err) => trace.error(err),
         }
         event!(Level::DEBUG, "Repository Request Completed");
-        response
-    };
-    let _guard = request_debug.entered();
-    match response {
-        Ok(response) => Ok(response.into_response_default()),
-        Err(err) => {
-            error!(?err, "Failed to handle request");
-            Ok(err.into_response())
+
+        match response {
+            Ok(response) => Ok(response.into_response_default()),
+            Err(err) => {
+                error!(?err, "Failed to handle request");
+                Ok(err.into_response())
+            }
         }
     }
+    .instrument(request_debug)
+    .await
 }
 
 fn should_require_auth(

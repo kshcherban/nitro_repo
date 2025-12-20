@@ -17,7 +17,7 @@ use serde_json::json;
 use strum::EnumIs;
 use tokio::select;
 use tracing::{
-    Level, Span, debug, debug_span, event,
+    Instrument as _, Level, Span, debug, debug_span, event,
     field::{Empty, debug},
     info, instrument, warn,
 };
@@ -116,100 +116,60 @@ impl BrowseWSState {
             message = debug(&message),
             "message.type" = Empty,
         );
-        let _guard = span.enter();
-        let message = match message {
-            Ok(message) => message,
-            Err(e) => {
-                span.set_status(Status::error(e.to_string()));
-                let message = WebsocketOutgoingMessage::Error(e.to_string());
-                socket.send(message.into()).await?;
-                return Ok(true);
-            }
-        };
-        let incoming_message = match message {
-            Message::Close(_) => {
-                span.record("message.type", "Close");
-                return Ok(true);
-            }
-            Message::Ping(_) | Message::Pong(_) => {
-                span.record("message.type", "Ping/Pong");
-                return Ok(false);
-            }
-            Message::Binary(bytes) => {
-                span.record("message.type", "Binary");
-                let message: WebsocketIncomingMessage = match serde_json::from_slice(&bytes) {
-                    Ok(message) => message,
-                    Err(e) => {
-                        span.set_status(Status::error(e.to_string()));
-                        event!(Level::ERROR, ?e, "Failed to parse message");
-                        let message = WebsocketOutgoingMessage::Error(e.to_string());
-                        socket.send(message.into()).await?;
-                        return Ok(false);
-                    }
-                };
-                message
-            }
-            Message::Text(content) => {
-                span.record("message.type", "Text");
-                let message: WebsocketIncomingMessage = match serde_json::from_str(&content) {
-                    Ok(message) => message,
-                    Err(e) => {
-                        span.set_status(Status::error(e.to_string()));
-                        event!(Level::ERROR, ?e, "Failed to parse message");
-                        let message = WebsocketOutgoingMessage::Error(e.to_string());
-                        socket.send(message.into()).await?;
-                        return Ok(false);
-                    }
-                };
-                message
-            }
-        };
-
-        debug!(?incoming_message, "Received message");
-        match incoming_message {
-            WebsocketIncomingMessage::ListDirectory(path) => {
-                if self.access_status != WSPermissionsStatus::Authorized {
-                    if !can_read_repository_with_auth(
-                        &self.authentication,
-                        self.repository.visibility(),
-                        self.repository.id(),
-                        self.site.as_ref(),
-                        &self.auth_config,
-                    )
-                    .await?
-                    {
-                        info!(?self.authentication, "Access denied. Closing connection");
-                        self.access_status = WSPermissionsStatus::Unauthorized;
-                        let message = WebsocketOutgoingMessage::Unauthorized;
-                        socket.send(message.into()).await?;
-                        return Ok(true);
-                    } else {
-                        debug!("Access granted");
-                        self.access_status = WSPermissionsStatus::Authorized;
-                    }
+        let span_for_instrument = span.clone();
+        async move {
+            let message = match message {
+                Ok(message) => message,
+                Err(e) => {
+                    span.set_status(Status::error(e.to_string()));
+                    let message = WebsocketOutgoingMessage::Error(e.to_string());
+                    socket.send(message.into()).await?;
+                    return Ok(true);
                 }
-                match self.active_path.change_directory(path).await {
-                    Ok(ok) => {
-                        event!(Level::DEBUG, ?ok, "Opened directory");
-                        let message = WebsocketOutgoingMessage::OpenedDirectory(ok);
-                        socket.send(message.into()).await?;
-                    }
-                    Err(err) => {
-                        span.set_status(Status::error(err.to_string()));
-                        let message = WebsocketOutgoingMessage::Error(err.to_string());
-                        event!(Level::ERROR, ?err, "Failed to open directory");
-                        socket.send(message.into()).await?;
-                    }
+            };
+            let incoming_message = match message {
+                Message::Close(_) => {
+                    span.record("message.type", "Close");
+                    return Ok(true);
                 }
-                Ok(false)
-            }
-            WebsocketIncomingMessage::Authentication(auth) => {
-                let auth = auth.attempt_login(&self.site).await;
+                Message::Ping(_) | Message::Pong(_) => {
+                    span.record("message.type", "Ping/Pong");
+                    return Ok(false);
+                }
+                Message::Binary(bytes) => {
+                    span.record("message.type", "Binary");
+                    let message: WebsocketIncomingMessage = match serde_json::from_slice(&bytes) {
+                        Ok(message) => message,
+                        Err(e) => {
+                            span.set_status(Status::error(e.to_string()));
+                            event!(Level::ERROR, ?e, "Failed to parse message");
+                            let message = WebsocketOutgoingMessage::Error(e.to_string());
+                            socket.send(message.into()).await?;
+                            return Ok(false);
+                        }
+                    };
+                    message
+                }
+                Message::Text(content) => {
+                    span.record("message.type", "Text");
+                    let message: WebsocketIncomingMessage = match serde_json::from_str(&content) {
+                        Ok(message) => message,
+                        Err(e) => {
+                            span.set_status(Status::error(e.to_string()));
+                            event!(Level::ERROR, ?e, "Failed to parse message");
+                            let message = WebsocketOutgoingMessage::Error(e.to_string());
+                            socket.send(message.into()).await?;
+                            return Ok(false);
+                        }
+                    };
+                    message
+                }
+            };
 
-                match auth {
-                    Ok(auth) => {
-                        event!(Level::DEBUG, ?auth, "Authenticated");
-                        self.authentication = Some(auth);
+            debug!(?incoming_message, "Received message");
+            match incoming_message {
+                WebsocketIncomingMessage::ListDirectory(path) => {
+                    if self.access_status != WSPermissionsStatus::Authorized {
                         if !can_read_repository_with_auth(
                             &self.authentication,
                             self.repository.visibility(),
@@ -220,28 +180,72 @@ impl BrowseWSState {
                         .await?
                         {
                             info!(?self.authentication, "Access denied. Closing connection");
-
                             self.access_status = WSPermissionsStatus::Unauthorized;
                             let message = WebsocketOutgoingMessage::Unauthorized;
                             socket.send(message.into()).await?;
                             return Ok(true);
                         } else {
+                            debug!("Access granted");
                             self.access_status = WSPermissionsStatus::Authorized;
                         }
-                        let message = WebsocketOutgoingMessage::Authorized;
-                        socket.send(message.into()).await?;
-                        Ok(false)
                     }
-                    Err(err) => {
-                        span.set_status(Status::error(err.to_string()));
-                        event!(Level::ERROR, ?err, "Failed to authenticate");
-                        let message = WebsocketOutgoingMessage::Error(err.to_string());
-                        socket.send(message.into()).await?;
-                        Ok(true)
+                    match self.active_path.change_directory(path).await {
+                        Ok(ok) => {
+                            event!(Level::DEBUG, ?ok, "Opened directory");
+                            let message = WebsocketOutgoingMessage::OpenedDirectory(ok);
+                            socket.send(message.into()).await?;
+                        }
+                        Err(err) => {
+                            span.set_status(Status::error(err.to_string()));
+                            let message = WebsocketOutgoingMessage::Error(err.to_string());
+                            event!(Level::ERROR, ?err, "Failed to open directory");
+                            socket.send(message.into()).await?;
+                        }
+                    }
+                    Ok(false)
+                }
+                WebsocketIncomingMessage::Authentication(auth) => {
+                    let auth = auth.attempt_login(&self.site).await;
+
+                    match auth {
+                        Ok(auth) => {
+                            event!(Level::DEBUG, ?auth, "Authenticated");
+                            self.authentication = Some(auth);
+                            if !can_read_repository_with_auth(
+                                &self.authentication,
+                                self.repository.visibility(),
+                                self.repository.id(),
+                                self.site.as_ref(),
+                                &self.auth_config,
+                            )
+                            .await?
+                            {
+                                info!(?self.authentication, "Access denied. Closing connection");
+
+                                self.access_status = WSPermissionsStatus::Unauthorized;
+                                let message = WebsocketOutgoingMessage::Unauthorized;
+                                socket.send(message.into()).await?;
+                                return Ok(true);
+                            } else {
+                                self.access_status = WSPermissionsStatus::Authorized;
+                            }
+                            let message = WebsocketOutgoingMessage::Authorized;
+                            socket.send(message.into()).await?;
+                            Ok(false)
+                        }
+                        Err(err) => {
+                            span.set_status(Status::error(err.to_string()));
+                            event!(Level::ERROR, ?err, "Failed to authenticate");
+                            let message = WebsocketOutgoingMessage::Error(err.to_string());
+                            socket.send(message.into()).await?;
+                            Ok(true)
+                        }
                     }
                 }
             }
         }
+        .instrument(span_for_instrument)
+        .await
     }
     async fn handle_next_item(
         &mut self,
@@ -249,28 +253,32 @@ impl BrowseWSState {
         next_item: Result<Option<StorageFileMeta<FileType>>, InternalError>,
     ) -> Result<bool, InternalError> {
         let span = debug_span!("Handle Next Item", next_item = debug(&next_item),);
-        let _guard = span.enter();
-        match next_item {
-            Ok(Some(file)) => {
-                let message = WebsocketOutgoingMessage::DirectoryItem(file.into());
-                debug!(?message, "Sending message");
-                socket.send(message.into()).await?;
-                span.set_status(Status::Ok);
+        let span_for_instrument = span.clone();
+        async move {
+            match next_item {
+                Ok(Some(file)) => {
+                    let message = WebsocketOutgoingMessage::DirectoryItem(file.into());
+                    debug!(?message, "Sending message");
+                    socket.send(message.into()).await?;
+                    span.set_status(Status::Ok);
+                }
+                Ok(None) => {
+                    let message = WebsocketOutgoingMessage::EndOfDirectory;
+                    socket.send(message.into()).await?;
+                    span.set_status(Status::Ok);
+                }
+                Err(e) => {
+                    event!(Level::ERROR, ?e, "Failed to get next item");
+                    let message = WebsocketOutgoingMessage::Error(e.to_string());
+                    socket.send(message.into()).await?;
+                    span.set_status(Status::error(e.to_string()));
+                    return Ok(true);
+                }
             }
-            Ok(None) => {
-                let message = WebsocketOutgoingMessage::EndOfDirectory;
-                socket.send(message.into()).await?;
-                span.set_status(Status::Ok);
-            }
-            Err(e) => {
-                event!(Level::ERROR, ?e, "Failed to get next item");
-                let message = WebsocketOutgoingMessage::Error(e.to_string());
-                socket.send(message.into()).await?;
-                span.set_status(Status::error(e.to_string()));
-                return Ok(true);
-            }
+            Ok(false)
         }
-        Ok(false)
+        .instrument(span_for_instrument)
+        .await
     }
 }
 
@@ -281,64 +289,67 @@ pub(super) async fn handle_socket(
     site: NitroRepo,
     span: Span,
 ) {
-    let _guard = span.enter();
-    info!(?who, "New websocket connection");
+    async move {
+        info!(?who, "New websocket connection");
 
-    if let Err(socket) = socket.send(Message::Ping(Default::default())).await {
-        event!(Level::ERROR, ?socket, "Failed to send ping");
-        return;
-    }
-    let auth_config = match site.get_repository_auth_config(repository.id()).await {
-        Ok(config) => config,
-        Err(err) => {
-            event!(
-                Level::ERROR,
-                ?err,
-                "Failed to load repository auth config for browse websocket"
-            );
-            RepositoryAuthConfig::default()
+        if let Err(socket) = socket.send(Message::Ping(Default::default())).await {
+            event!(Level::ERROR, ?socket, "Failed to send ping");
+            return;
         }
-    };
+        let auth_config = match site.get_repository_auth_config(repository.id()).await {
+            Ok(config) => config,
+            Err(err) => {
+                event!(
+                    Level::ERROR,
+                    ?err,
+                    "Failed to load repository auth config for browse websocket"
+                );
+                RepositoryAuthConfig::default()
+            }
+        };
 
-    let mut state = BrowseWSState::new(repository, site, auth_config);
-    loop {
-        select! {
-             message = socket.recv() => {
-                let Some(message) = message else{
-                    event!(Level::DEBUG, "End of stream");
-                    break;
-                };
+        let mut state = BrowseWSState::new(repository, site, auth_config);
+        loop {
+            select! {
+                 message = socket.recv() => {
+                    let Some(message) = message else{
+                        event!(Level::DEBUG, "End of stream");
+                        break;
+                    };
 
-                match state.handle_message(message,  &mut socket).await  {
-                    Ok(ok) if ok => {
-                        break;
-                    },
-                    Ok(_) => {},
-                    Err(err) => {
-                        event!(Level::ERROR, ?err, "Failed to handle message");
-                        break;
-                    },
-                }
-             }
-             next_item = state.active_path.next_item() => {
-                debug!(?next_item, "Next item");
-                match state.handle_next_item(&mut socket, next_item).await {
-                    Ok(ok) if ok => {
-                        break;
-                    },
-                    Ok(_) => {},
-                    Err(err) => {
-                        event!(Level::ERROR, ?err, "Failed to handle next item");
-                        break;
-                    },
-                }
-             }
+                    match state.handle_message(message,  &mut socket).await  {
+                        Ok(ok) if ok => {
+                            break;
+                        },
+                        Ok(_) => {},
+                        Err(err) => {
+                            event!(Level::ERROR, ?err, "Failed to handle message");
+                            break;
+                        },
+                    }
+                 }
+                 next_item = state.active_path.next_item() => {
+                    debug!(?next_item, "Next item");
+                    match state.handle_next_item(&mut socket, next_item).await {
+                        Ok(ok) if ok => {
+                            break;
+                        },
+                        Ok(_) => {},
+                        Err(err) => {
+                            event!(Level::ERROR, ?err, "Failed to handle next item");
+                            break;
+                        },
+                    }
+                 }
+            }
         }
+        if let Err(err) = socket.close().await {
+            event!(Level::ERROR, ?err, "Failed to close websocket connection");
+        }
+        info!("Closing websocket connection");
     }
-    if let Err(err) = socket.close().await {
-        event!(Level::ERROR, ?err, "Failed to close websocket connection");
-    }
-    info!("Closing websocket connection");
+    .instrument(span)
+    .await
 }
 #[derive(Debug)]
 pub struct StoragePathStream {

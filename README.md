@@ -71,7 +71,7 @@ type = "Console"
 
 [log.loggers.console.config]
 format = "compact"
-ansi_color = false
+ansi_color = true
 include_span_context = false
 ```
 

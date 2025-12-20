@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, prelude::FromRow};
-use tracing::{debug, instrument, span};
+use tracing::{Instrument as _, debug, instrument, span};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -81,7 +81,6 @@ impl NewRepositoryToken {
         .bind(expires_at)
         .fetch_one(database).await?;
         let span = span!(tracing::Level::DEBUG, "inserting scopes");
-        let _guard = span.enter();
         for (repository_id, actions) in repositories {
             debug!(?repository_id, ?actions, "Inserting scope");
             NewRepositoryScope {
@@ -90,6 +89,7 @@ impl NewRepositoryToken {
                 actions,
             }
             .insert_no_return(database)
+            .instrument(span.clone())
             .await?;
         }
         Ok((token_id, token))

@@ -17,6 +17,8 @@ use tokio_util::io::poll_read_buf;
 
 use super::FileContentBytes;
 
+const DEFAULT_READ_CHUNK_SIZE: usize = 64 * 1024;
+
 /// StorageFileReader is a wrapper around different types of readers.
 #[derive(From)]
 pub enum StorageFileReader {
@@ -50,11 +52,17 @@ impl From<SyncFile> for StorageFileReader {
     }
 }
 impl StorageFileReader {
-    pub fn into_body(self, capacity: usize) -> StorageFileReaderBody {
+    /// Convert the reader into an `http_body::Body`.
+    ///
+    /// `size_hint_bytes` is the total size of the response (if known). It is used only for
+    /// the `Body::size_hint` implementation and does not influence buffering.
+    pub fn into_body(self, size_hint_bytes: usize) -> StorageFileReaderBody {
+        let chunk_capacity = size_hint_bytes.clamp(1, DEFAULT_READ_CHUNK_SIZE);
         StorageFileReaderBody {
             reader: Some(self),
-            buf: BytesMut::with_capacity(capacity),
-            capacity,
+            buf: BytesMut::with_capacity(chunk_capacity),
+            chunk_capacity,
+            size_hint_bytes,
         }
     }
 }
@@ -77,9 +85,26 @@ impl AsyncRead for StorageFileReader {
             StorageFileReader::File(file) => Pin::new(file).poll_read(cx, buf),
             StorageFileReader::AsyncReader(reader) => Pin::new(reader).poll_read(cx, buf),
             StorageFileReader::Bytes(bytes) => {
-                let len = std::cmp::min(buf.remaining(), bytes.len());
-                buf.put_slice(&bytes.as_ref()[..len]);
-                Poll::Ready(Ok(()))
+                match bytes {
+                    FileContentBytes::Content(content) => {
+                        let len = std::cmp::min(buf.remaining(), content.len());
+                        if len == 0 {
+                            return Poll::Ready(Ok(()));
+                        }
+                        buf.put_slice(&content[..len]);
+                        content.drain(..len);
+                        Poll::Ready(Ok(()))
+                    }
+                    FileContentBytes::Bytes(bytes) => {
+                        let len = std::cmp::min(buf.remaining(), bytes.len());
+                        if len == 0 {
+                            return Poll::Ready(Ok(()));
+                        }
+                        let chunk = bytes.split_to(len);
+                        buf.put_slice(&chunk);
+                        Poll::Ready(Ok(()))
+                    }
+                }
             }
         }
     }
@@ -90,7 +115,8 @@ pub struct StorageFileReaderBody {
     #[pin]
     reader: Option<StorageFileReader>,
     buf: BytesMut,
-    capacity: usize,
+    chunk_capacity: usize,
+    size_hint_bytes: usize,
 }
 impl Body for StorageFileReaderBody {
     type Data = Bytes;
@@ -108,7 +134,7 @@ impl Body for StorageFileReaderBody {
         };
 
         if this.buf.capacity() == 0 {
-            this.buf.reserve(*this.capacity);
+            this.buf.reserve(*this.chunk_capacity);
         }
 
         match poll_read_buf(reader, cx, &mut this.buf) {
@@ -133,8 +159,13 @@ impl Body for StorageFileReaderBody {
     }
     fn size_hint(&self) -> http_body::SizeHint {
         let mut hint = http_body::SizeHint::default();
-        // Capacity should be the size of the response.
-        hint.set_lower(self.capacity as u64);
+        if self.size_hint_bytes > 0 {
+            hint.set_lower(self.size_hint_bytes as u64);
+            hint.set_upper(self.size_hint_bytes as u64);
+        }
         hint
     }
 }
+
+#[cfg(test)]
+mod tests;
