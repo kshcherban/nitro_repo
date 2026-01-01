@@ -14,6 +14,7 @@ pub use configs::*;
 pub mod hosted;
 pub mod proxy;
 pub mod utils;
+pub mod r#virtual;
 
 use proxy::PythonProxy;
 
@@ -27,6 +28,7 @@ use super::{
 pub enum PythonRepository {
     Hosted(hosted::PythonHosted),
     Proxy(PythonProxy),
+    Virtual(r#virtual::PythonVirtualRepository),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -132,8 +134,11 @@ impl RepositoryType for PythonRepositoryType {
                     PythonRepositoryConfigType::get_type_static(),
                 ))?
                 .clone();
-            let _: PythonRepositoryConfig = serde_json::from_value(config)
+            let config: PythonRepositoryConfig = serde_json::from_value(config)
                 .map_err(|err| RepositoryFactoryError::InvalidConfig("python", err.to_string()))?;
+            if let PythonRepositoryConfig::Virtual(config) = &config {
+                validate_virtual_config(config)?;
+            }
             Ok(NewRepository {
                 name,
                 uuid,
@@ -175,7 +180,32 @@ impl RepositoryType for PythonRepositoryType {
                         proxy::PythonProxy::load(website, storage, repo, proxy_config).await?;
                     Ok(DynRepository::Python(PythonRepository::Proxy(proxy)))
                 }
+                PythonRepositoryConfig::Virtual(virtual_config) => {
+                    let virtual_repo = r#virtual::PythonVirtualRepository::load(
+                        website,
+                        storage,
+                        repo,
+                        virtual_config,
+                    )
+                    .await?;
+                    Ok(DynRepository::Python(PythonRepository::Virtual(
+                        virtual_repo,
+                    )))
+                }
             }
         })
     }
+}
+
+pub(crate) fn validate_virtual_config(
+    config: &crate::repository::r#virtual::config::VirtualRepositoryConfig,
+) -> Result<(), RepositoryFactoryError> {
+    crate::repository::r#virtual::config::validate_virtual_repository_config(config).map_err(
+        |err| {
+            RepositoryFactoryError::InvalidConfig(
+                PythonRepositoryConfigType::get_type_static(),
+                err.to_string(),
+            )
+        },
+    )
 }

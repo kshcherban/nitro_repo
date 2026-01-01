@@ -45,6 +45,14 @@ fn normalize_routes_retains_existing_entries() {
     assert_eq!(routes, vec![custom]);
 }
 
+#[test]
+fn derive_request_base_path_strips_request_path_suffix() {
+    let uri_path = "/repositories/storage/python-proxy/simple/pkg/";
+    let storage_path = StoragePath::from("simple/pkg/");
+    let base = derive_request_base_path(uri_path, &storage_path).expect("base path");
+    assert_eq!(base, "/repositories/storage/python-proxy");
+}
+
 fn metadata_path() -> StoragePath {
     StoragePath::from(
         "packages/bc/66/875d449b23194f45debb8a2b70c704217f0aa2700d967098b2e1b812dd44/parallel_ssh-2.12.0-py3-none-any.whl",

@@ -245,6 +245,10 @@ function repositoryTypesBar() {
           text: "HTTP Routes",
           link: "/repositoryTypes/python/routes",
         },
+        {
+          text: "Virtual Repositories",
+          link: "/repositoryTypes/python/virtual",
+        },
       ],
     },
     {

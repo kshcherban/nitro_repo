@@ -442,6 +442,7 @@ impl ProxyKindClassifier for crate::repository::python::PythonRepositoryConfig {
         match self {
             Self::Hosted => Some("hosted"),
             Self::Proxy(_) => Some("proxy"),
+            Self::Virtual(_) => Some("virtual"),
         }
     }
 }

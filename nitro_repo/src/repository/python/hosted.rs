@@ -29,7 +29,7 @@ use uuid::Uuid;
 use super::{
     PythonRepositoryError,
     configs::{PythonRepositoryConfig, PythonRepositoryConfigType},
-    utils::{PythonPackagePathInfo, normalize_package_name},
+    utils::{PythonPackagePathInfo, html_escape, normalize_package_name},
 };
 use crate::{
     app::NitroRepo,
@@ -337,15 +337,19 @@ impl Repository for PythonHosted {
         let repository_id = self.id();
         let this = self.clone();
         async move {
-            if !can_read_repository_with_auth(
-                &request.authentication,
-                visibility,
-                repository_id,
-                site.as_ref(),
-                &request.auth_config,
-            )
-            .await?
-            {
+            let can_read = if request.authentication.is_virtual_repository() {
+                true
+            } else {
+                can_read_repository_with_auth(
+                    &request.authentication,
+                    visibility,
+                    repository_id,
+                    site.as_ref(),
+                    &request.auth_config,
+                )
+                .await?
+            };
+            if !can_read {
                 return Ok(RepoResponse::basic_text_response(
                     StatusCode::UNAUTHORIZED,
                     "Missing permission to read repository",
@@ -388,15 +392,19 @@ impl Repository for PythonHosted {
         let repository_id = self.id();
         let this = self.clone();
         async move {
-            if !can_read_repository_with_auth(
-                &request.authentication,
-                visibility,
-                repository_id,
-                site.as_ref(),
-                &request.auth_config,
-            )
-            .await?
-            {
+            let can_read = if request.authentication.is_virtual_repository() {
+                true
+            } else {
+                can_read_repository_with_auth(
+                    &request.authentication,
+                    visibility,
+                    repository_id,
+                    site.as_ref(),
+                    &request.auth_config,
+                )
+                .await?
+            };
+            if !can_read {
                 return Ok(RepoResponse::basic_text_response(
                     StatusCode::UNAUTHORIZED,
                     "Missing permission to read repository",
@@ -660,20 +668,6 @@ fn redirect_to_trailing_slash(uri_path: &str) -> axum::response::Response {
 
 fn should_ignore(name: &str) -> bool {
     name.starts_with('.') || name.ends_with(".nr-meta")
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .chars()
-        .map(|ch| match ch {
-            '&' => "&amp;".to_string(),
-            '<' => "&lt;".to_string(),
-            '>' => "&gt;".to_string(),
-            '\"' => "&quot;".to_string(),
-            '\'' => "&#x27;".to_string(),
-            _ => ch.to_string(),
-        })
-        .collect()
 }
 
 /// Converts a base64-encoded hash to lowercase hex format for PEP 503 compliance

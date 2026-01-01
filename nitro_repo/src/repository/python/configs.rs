@@ -6,12 +6,15 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::repository::r#virtual::config::VirtualRepositoryConfig;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(tag = "type", content = "config")]
 pub enum PythonRepositoryConfig {
     #[default]
     Hosted,
     Proxy(PythonProxyConfig),
+    Virtual(VirtualRepositoryConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
@@ -47,7 +50,11 @@ impl RepositoryConfigType for PythonRepositoryConfigType {
     }
 
     fn validate_config(&self, config: Value) -> Result<(), RepositoryConfigError> {
-        serde_json::from_value::<PythonRepositoryConfig>(config)?;
+        let parsed = serde_json::from_value::<PythonRepositoryConfig>(config)?;
+        if let PythonRepositoryConfig::Virtual(virtual_cfg) = &parsed {
+            crate::repository::r#virtual::config::validate_virtual_repository_config(virtual_cfg)
+                .map_err(|_| RepositoryConfigError::InvalidConfig("Invalid virtual config"))?;
+        }
         Ok(())
     }
 

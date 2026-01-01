@@ -71,5 +71,19 @@ pub fn normalize_package_name(name: &str) -> String {
         .collect()
 }
 
+pub(crate) fn html_escape(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| match ch {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '\"' => "&quot;".to_string(),
+            '\'' => "&#x27;".to_string(),
+            _ => ch.to_string(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

@@ -2,7 +2,9 @@ use axum::extract::{FromRef, FromRequestParts};
 use chrono::Utc;
 use http::request::Parts;
 use nr_core::{
-    database::entities::user::{UserSafeData, UserType, auth_token::AuthToken},
+    database::entities::user::{
+        UserSafeData, UserType, auth_token::AuthToken, permissions::UserRepositoryPermissions,
+    },
     user::permissions::{
         HasPermissions, RepositoryActions, UserPermissions,
         does_user_and_token_have_repository_action,
@@ -26,6 +28,12 @@ pub enum RepositoryAuthentication {
     Session(Session, UserSafeData),
     /// Uses Basic Authorization Header
     Basic(Option<AuthToken>, UserSafeData),
+    /// Internal wrapper used by virtual repositories: for `Read` action checks, use the virtual
+    /// repository id instead of the member repository id.
+    VirtualRepository {
+        virtual_repository_id: Uuid,
+        inner: Box<RepositoryAuthentication>,
+    },
     /// An authorization header was passed but it does not match any known types
     Other(String, String),
     /// No Identification was passed
@@ -39,7 +47,9 @@ impl RepositoryAuthentication {
         repository_id: Uuid,
         database: &PgPool,
     ) -> Result<bool, AuthenticationError> {
-        match self {
+        let (auth, effective_repository_id) =
+            unwrap_virtual_for_action(self, action, repository_id);
+        match auth {
             RepositoryAuthentication::AuthToken(token, user)
             | RepositoryAuthentication::Basic(Some(token), user) => {
                 debug!("Request has an Auth Token. Checking if it has access to the repository");
@@ -54,9 +64,9 @@ impl RepositoryAuthentication {
                 .map_err(AuthenticationError::from)
             }
             RepositoryAuthentication::Session(_, user)
-            | RepositoryAuthentication::Basic(None, user) => {
-                Ok(user.has_action(action, repository_id, database).await?)
-            }
+            | RepositoryAuthentication::Basic(None, user) => Ok(user
+                .has_action(action, effective_repository_id, database)
+                .await?),
             _ => Ok(false),
         }
     }
@@ -67,7 +77,9 @@ impl RepositoryAuthentication {
         repository_id: Uuid,
         database: &PgPool,
     ) -> Result<Option<&UserSafeData>, AuthenticationError> {
-        match self {
+        let (auth, effective_repository_id) =
+            unwrap_virtual_for_action(self, action, repository_id);
+        match auth {
             RepositoryAuthentication::AuthToken(token, user)
             | RepositoryAuthentication::Basic(Some(token), user) => {
                 debug!("Request has an Auth Token. Checking if it has access to the repository");
@@ -75,7 +87,7 @@ impl RepositoryAuthentication {
                     user,
                     token,
                     action,
-                    repository_id,
+                    effective_repository_id,
                     database,
                 )
                 .await?
@@ -87,7 +99,10 @@ impl RepositoryAuthentication {
             }
             RepositoryAuthentication::Session(_, user)
             | RepositoryAuthentication::Basic(None, user) => {
-                if user.has_action(action, repository_id, database).await? {
+                if user
+                    .has_action(action, effective_repository_id, database)
+                    .await?
+                {
                     Ok(Some(user))
                 } else {
                     Ok(None)
@@ -103,6 +118,7 @@ impl HasPermissions for RepositoryAuthentication {
             RepositoryAuthentication::AuthToken(_, user) => user.get_permissions(),
             RepositoryAuthentication::Session(_, user) => user.get_permissions(),
             RepositoryAuthentication::Basic(_, user) => user.get_permissions(),
+            RepositoryAuthentication::VirtualRepository { inner, .. } => inner.get_permissions(),
             _ => None,
         }
     }
@@ -112,8 +128,31 @@ impl HasPermissions for RepositoryAuthentication {
             RepositoryAuthentication::AuthToken(_, user) => Some(user.id),
             RepositoryAuthentication::Session(_, user) => Some(user.id),
             RepositoryAuthentication::Basic(_, user) => Some(user.id),
+            RepositoryAuthentication::VirtualRepository { inner, .. } => inner.user_id(),
             _ => None,
         }
+    }
+
+    async fn has_action(
+        &self,
+        action: RepositoryActions,
+        repository: Uuid,
+        db: &PgPool,
+    ) -> Result<bool, sqlx::Error> {
+        let (auth, effective_repository_id) = unwrap_virtual_for_action(self, action, repository);
+        if auth.is_admin_or_system_manager() {
+            return Ok(true);
+        }
+        let Some(user_id) = auth.user_id() else {
+            return Ok(false);
+        };
+        UserRepositoryPermissions::has_repository_action(
+            user_id,
+            effective_repository_id,
+            action,
+            db,
+        )
+        .await
     }
 }
 impl RepositoryAuthentication {
@@ -122,6 +161,7 @@ impl RepositoryAuthentication {
             RepositoryAuthentication::AuthToken(_, user) => Some(user.id),
             RepositoryAuthentication::Session(_, user) => Some(user.id),
             RepositoryAuthentication::Basic(_, user) => Some(user.id),
+            RepositoryAuthentication::VirtualRepository { inner, .. } => inner.get_user_id(),
             _ => None,
         }
     }
@@ -130,6 +170,7 @@ impl RepositoryAuthentication {
             RepositoryAuthentication::AuthToken(_, user) => Some(user),
             RepositoryAuthentication::Session(_, user) => Some(user),
             RepositoryAuthentication::Basic(_, user) => Some(user),
+            RepositoryAuthentication::VirtualRepository { inner, .. } => inner.get_user(),
             _ => None,
         }
     }
@@ -139,6 +180,14 @@ impl RepositoryAuthentication {
             RepositoryAuthentication::AuthToken(..) | RepositoryAuthentication::Basic(Some(_), _)
         )
     }
+
+    pub fn wrap_for_virtual_reads(self, virtual_repository_id: Uuid) -> Self {
+        RepositoryAuthentication::VirtualRepository {
+            virtual_repository_id,
+            inner: Box::new(self),
+        }
+    }
+
     pub fn as_raw(&self) -> AuthenticationRaw {
         match self {
             RepositoryAuthentication::AuthToken(token, _) => {
@@ -154,6 +203,7 @@ impl RepositoryAuthentication {
                 username: user.username.as_ref().to_string(),
                 password: String::new(),
             },
+            RepositoryAuthentication::VirtualRepository { inner, .. } => inner.as_raw(),
             RepositoryAuthentication::Other(scheme, value) => {
                 AuthenticationRaw::AuthorizationHeaderUnknown(scheme.clone(), value.clone())
             }
@@ -193,6 +243,25 @@ impl RepositoryAuthentication {
             }
         }
     }
+}
+
+fn unwrap_virtual_for_action<'a>(
+    mut auth: &'a RepositoryAuthentication,
+    action: RepositoryActions,
+    repository_id: Uuid,
+) -> (&'a RepositoryAuthentication, Uuid) {
+    let mut effective_repository_id = repository_id;
+    while let RepositoryAuthentication::VirtualRepository {
+        virtual_repository_id,
+        inner,
+    } = auth
+    {
+        if matches!(action, RepositoryActions::Read) {
+            effective_repository_id = *virtual_repository_id;
+        }
+        auth = inner;
+    }
+    (auth, effective_repository_id)
 }
 impl<S> FromRequestParts<S> for RepositoryAuthentication
 where

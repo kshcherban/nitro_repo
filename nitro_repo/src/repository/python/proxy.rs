@@ -400,20 +400,26 @@ impl Repository for PythonProxy {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository_with_auth(
-                &request.authentication,
-                this.visibility(),
-                this.id(),
-                this.site().as_ref(),
-                &request.auth_config,
-            )
-            .await?
-            {
+            let can_read = if request.authentication.is_virtual_repository() {
+                true
+            } else {
+                can_read_repository_with_auth(
+                    &request.authentication,
+                    this.visibility(),
+                    this.id(),
+                    this.site().as_ref(),
+                    &request.auth_config,
+                )
+                .await?
+            };
+            if !can_read {
                 return Ok(RepoResponse::unauthorized());
             }
 
+            let uri_path = request.parts.uri.path().to_string();
             let path = request.path;
-            let base_path = this.base_repository_path();
+            let base_path = derive_request_base_path(&uri_path, &path)
+                .unwrap_or_else(|| this.base_repository_path());
 
             if path.is_directory() {
                 if let Some(response) = this
@@ -472,20 +478,26 @@ impl Repository for PythonProxy {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository_with_auth(
-                &request.authentication,
-                this.visibility(),
-                this.id(),
-                this.site().as_ref(),
-                &request.auth_config,
-            )
-            .await?
-            {
+            let can_read = if request.authentication.is_virtual_repository() {
+                true
+            } else {
+                can_read_repository_with_auth(
+                    &request.authentication,
+                    this.visibility(),
+                    this.id(),
+                    this.site().as_ref(),
+                    &request.auth_config,
+                )
+                .await?
+            };
+            if !can_read {
                 return Ok(RepoResponse::unauthorized());
             }
 
+            let uri_path = request.parts.uri.path().to_string();
             let path = request.path;
-            let base_path = this.base_repository_path();
+            let base_path = derive_request_base_path(&uri_path, &path)
+                .unwrap_or_else(|| this.base_repository_path());
 
             if path.is_directory() {
                 if let Some(response) = this
@@ -758,6 +770,21 @@ fn normalize_base_path(base_path: &str) -> String {
     } else {
         format!("{}/", base_path)
     }
+}
+
+fn derive_request_base_path(uri_path: &str, path: &StoragePath) -> Option<String> {
+    let uri_trimmed = uri_path.trim_end_matches('/');
+    let storage = path.to_string();
+    let storage_trimmed = storage.trim_end_matches('/');
+    if storage_trimmed.is_empty() {
+        return Some(uri_trimmed.to_string());
+    }
+    let suffix = format!("/{}", storage_trimmed);
+    let base = uri_trimmed.strip_suffix(&suffix)?;
+    if base.is_empty() {
+        return Some("/".to_string());
+    }
+    Some(base.to_string())
 }
 
 fn resolve_upstream_link(original: &str, upstream_base: &Url) -> Option<Url> {

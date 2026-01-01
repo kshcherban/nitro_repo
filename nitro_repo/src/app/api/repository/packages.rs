@@ -448,6 +448,9 @@ fn package_strategy(repository: &DynRepository) -> PackageStrategy {
         DynRepository::Python(python_repo) => match python_repo {
             crate::repository::python::PythonRepository::Hosted(_) => PackageStrategy::PythonHosted,
             crate::repository::python::PythonRepository::Proxy(_) => PackageStrategy::PythonProxy,
+            crate::repository::python::PythonRepository::Virtual(_) => {
+                PackageStrategy::PythonHosted
+            }
         },
         DynRepository::Php(php_repo) => match php_repo {
             crate::repository::php::PhpRepository::Hosted(_) => PackageStrategy::PhpHosted,

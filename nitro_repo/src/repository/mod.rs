@@ -37,6 +37,7 @@ pub mod php;
 pub mod proxy;
 pub mod python;
 pub mod ruby;
+pub mod r#virtual;
 pub use auth_config::*;
 pub mod proxy_indexing;
 pub use proxy_indexing::{DatabaseProxyIndexer, ProxyIndexing, ProxyIndexingError};

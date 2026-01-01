@@ -22,6 +22,7 @@ tests/
 │   ├── test_npm.sh                 # NPM integration tests
 │   ├── test_docker.sh              # Docker integration tests
 │   ├── test_python.sh              # Python/PyPI integration tests
+│   ├── test_python_virtual.sh      # Python virtual repository integration tests
 │   ├── test_php.sh                 # PHP/Composer integration tests
 │   ├── test_go.sh                  # Go module integration tests
 │   ├── test_debian.sh              # Debian repository integration tests
@@ -48,6 +49,7 @@ tests/
 | NPM         | ✅     | ✅    | 14    |
 | Docker      | ⚠️     | ✅    | 8     |
 | Python      | ✅     | ✅    | 11    |
+| Python (Virtual) | ✅ | ✅ | 10 |
 | PHP         | ✅     | ❌    | 10    |
 | Go          | ✅     | ✅    | 16    |
 | Debian      | ✅     | ❌    | 6     |
@@ -198,6 +200,18 @@ All containers communicate on the `test-network` bridge network. Tests run insid
 9. ✅ Proxy caching verification
 10. ✅ Authentication required for upload
 11. ✅ 404 for non-existent package
+
+### Python Virtual Repository Tests (10 tests)
+
+1. ✅ Create/validate python-virtual repo configuration
+2. ✅ Publish package version to member 1 (hosted)
+3. ✅ Publish package version to member 2 (hosted)
+4. ✅ Merged `/simple/<pkg>/` contains both versions
+5. ✅ Install specific version via virtual (member merge) - version 1
+6. ✅ Install specific version via virtual (member merge) - version 2
+7. ✅ Install proxied package via virtual (proxy member)
+8. ✅ Publish via virtual forwards to hosted publish target
+9. ✅ Verify publish target contains forwarded version
 
 ### PHP Tests (10 tests)
 

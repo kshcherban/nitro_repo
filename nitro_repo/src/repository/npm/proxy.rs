@@ -485,14 +485,18 @@ impl Repository for NpmProxyRegistry {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository(
-                &request.authentication,
-                this.visibility(),
-                this.id(),
-                this.site().as_ref(),
-            )
-            .await?
-            {
+            let can_read = if request.authentication.is_virtual_repository() {
+                true
+            } else {
+                can_read_repository(
+                    &request.authentication,
+                    this.visibility(),
+                    this.id(),
+                    this.site().as_ref(),
+                )
+                .await?
+            };
+            if !can_read {
                 return Ok(RepoResponse::unauthorized());
             }
 
@@ -561,14 +565,18 @@ impl Repository for NpmProxyRegistry {
         let this = self.clone();
         async move {
             let query = request.parts.uri.query().map(|q| q.to_string());
-            if !can_read_repository(
-                &request.authentication,
-                this.visibility(),
-                this.id(),
-                this.site().as_ref(),
-            )
-            .await?
-            {
+            let can_read = if request.authentication.is_virtual_repository() {
+                true
+            } else {
+                can_read_repository(
+                    &request.authentication,
+                    this.visibility(),
+                    this.id(),
+                    this.site().as_ref(),
+                )
+                .await?
+            };
+            if !can_read {
                 return Ok(RepoResponse::unauthorized());
             }
 

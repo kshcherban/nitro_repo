@@ -28,10 +28,10 @@ use crate::{
         DynRepository, Repository,
         npm::{
             NPMRegistry, NPMRegistryConfig, NPMRegistryConfigType,
-            npm_virtual::{
-                NpmVirtualConfig, VirtualRepositoryMemberConfig, VirtualResolutionOrder,
-            },
+            npm_virtual::{VirtualRepositoryMemberConfig, VirtualResolutionOrder},
         },
+        python::{PythonRepository, PythonRepositoryConfig, PythonRepositoryConfigType},
+        r#virtual::config::VirtualRepositoryConfig,
     },
     utils::ResponseBuilder,
 };
@@ -109,22 +109,40 @@ async fn list_members(
     let Some(repository) = DBRepository::get_by_id(repository_id, site.as_ref()).await? else {
         return Ok(RepositoryNotFound::Uuid(repository_id).into_response());
     };
-    if !repository.repository_type.eq_ignore_ascii_case("npm") {
-        return Ok(ResponseBuilder::bad_request().body("Repository is not NPM"));
-    }
-
-    let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
-        repository_id,
-        NPMRegistryConfigType::get_type_static(),
-        site.as_ref(),
-    )
-    .await?
-    .map(|cfg| cfg.value.0)
-    .unwrap_or_default();
-
-    let virtual_config = match config {
-        NPMRegistryConfig::Virtual(cfg) => cfg,
-        _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+    let virtual_config: VirtualRepositoryConfig = match repository
+        .repository_type
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "npm" => {
+            let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
+                repository_id,
+                NPMRegistryConfigType::get_type_static(),
+                site.as_ref(),
+            )
+            .await?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
+                NPMRegistryConfig::Virtual(cfg) => cfg,
+                _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+            }
+        }
+        "python" => {
+            let config = DBRepositoryConfig::<PythonRepositoryConfig>::get_config(
+                repository_id,
+                PythonRepositoryConfigType::get_type_static(),
+                site.as_ref(),
+            )
+            .await?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
+                PythonRepositoryConfig::Virtual(cfg) => cfg,
+                _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+            }
+        }
+        _ => return Ok(ResponseBuilder::bad_request().body("Repository is not NPM or Python")),
     };
 
     let members = DBVirtualRepositoryMember::list_for_virtual(repository_id, site.as_ref()).await?;
@@ -162,20 +180,37 @@ async fn update_members(
     let Some(repository) = DBRepository::get_by_id(repository_id, site.as_ref()).await? else {
         return Ok(RepositoryNotFound::Uuid(repository_id).into_response());
     };
-    if !repository.repository_type.eq_ignore_ascii_case("npm") {
-        return Ok(ResponseBuilder::bad_request().body("Repository is not NPM"));
-    }
-    let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
-        repository_id,
-        NPMRegistryConfigType::get_type_static(),
-        site.as_ref(),
-    )
-    .await?
-    .map(|cfg| cfg.value.0)
-    .unwrap_or_default();
-    let mut config = match config {
-        NPMRegistryConfig::Virtual(cfg) => cfg,
-        _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+    let repo_type = repository.repository_type.to_ascii_lowercase();
+    let mut config: VirtualRepositoryConfig = match repo_type.as_str() {
+        "npm" => {
+            let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
+                repository_id,
+                NPMRegistryConfigType::get_type_static(),
+                site.as_ref(),
+            )
+            .await?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
+                NPMRegistryConfig::Virtual(cfg) => cfg,
+                _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+            }
+        }
+        "python" => {
+            let config = DBRepositoryConfig::<PythonRepositoryConfig>::get_config(
+                repository_id,
+                PythonRepositoryConfigType::get_type_static(),
+                site.as_ref(),
+            )
+            .await?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
+                PythonRepositoryConfig::Virtual(cfg) => cfg,
+                _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+            }
+        }
+        _ => return Ok(ResponseBuilder::bad_request().body("Repository is not NPM or Python")),
     };
 
     if payload.members.is_empty() {
@@ -200,13 +235,12 @@ async fn update_members(
 
     config.member_repositories = payload.members;
 
-    if !publish_target_is_member(&config) {
-        return Ok(
-            ResponseBuilder::bad_request().body("publish_to must reference a member repository")
-        );
+    if let Err(message) = validate_publish_target(repo_type.as_str(), &config, site.as_ref()).await
+    {
+        return Ok(ResponseBuilder::bad_request().body(message));
     }
 
-    persist_virtual_config(repository_id, &config, site.as_ref()).await?;
+    persist_virtual_config(repository_id, repo_type.as_str(), &config, site.as_ref()).await?;
     replace_members(repository_id, &config, site.as_ref()).await?;
     reload_runtime_virtual(&site, repository_id).await;
 
@@ -236,22 +270,37 @@ async fn update_resolution_order(
     let Some(repository) = DBRepository::get_by_id(repository_id, site.as_ref()).await? else {
         return Ok(RepositoryNotFound::Uuid(repository_id).into_response());
     };
-    if !repository.repository_type.eq_ignore_ascii_case("npm") {
-        return Ok(ResponseBuilder::bad_request().body("Repository is not NPM"));
-    }
-
-    let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
-        repository_id,
-        NPMRegistryConfigType::get_type_static(),
-        site.as_ref(),
-    )
-    .await?
-    .map(|cfg| cfg.value.0)
-    .unwrap_or_default();
-
-    let mut config = match config {
-        NPMRegistryConfig::Virtual(cfg) => cfg,
-        _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+    let repo_type = repository.repository_type.to_ascii_lowercase();
+    let mut config: VirtualRepositoryConfig = match repo_type.as_str() {
+        "npm" => {
+            let config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
+                repository_id,
+                NPMRegistryConfigType::get_type_static(),
+                site.as_ref(),
+            )
+            .await?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
+                NPMRegistryConfig::Virtual(cfg) => cfg,
+                _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+            }
+        }
+        "python" => {
+            let config = DBRepositoryConfig::<PythonRepositoryConfig>::get_config(
+                repository_id,
+                PythonRepositoryConfigType::get_type_static(),
+                site.as_ref(),
+            )
+            .await?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+            match config {
+                PythonRepositoryConfig::Virtual(cfg) => cfg,
+                _ => return Ok(ResponseBuilder::bad_request().body("Repository is not virtual")),
+            }
+        }
+        _ => return Ok(ResponseBuilder::bad_request().body("Repository is not NPM or Python")),
     };
 
     config.resolution_order = payload.resolution_order;
@@ -260,13 +309,12 @@ async fn update_resolution_order(
     }
     config.publish_to = payload.publish_to.or(config.publish_to);
 
-    if !publish_target_is_member(&config) {
-        return Ok(
-            ResponseBuilder::bad_request().body("publish_to must reference a member repository")
-        );
+    if let Err(message) = validate_publish_target(repo_type.as_str(), &config, site.as_ref()).await
+    {
+        return Ok(ResponseBuilder::bad_request().body(message));
     }
 
-    persist_virtual_config(repository_id, &config, site.as_ref()).await?;
+    persist_virtual_config(repository_id, repo_type.as_str(), &config, site.as_ref()).await?;
     reload_runtime_virtual(&site, repository_id).await;
 
     list_members(State(site), auth, Path(repository_id)).await
@@ -295,24 +343,47 @@ async fn hydrate_members(
 
 async fn persist_virtual_config(
     repository_id: Uuid,
-    config: &NpmVirtualConfig,
+    repository_type: &str,
+    config: &VirtualRepositoryConfig,
     database: &sqlx::PgPool,
 ) -> Result<(), InternalError> {
-    let value = serde_json::to_value(NPMRegistryConfig::Virtual(config.clone()))
-        .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
-    GenericDBRepositoryConfig::add_or_update(
-        repository_id,
-        NPMRegistryConfigType::get_type_static().to_string(),
-        value,
-        database,
-    )
-    .await?;
+    match repository_type {
+        "npm" => {
+            let value = serde_json::to_value(NPMRegistryConfig::Virtual(config.clone()))
+                .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+            GenericDBRepositoryConfig::add_or_update(
+                repository_id,
+                NPMRegistryConfigType::get_type_static().to_string(),
+                value,
+                database,
+            )
+            .await?;
+        }
+        "python" => {
+            let value = serde_json::to_value(PythonRepositoryConfig::Virtual(config.clone()))
+                .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
+            GenericDBRepositoryConfig::add_or_update(
+                repository_id,
+                PythonRepositoryConfigType::get_type_static().to_string(),
+                value,
+                database,
+            )
+            .await?;
+        }
+        _ => {
+            let err = std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Repository type {repository_type} does not support virtual config"),
+            );
+            return Err(InternalError::from(OtherInternalError::new(err)));
+        }
+    }
     Ok(())
 }
 
 async fn replace_members(
     repository_id: Uuid,
-    config: &NpmVirtualConfig,
+    config: &VirtualRepositoryConfig,
     database: &sqlx::PgPool,
 ) -> Result<(), InternalError> {
     let members: Vec<_> = config
@@ -335,18 +406,78 @@ fn has_duplicate_members(members: &[VirtualRepositoryMemberConfig]) -> bool {
         .any(|member| !seen.insert(member.repository_id))
 }
 
-fn publish_target_is_member(config: &NpmVirtualConfig) -> bool {
-    match config.publish_to {
-        Some(target) => config
-            .member_repositories
-            .iter()
-            .any(|member| member.repository_id == target),
-        None => true,
+async fn validate_publish_target(
+    repository_type: &str,
+    config: &VirtualRepositoryConfig,
+    database: &sqlx::PgPool,
+) -> Result<(), String> {
+    let Some(target) = config.publish_to else {
+        return Ok(());
+    };
+
+    let Some(member) = config
+        .member_repositories
+        .iter()
+        .find(|member| member.repository_id == target)
+    else {
+        return Err("publish_to must reference a member repository".to_string());
+    };
+
+    if !member.enabled {
+        return Err("publish_to must reference an enabled member repository".to_string());
     }
+
+    match repository_type {
+        "npm" => {
+            let target_config = DBRepositoryConfig::<NPMRegistryConfig>::get_config(
+                target,
+                NPMRegistryConfigType::get_type_static(),
+                database,
+            )
+            .await
+            .map_err(|err| err.to_string())?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+
+            if !matches!(target_config, NPMRegistryConfig::Hosted) {
+                return Err(
+                    "publish_to must reference an enabled hosted member repository".to_string(),
+                );
+            }
+        }
+        "python" => {
+            let target_config = DBRepositoryConfig::<PythonRepositoryConfig>::get_config(
+                target,
+                PythonRepositoryConfigType::get_type_static(),
+                database,
+            )
+            .await
+            .map_err(|err| err.to_string())?
+            .map(|cfg| cfg.value.0)
+            .unwrap_or_default();
+
+            if !matches!(target_config, PythonRepositoryConfig::Hosted) {
+                return Err(
+                    "publish_to must reference an enabled hosted member repository".to_string(),
+                );
+            }
+        }
+        _ => return Err("Repository type does not support virtual publishing".to_string()),
+    }
+
+    Ok(())
 }
 
 async fn reload_runtime_virtual(site: &NitroRepo, repository_id: Uuid) {
     if let Some(DynRepository::NPM(NPMRegistry::Virtual(virtual_repo))) =
+        site.get_repository(repository_id)
+    {
+        if let Err(err) = virtual_repo.reload().await {
+            tracing::warn!(repository = %repository_id, error = %err, "Failed to reload virtual repository after config update");
+        }
+    }
+
+    if let Some(DynRepository::Python(PythonRepository::Virtual(virtual_repo))) =
         site.get_repository(repository_id)
     {
         if let Err(err) = virtual_repo.reload().await {

@@ -23,6 +23,12 @@ client with read access can fetch the artifacts directly.
 - If the repository is private, readers still need permission—Nitro Repo only reaches out to the
   upstream after the local permission check succeeds.
 
+## Virtual Mode
+
+Virtual Python repositories let you combine multiple hosted/proxy Python repositories behind a single `/simple/` endpoint.
+
+See: `repositoryTypes/python/virtual/`.
+
 ## Metadata
 
 Package metadata is stored in `project_versions.extra` as a `PythonPackageMetadata` object, making
@@ -57,4 +63,3 @@ uv pip install --index-url https://<host>/repositories/<storage>/<repo>/simple <
 4. Proxy verification – repeat the install (step 3) and observe that the second run is served from Nitro Repo without contacting the upstream.
 
 For hosted NPM repos, the proxy/hosted flows follow the same pattern via the updated Vue config screen.
-
