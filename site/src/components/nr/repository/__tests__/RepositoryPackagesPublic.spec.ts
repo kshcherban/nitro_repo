@@ -291,7 +291,7 @@ describe("RepositoryPackagesPublic.vue", () => {
     expect(nameHeader.text()).toContain("Version");
   });
 
-  it("ignores indexing warning headers", async () => {
+  it("renders indexing warning headers", async () => {
     (http.get as vi.Mock).mockResolvedValue(
       createPackages([], 0, { "x-nitro-warning": "Repository indexing in progress" }),
     );
@@ -308,9 +308,8 @@ describe("RepositoryPackagesPublic.vue", () => {
     await flushPromises();
 
     const warning = wrapper.find('[data-testid="public-packages-indexing-warning"]');
-    expect(warning.exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Repository indexing in progress");
-    expect(wrapper.text()).toContain("No cached packages yet. Trigger a download to populate this list.");
+    expect(warning.exists()).toBe(true);
+    expect(warning.text()).toContain("Repository indexing in progress");
   });
 
   it("persists column visibility preferences per repository", async () => {

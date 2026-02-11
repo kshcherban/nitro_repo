@@ -1,22 +1,95 @@
-use std::collections::VecDeque;
-
 use anyhow::{anyhow, bail};
-use nr_core::storage::StoragePath;
-use nr_storage::{DynStorage, FileType, Storage, StorageFile};
+use nr_core::database::entities::{
+    package_file::DBPackageFile,
+    project::versions::DBProjectVersion,
+};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
     app::NitroRepo,
     repository::{
-        DynRepository, Repository,
-        python::{PythonRepository, hosted::PythonHosted},
+        DynRepository,
+        Repository,
+        cargo::CargoRegistry,
+        deb::DebRepository,
+        docker::DockerRegistry,
+        go::GoRepository,
+        helm::HelmRepository,
+        maven::MavenRepository,
+        npm::NPMRegistry,
+        php::PhpRepository,
+        python::PythonRepository,
+        ruby::RubyRepository,
     },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReindexKind {
+    NpmHosted,
+    NpmProxy,
     PythonHosted,
+    PythonProxy,
+    MavenHosted,
+    MavenProxy,
+    PhpHosted,
+    PhpProxy,
+    GoHosted,
+    GoProxy,
+    DockerHosted,
+    DockerProxy,
+    CargoHosted,
+    HelmHosted,
+    DebHosted,
+    DebProxy,
+    RubyHosted,
+}
+
+impl ReindexKind {
+    fn matches_repository(self, repository: &DynRepository) -> bool {
+        matches!(
+            (self, repository),
+            (ReindexKind::NpmHosted, DynRepository::NPM(NPMRegistry::Hosted(_)))
+                | (ReindexKind::NpmProxy, DynRepository::NPM(NPMRegistry::Proxy(_)))
+                | (ReindexKind::PythonHosted, DynRepository::Python(PythonRepository::Hosted(_)))
+                | (ReindexKind::PythonProxy, DynRepository::Python(PythonRepository::Proxy(_)))
+                | (ReindexKind::MavenHosted, DynRepository::Maven(MavenRepository::Hosted(_)))
+                | (ReindexKind::MavenProxy, DynRepository::Maven(MavenRepository::Proxy(_)))
+                | (ReindexKind::PhpHosted, DynRepository::Php(PhpRepository::Hosted(_)))
+                | (ReindexKind::PhpProxy, DynRepository::Php(PhpRepository::Proxy(_)))
+                | (ReindexKind::GoHosted, DynRepository::Go(GoRepository::Hosted(_)))
+                | (ReindexKind::GoProxy, DynRepository::Go(GoRepository::Proxy(_)))
+                | (ReindexKind::DockerHosted, DynRepository::Docker(DockerRegistry::Hosted(_)))
+                | (ReindexKind::DockerProxy, DynRepository::Docker(DockerRegistry::Proxy(_)))
+                | (ReindexKind::CargoHosted, DynRepository::Cargo(CargoRegistry::Hosted(_)))
+                | (ReindexKind::HelmHosted, DynRepository::Helm(HelmRepository::Hosted(_)))
+                | (ReindexKind::DebHosted, DynRepository::Deb(DebRepository::Hosted(_)))
+                | (ReindexKind::DebProxy, DynRepository::Deb(DebRepository::Proxy(_)))
+                | (ReindexKind::RubyHosted, DynRepository::Ruby(RubyRepository::Hosted(_)))
+        )
+    }
+
+    fn as_cli_name(self) -> &'static str {
+        match self {
+            ReindexKind::NpmHosted => "npm-hosted",
+            ReindexKind::NpmProxy => "npm-proxy",
+            ReindexKind::PythonHosted => "python-hosted",
+            ReindexKind::PythonProxy => "python-proxy",
+            ReindexKind::MavenHosted => "maven-hosted",
+            ReindexKind::MavenProxy => "maven-proxy",
+            ReindexKind::PhpHosted => "php-hosted",
+            ReindexKind::PhpProxy => "php-proxy",
+            ReindexKind::GoHosted => "go-hosted",
+            ReindexKind::GoProxy => "go-proxy",
+            ReindexKind::DockerHosted => "docker-hosted",
+            ReindexKind::DockerProxy => "docker-proxy",
+            ReindexKind::CargoHosted => "cargo-hosted",
+            ReindexKind::HelmHosted => "helm-hosted",
+            ReindexKind::DebHosted => "deb-hosted",
+            ReindexKind::DebProxy => "deb-proxy",
+            ReindexKind::RubyHosted => "ruby-hosted",
+        }
+    }
 }
 
 pub async fn reindex_repository(
@@ -28,47 +101,58 @@ pub async fn reindex_repository(
         .get_repository(repository_id)
         .ok_or_else(|| anyhow!("Repository {repository_id} is not loaded"))?;
 
-    match (kind, repository) {
-        (ReindexKind::PythonHosted, DynRepository::Python(PythonRepository::Hosted(repo))) => {
-            reindex_python_repo(&repo).await
-        }
-        (ReindexKind::PythonHosted, other) => bail!(
-            "Repository {repository_id} is of type {} but python-hosted reindexing was requested",
-            other.full_type()
-        ),
+    if !kind.matches_repository(&repository) {
+        bail!(
+            "Repository {repository_id} is of type {} but {} reindexing was requested",
+            repository.full_type(),
+            kind.as_cli_name()
+        );
     }
+
+    reindex_package_file_catalog(&site, repository_id).await
 }
 
-async fn reindex_python_repo(repo: &PythonHosted) -> anyhow::Result<usize> {
-    let storage = repo.get_storage();
-    let repository_id = repo.id();
-    let paths = collect_repository_files(&storage, repository_id).await?;
+async fn reindex_package_file_catalog(site: &NitroRepo, repository_id: Uuid) -> anyhow::Result<usize> {
+    let rows = sqlx::query_as::<_, DBProjectVersion>(
+        r#"
+        SELECT *
+        FROM project_versions
+        WHERE repository_id = $1
+        ORDER BY updated_at DESC
+        "#,
+    )
+    .bind(repository_id)
+    .fetch_all(&site.database)
+    .await?;
 
     info!(
-        repo_id = %repository_id,
-        count = paths.len(),
-        "Discovered potential python artifacts for reindex"
+        repository = %repository_id,
+        rows = rows.len(),
+        "Reindexing package_files from project_versions"
     );
 
     let mut processed = 0usize;
-    for path in paths {
-        match crate::repository::python::utils::PythonPackagePathInfo::try_from(&path) {
-            Ok(info) => {
-                if let Err(err) = repo.upsert_metadata(None, &info).await {
-                    warn!(
-                        ?err,
-                        repository = %repository_id,
-                        package = %info.package,
-                        version = %info.version,
-                        "Failed to upsert python metadata during reindex"
-                    );
-                    continue;
-                }
+    for version in rows.iter() {
+        match DBPackageFile::upsert_from_project_version(&site.database, version).await {
+            Ok(Some(_)) => {
                 processed += 1;
             }
-            Err(_) => {
-                // Ignore non-package files (metadata, README, etc.)
-                continue;
+            Ok(None) => {
+                warn!(
+                    repository = %repository_id,
+                    project_id = %version.project_id,
+                    version_id = %version.id,
+                    "Skipping catalog row with missing project"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    ?err,
+                    repository = %repository_id,
+                    project_id = %version.project_id,
+                    version_id = %version.id,
+                    "Failed to upsert package_files row during reindex"
+                );
             }
         }
     }
@@ -76,119 +160,14 @@ async fn reindex_python_repo(repo: &PythonHosted) -> anyhow::Result<usize> {
     Ok(processed)
 }
 
-async fn collect_repository_files(
-    storage: &DynStorage,
-    repository_id: Uuid,
-) -> Result<Vec<StoragePath>, nr_storage::StorageError> {
-    let mut files = Vec::new();
-    let mut stack = VecDeque::new();
-    stack.push_back(StoragePath::default());
-
-    while let Some(current) = stack.pop_front() {
-        let Some(node) = storage.open_file(repository_id, &current).await? else {
-            continue;
-        };
-
-        match node {
-            StorageFile::Directory { files: entries, .. } => {
-                for entry in entries {
-                    let name = entry.name();
-                    if should_skip(name) {
-                        continue;
-                    }
-                    match entry.file_type() {
-                        FileType::File(_) => {
-                            let mut path = current.clone();
-                            path.push_mut(name);
-                            files.push(path);
-                        }
-                        FileType::Directory(_) => {
-                            let mut path = current.clone();
-                            path.push_mut(name);
-                            stack.push_back(path);
-                        }
-                    }
-                }
-            }
-            StorageFile::File { .. } => {
-                files.push(current);
-            }
-        }
-    }
-
-    Ok(files)
-}
-
-fn should_skip(name: &str) -> bool {
-    name.is_empty() || name.starts_with('.') || name.ends_with(".nr-meta")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{collect_repository_files, should_skip};
-    use chrono::Utc;
-    use nr_core::{ConfigTimeStamp, storage::StoragePath};
-    use nr_storage::{
-        DynStorage, FileContent, StaticStorageFactory, Storage,
-        local::{LocalConfig, LocalStorageFactory},
-    };
-    use tempfile::TempDir;
-    use uuid::Uuid;
-
-    async fn local_storage() -> (DynStorage, TempDir) {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let storage_config = nr_storage::StorageConfig {
-            storage_config: nr_storage::StorageConfigInner {
-                storage_name: "test-storage".into(),
-                storage_id: Uuid::new_v4(),
-                storage_type: "Local".into(),
-                created_at: ConfigTimeStamp::from(Utc::now()),
-            },
-            type_config: nr_storage::StorageTypeConfig::Local(LocalConfig {
-                path: tempdir.path().to_path_buf(),
-            }),
-        };
-        let storage = <LocalStorageFactory as StaticStorageFactory>::create_storage_from_config(
-            storage_config,
-        )
-        .await
-        .expect("storage");
-        (DynStorage::Local(storage), tempdir)
-    }
-
-    #[tokio::test]
-    async fn collect_repository_files_discovers_artifacts() {
-        let (storage, _tempdir) = local_storage().await;
-        let repo = Uuid::new_v4();
-        storage
-            .save_file(
-                repo,
-                FileContent::from(b"wheel".as_slice()),
-                &StoragePath::from("example_pkg/1.0.0/example_pkg-1.0.0.whl"),
-            )
-            .await
-            .expect("write wheel");
-        storage
-            .save_file(
-                repo,
-                FileContent::from(b"readme".as_slice()),
-                &StoragePath::from("example_pkg/README"),
-            )
-            .await
-            .expect("write readme");
-
-        let files = collect_repository_files(&storage, repo)
-            .await
-            .expect("collect");
-        let file_list: Vec<String> = files.into_iter().map(|p| p.to_string()).collect();
-        assert!(file_list.contains(&"example_pkg/1.0.0/example_pkg-1.0.0.whl".to_string()));
-        assert!(file_list.contains(&"example_pkg/README".to_string()));
-    }
+    use super::ReindexKind;
 
     #[test]
-    fn should_skip_filters_hidden_entries() {
-        assert!(should_skip(".DS_Store"));
-        assert!(should_skip("package.nr-meta"));
-        assert!(!should_skip("package.whl"));
+    fn cli_names_are_stable() {
+        assert_eq!(ReindexKind::PythonHosted.as_cli_name(), "python-hosted");
+        assert_eq!(ReindexKind::MavenProxy.as_cli_name(), "maven-proxy");
+        assert_eq!(ReindexKind::DockerHosted.as_cli_name(), "docker-hosted");
     }
 }

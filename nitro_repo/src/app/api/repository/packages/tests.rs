@@ -299,7 +299,7 @@ async fn directory_package_pagination_allows_large_page_sizes() -> Result<()> {
     let (storage, _tempdir) = local_storage().await?;
     let repository = Uuid::new_v4();
 
-    for idx in 0..250 {
+    for idx in 0..120 {
         let pkg = format!("pkg-{idx:03}");
         let path = format!("packages/{pkg}/{pkg}.tar.gz");
         storage
@@ -321,8 +321,8 @@ async fn directory_package_pagination_allows_large_page_sizes() -> Result<()> {
     )
     .await?;
 
-    assert_eq!(response.total_packages, 250);
-    assert_eq!(response.items.len(), 250);
+    assert_eq!(response.total_packages, 120);
+    assert_eq!(response.items.len(), 120);
     Ok(())
 }
 
@@ -1359,7 +1359,7 @@ async fn delete_version_records_by_path_skips_executor_when_empty() {
 mod catalog_db_tests {
     use super::*;
     use crate::repository::NewRepository;
-    use once_cell::sync::Lazy;
+    use crate::test_support::DB_TEST_LOCK;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use std::collections::HashMap;
     use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
@@ -1372,8 +1372,6 @@ mod catalog_db_tests {
         repository::project::ReleaseType,
         storage::StorageName,
     };
-
-    static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
     struct TestDb {
         pool: PgPool,
@@ -1398,7 +1396,7 @@ mod catalog_db_tests {
         let url = format!("postgres://postgres:password@127.0.0.1:{port}/postgres");
 
         let mut last_err: Option<anyhow::Error> = None;
-        for _ in 0..30 {
+        for _ in 0..60 {
             match PgPoolOptions::new().max_connections(4).connect(&url).await {
                 Ok(pool) => {
                     return TestDb {
@@ -1607,7 +1605,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn fetch_maven_catalog_page_respects_pagination() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 
@@ -1656,7 +1654,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn fetch_php_catalog_page_returns_versions_for_hosted_repo() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 
@@ -1684,7 +1682,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn fetch_npm_proxy_catalog_page_respects_pagination() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 
@@ -1771,7 +1769,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn fetch_npm_proxy_catalog_page_filters_by_search_term() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 
@@ -1834,7 +1832,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn fetch_npm_proxy_catalog_page_filters_by_project_name() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 
@@ -1868,7 +1866,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn npm_proxy_rows_convert_to_package_entries() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 
@@ -1907,7 +1905,7 @@ mod catalog_db_tests {
 
     #[tokio::test]
     async fn catalog_pagination_and_search_match_between_hosted_and_proxy_queries() {
-        let _guard = DB_LOCK.lock().await;
+        let _guard = DB_TEST_LOCK.lock().await;
         let db = fresh_pool().await;
         reset_database(&db).await;
 

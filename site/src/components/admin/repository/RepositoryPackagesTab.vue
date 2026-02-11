@@ -61,6 +61,20 @@
           </div>
         </v-alert>
       </v-card-text>
+      <v-card-text
+        v-if="!isLoading && indexingWarning"
+        class="pt-0 px-4">
+        <v-alert
+          data-testid="packages-indexing-warning"
+          type="info"
+          variant="tonal"
+          border="start"
+          class="packages__indexing-alert">
+          <div class="text-body-2">
+            {{ indexingWarning }}
+          </div>
+        </v-alert>
+      </v-card-text>
 
       <v-data-table-server
         v-if="!isLoading && !error && totalPackages > 0 && visiblePackages.length > 0"
@@ -185,6 +199,7 @@ const isDeleting = ref(false);
 const searchTerm = ref("");
 const pendingDeletionPaths = ref<string[]>([]);
 const pendingDeletionCount = ref(0);
+const indexingWarning = ref<string | null>(null);
 const alerts = useAlertsStore();
 const resizers = useResizableColumns('.v-data-table');
 
@@ -202,14 +217,15 @@ onMounted(() => {
 watch(
   () => props.repositoryId,
   () => {
-  packages.value = [];
-  error.value = null;
-  currentPage.value = 1;
-  selected.value = [];
-  searchTerm.value = "";
-  pendingDeletionPaths.value = [];
-  pendingDeletionCount.value = 0;
-  loadPackages();
+    packages.value = [];
+    error.value = null;
+    currentPage.value = 1;
+    selected.value = [];
+    searchTerm.value = "";
+    pendingDeletionPaths.value = [];
+    pendingDeletionCount.value = 0;
+    indexingWarning.value = null;
+    loadPackages();
   },
 );
 
@@ -387,6 +403,8 @@ async function loadPackages() {
     const params: Record<string, any> = {
       page: currentPage.value,
       per_page: perPage.value,
+      sort_by: "modified",
+      sort_dir: "desc",
     };
     const term = normalizedSearchTerm.value;
     if (term) {
@@ -406,6 +424,9 @@ async function loadPackages() {
     }));
     packages.value = items;
     totalPackages.value = data.total_packages ?? 0;
+    const warning = response.headers?.["x-nitro-warning"] ?? response.headers?.["X-Nitro-Warning"];
+    indexingWarning.value =
+      typeof warning === "string" && warning.trim().length > 0 ? warning.trim() : null;
     selected.value = [];
 
     if (pendingDeletionPaths.value.length > 0) {
@@ -420,6 +441,7 @@ async function loadPackages() {
   } catch (err) {
     console.error(err);
     error.value = err instanceof Error ? err.message : String(err);
+    indexingWarning.value = null;
   } finally {
     isLoading.value = false;
     await nextTick();

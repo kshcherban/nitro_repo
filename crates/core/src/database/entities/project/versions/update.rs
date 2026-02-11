@@ -4,6 +4,7 @@ use uuid::Uuid;
 use super::{DBProjectVersion, DBProjectVersionColumn};
 use crate::{
     database::prelude::*,
+    database::entities::package_file::DBPackageFile,
     repository::project::{ReleaseType, VersionData},
 };
 
@@ -50,6 +51,8 @@ impl NewVersion {
             .fetch_one(db)
             .await?;
 
+        let _ = DBPackageFile::upsert_from_project_version(db, &db_version).await?;
+
         Ok(db_version)
     }
 }
@@ -66,6 +69,14 @@ impl UpdateProjectVersion {
         let mut update = UpdateQueryBuilder::new(DBProjectVersion::table_name());
         self.apply_update_fields(version_id, &mut update);
         update.query().execute(database).await?;
+
+        let version = sqlx::query_as::<_, DBProjectVersion>(
+            r#"SELECT * FROM project_versions WHERE id = $1"#,
+        )
+        .bind(version_id)
+        .fetch_one(database)
+        .await?;
+        let _ = DBPackageFile::upsert_from_project_version(database, &version).await?;
 
         Ok(())
     }

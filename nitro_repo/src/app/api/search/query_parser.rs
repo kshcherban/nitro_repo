@@ -22,6 +22,7 @@ pub enum Field {
     Repository,
     Type,
     Storage,
+    Digest,
 }
 
 impl fmt::Display for Field {
@@ -32,6 +33,7 @@ impl fmt::Display for Field {
             Field::Repository => "repository",
             Field::Type => "type",
             Field::Storage => "storage",
+            Field::Digest => "digest",
         };
         f.write_str(name)
     }
@@ -53,6 +55,7 @@ pub enum ParseError {
 pub struct SearchQuery {
     pub terms: Vec<String>,
     pub package_filter: Option<(Operator, String)>,
+    pub digest_filter: Option<(Operator, String)>,
     pub version_constraint: Option<VersionConstraint>,
     pub repository_filter: Option<String>,
     pub type_filter: Option<String>,
@@ -64,6 +67,7 @@ impl Default for SearchQuery {
         Self {
             terms: Vec::new(),
             package_filter: None,
+            digest_filter: None,
             version_constraint: None,
             repository_filter: None,
             type_filter: None,
@@ -76,6 +80,7 @@ impl SearchQuery {
     #[must_use]
     pub fn has_filters(&self) -> bool {
         self.package_filter.is_some()
+            || self.digest_filter.is_some()
             || self.version_constraint.is_some()
             || self.repository_filter.is_some()
             || self.type_filter.is_some()
@@ -254,6 +259,20 @@ pub fn parse_search_query(input: &str) -> Result<SearchQuery, ParseError> {
                             Some(VersionConstraint::Exact(value.to_string()));
                     }
                 }
+                Field::Digest => {
+                    let inferred_exact = value.contains(':');
+                    let op = operator.unwrap_or_else(|| {
+                        if inferred_exact {
+                            Operator::Equals
+                        } else {
+                            Operator::Contains
+                        }
+                    });
+                    if !matches!(op, Operator::Equals | Operator::Contains) {
+                        return Err(ParseError::InvalidOperator(operator_to_string(op), field));
+                    }
+                    query.digest_filter = Some((op, value.to_lowercase()));
+                }
             }
         } else {
             query.terms.push(token.to_lowercase());
@@ -300,6 +319,7 @@ fn parse_field(value: &str) -> Result<Field, ParseError> {
         "repository" | "repo" => Ok(Field::Repository),
         "type" => Ok(Field::Type),
         "storage" => Ok(Field::Storage),
+        "digest" | "hash" => Ok(Field::Digest),
         other => Err(ParseError::UnknownField(other.to_string())),
     }
 }

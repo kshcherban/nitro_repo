@@ -14,7 +14,6 @@ use nr_core::{
     repository::project::{ReleaseType, VersionData},
     storage::StorageName,
 };
-use once_cell::sync::Lazy;
 use serde_json::json;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
@@ -24,9 +23,8 @@ use crate::{
     app::api::search::{Operator, SearchQuery},
     repository::NewRepository,
     search::PackageSearchRepository,
+    test_support::DB_TEST_LOCK,
 };
-
-static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 struct TestDb {
     pool: PgPool,
@@ -50,7 +48,7 @@ async fn start_postgres() -> TestDb {
     let port = container.get_host_port_ipv4(5432);
     let url = format!("postgres://postgres:password@127.0.0.1:{port}/postgres");
     let mut last_err: Option<anyhow::Error> = None;
-    for _ in 0..30 {
+    for _ in 0..60 {
         match PgPoolOptions::new().max_connections(4).connect(&url).await {
             Ok(pool) => {
                 return TestDb {
@@ -85,7 +83,7 @@ async fn fresh_pool() -> TestDb {
 
 async fn reset_database(db: &TestDb) {
     sqlx::query(
-        "TRUNCATE TABLE project_versions, projects, repositories, storages RESTART IDENTITY CASCADE",
+        "TRUNCATE TABLE package_files, project_versions, projects, repositories, storages RESTART IDENTITY CASCADE",
     )
     .execute(db.pool())
     .await
@@ -156,9 +154,50 @@ async fn insert_package(pool: &PgPool, repository_id: Uuid, package: &str, versi
     .expect("insert version");
 }
 
+async fn insert_package_with_digest(
+    pool: &PgPool,
+    repository_id: Uuid,
+    package: &str,
+    version: &str,
+    digest: &str,
+) {
+    let project = NewProject {
+        scope: None,
+        project_key: package.to_string(),
+        name: package.to_string(),
+        description: None,
+        repository: repository_id,
+        storage_path: format!("packages/{package}"),
+    }
+    .insert(pool)
+    .await
+    .expect("insert project");
+
+    let mut extra = VersionData::default();
+    extra.extra = Some(json!({
+        "size": 1024,
+        "filename": format!("packages/{package}/{package}-{version}.tgz"),
+        "sha256": digest,
+    }));
+
+    NewVersion {
+        project_id: project.id,
+        repository_id,
+        version: version.to_string(),
+        release_type: ReleaseType::Stable,
+        version_path: format!("packages/{package}/{version}/{package}-{version}.tgz"),
+        publisher: None,
+        version_page: None,
+        extra,
+    }
+    .insert(pool)
+    .await
+    .expect("insert version");
+}
+
 #[tokio::test]
 async fn fetch_repository_rows_filters_by_package() {
-    let _guard = DB_LOCK.lock().await;
+    let _guard = DB_TEST_LOCK.lock().await;
     let db = fresh_pool().await;
     reset_database(&db).await;
 
@@ -183,7 +222,7 @@ async fn fetch_repository_rows_filters_by_package() {
 
 #[tokio::test]
 async fn fetch_repository_rows_filters_by_terms() {
-    let _guard = DB_LOCK.lock().await;
+    let _guard = DB_TEST_LOCK.lock().await;
     let db = fresh_pool().await;
     reset_database(&db).await;
 
@@ -207,7 +246,7 @@ async fn fetch_repository_rows_filters_by_terms() {
 
 #[tokio::test]
 async fn repository_has_index_rows_detects_catalog_state() {
-    let _guard = DB_LOCK.lock().await;
+    let _guard = DB_TEST_LOCK.lock().await;
     let db = fresh_pool().await;
     reset_database(&db).await;
 
@@ -230,4 +269,43 @@ async fn repository_has_index_rows_detects_catalog_state() {
             .await
             .expect("query flag")
     );
+}
+
+#[tokio::test]
+async fn fetch_repository_rows_filters_by_digest() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let db = fresh_pool().await;
+    reset_database(&db).await;
+
+    let storage_id = insert_storage(db.pool()).await;
+    let repository_id = insert_repository(db.pool(), storage_id).await;
+    insert_package_with_digest(
+        db.pool(),
+        repository_id,
+        "alpha",
+        "1.0.0",
+        "sha256:deadbeef",
+    )
+    .await;
+    insert_package_with_digest(
+        db.pool(),
+        repository_id,
+        "beta",
+        "1.0.0",
+        "sha256:cafebabe",
+    )
+    .await;
+
+    let repository = PackageSearchRepository::new(db.pool());
+    let query = SearchQuery {
+        digest_filter: Some((Operator::Equals, "sha256:deadbeef".into())),
+        ..SearchQuery::default()
+    };
+    let rows = repository
+        .fetch_repository_rows(repository_id, &query, 10)
+        .await
+        .expect("query rows");
+
+    let names: Vec<_> = rows.iter().map(|row| row.package_name.as_str()).collect();
+    assert_eq!(names, vec!["alpha"]);
 }

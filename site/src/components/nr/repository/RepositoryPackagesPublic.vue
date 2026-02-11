@@ -29,6 +29,12 @@
           Showing {{ visiblePackages.length }} file(s)
         </span>
       </div>
+      <div
+        v-if="!isLoading && indexingWarning"
+        data-testid="public-packages-indexing-warning"
+        class="packages__indexing-warning">
+        {{ indexingWarning }}
+      </div>
     </header>
 
     <div
@@ -258,6 +264,7 @@ const isConfigOpen = ref(false);
 const hiddenColumns = ref<Set<ColumnKey>>(new Set<ColumnKey>());
 const lastRequestToken = ref<symbol | null>(null);
 const packageSearchTerm = ref("");
+const indexingWarning = ref<string | null>(null);
 
 const perPageModel = computed({
   get: () => perPage.value,
@@ -422,6 +429,21 @@ const emptyRepositoryMessage = computed(() => {
   return "No cached packages yet. Trigger a download to populate this list.";
 });
 
+function sortByParam(): string {
+  if (!sortState.value) {
+    return "modified";
+  }
+  const map: Record<ColumnKey, string> = {
+    package: "package",
+    name: "name",
+    digest: "digest",
+    size: "size",
+    path: "path",
+    timestamp: "modified",
+  };
+  return map[sortState.value.key];
+}
+
 async function loadPackages() {
   if (!props.repositoryId) {
     return;
@@ -436,6 +458,8 @@ async function loadPackages() {
       params: {
         page: currentPage.value,
         per_page: perPage.value,
+        sort_by: sortByParam(),
+        sort_dir: sortState.value?.direction ?? "desc",
         ...(search ? { q: search } : {}),
       },
     });
@@ -453,12 +477,16 @@ async function loadPackages() {
     }));
     packages.value = items;
     totalPackages.value = Number(data.total_packages ?? 0);
+    const warning = response.headers?.["x-nitro-warning"] ?? response.headers?.["X-Nitro-Warning"];
+    indexingWarning.value =
+      typeof warning === "string" && warning.trim().length > 0 ? warning.trim() : null;
   } catch (err) {
     if (lastRequestToken.value !== requestToken) {
       return;
     }
     console.error(err);
     error.value = err instanceof Error ? err.message : String(err);
+    indexingWarning.value = null;
   } finally {
     if (lastRequestToken.value === requestToken) {
       isLoading.value = false;
@@ -622,6 +650,7 @@ watch(
     isConfigOpen.value = false;
     hiddenColumns.value = new Set<ColumnKey>();
     packageSearchTerm.value = "";
+    indexingWarning.value = null;
     loadPreferences();
   },
   { immediate: true },
@@ -637,6 +666,16 @@ watch(
     loadPackages();
   },
   { immediate: true },
+);
+
+watch(
+  () => sortState.value,
+  () => {
+    if (!props.repositoryId) {
+      return;
+    }
+    loadPackages();
+  },
 );
 
 // Enable resizable columns

@@ -1,10 +1,13 @@
+use std::sync::Arc;
+#[cfg(test)]
 use std::{
-    cmp::{Ordering, Reverse, min},
-    collections::{BTreeMap, BinaryHeap},
-    sync::Arc,
+    cmp::{Ordering, Reverse},
+    collections::BinaryHeap,
 };
 
-use futures::{StreamExt, future::BoxFuture, stream};
+use futures::future::BoxFuture;
+#[cfg(test)]
+use futures::{StreamExt, stream};
 
 use axum::{
     Json,
@@ -14,13 +17,18 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset};
 use http::header::HeaderValue;
-use nr_storage::{
-    DynStorage, FileType, Storage, StorageError, StorageFile, StorageFileMeta, s3::S3Storage,
-};
+use nr_storage::Storage;
+#[cfg(test)]
+use nr_storage::{DynStorage, FileType, StorageFile, StorageFileMeta};
+#[cfg(test)]
+use nr_storage::{StorageError, s3::S3Storage};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row, types::Json as SqlxJson};
+use sqlx::{PgPool, Row};
+#[cfg(test)]
+use sqlx::types::Json as SqlxJson;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, instrument, warn};
 use utoipa::{IntoParams, ToSchema};
@@ -37,29 +45,40 @@ use crate::{
         DynRepository, Repository,
         docker::{
             DockerRegistry,
-            metadata::{collect_manifest_entries, docker_package_key, split_manifest_cache_path},
+            metadata::{docker_package_key, split_manifest_cache_path},
             types::{Manifest as DockerManifest, MediaType},
         },
         go::GoRepository,
         helm::hosted::HelmHosted,
-        helm::{DeletePackageEntry, HelmChartVersionExtra, HelmRepository, HelmRepositoryError},
+        helm::{DeletePackageEntry, HelmRepository, HelmRepositoryError},
         npm::NPMRegistry,
         proxy_indexing::{ProxyIndexing, ProxyIndexingError},
         python::PythonRepository,
         utils::can_read_repository_with_auth,
     },
-    search::PackageSearchRepository,
     utils::ResponseBuilder,
 };
+#[cfg(test)]
+use crate::repository::docker::metadata::collect_manifest_entries;
+#[cfg(test)]
+use crate::repository::helm::HelmChartVersionExtra;
 use ahash::{HashSet, HashSetExt};
 use nr_core::user::permissions::{HasPermissions, RepositoryActions};
 use nr_core::{
-    repository::project::{
-        CargoPackageMetadata, DebPackageMetadata, ProxyArtifactKey, VersionData,
+    database::entities::package_file::{
+        DBPackageFile, PackageFileListParams, PackageFileSortBy, SortDirection,
     },
+    repository::project::ProxyArtifactKey,
     storage::StoragePath,
-    utils::base64_utils,
 };
+#[cfg(test)]
+use nr_core::repository::project::{CargoPackageMetadata, DebPackageMetadata, VersionData};
+#[cfg(test)]
+use nr_core::utils::base64_utils;
+#[cfg(test)]
+use std::cmp::min;
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -73,6 +92,10 @@ pub struct PackageListQuery {
     /// Optional search term applied server-side across all repository packages.
     #[serde(default)]
     pub q: Option<String>,
+    #[serde(default)]
+    pub sort_by: PackageSortBy,
+    #[serde(default)]
+    pub sort_dir: PackageSortDirection,
 }
 
 const fn default_page() -> usize {
@@ -84,6 +107,58 @@ const fn default_per_page() -> usize {
 
 const MAX_PER_PAGE: usize = 1000;
 
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageSortBy {
+    Modified,
+    Package,
+    Name,
+    Size,
+    Path,
+    Digest,
+}
+
+impl Default for PackageSortBy {
+    fn default() -> Self {
+        Self::Modified
+    }
+}
+
+impl From<PackageSortBy> for PackageFileSortBy {
+    fn from(value: PackageSortBy) -> Self {
+        match value {
+            PackageSortBy::Modified => PackageFileSortBy::Modified,
+            PackageSortBy::Package => PackageFileSortBy::Package,
+            PackageSortBy::Name => PackageFileSortBy::Name,
+            PackageSortBy::Size => PackageFileSortBy::Size,
+            PackageSortBy::Path => PackageFileSortBy::Path,
+            PackageSortBy::Digest => PackageFileSortBy::Digest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageSortDirection {
+    Asc,
+    Desc,
+}
+
+impl Default for PackageSortDirection {
+    fn default() -> Self {
+        Self::Desc
+    }
+}
+
+impl From<PackageSortDirection> for SortDirection {
+    fn from(value: PackageSortDirection) -> Self {
+        match value {
+            PackageSortDirection::Asc => SortDirection::Asc,
+            PackageSortDirection::Desc => SortDirection::Desc,
+        }
+    }
+}
+
 fn normalize_search_term(term: &Option<String>) -> Option<String> {
     term.as_ref()
         .map(|value| value.trim().to_lowercase())
@@ -92,6 +167,7 @@ fn normalize_search_term(term: &Option<String>) -> Option<String> {
 
 const GO_FILE_SUFFIXES: [&str; 3] = [".zip", ".mod", ".info"];
 
+#[cfg(test)]
 fn normalize_sha256_digest(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -103,6 +179,7 @@ fn normalize_sha256_digest(value: &str) -> Option<String> {
     Some(format!("sha256:{trimmed}"))
 }
 
+#[cfg(test)]
 fn sha256_digest_from_base64(value: &str) -> Option<String> {
     let bytes = base64_utils::decode(value).ok()?;
     let mut hex = String::with_capacity(bytes.len() * 2);
@@ -113,6 +190,7 @@ fn sha256_digest_from_base64(value: &str) -> Option<String> {
     Some(format!("sha256:{hex}"))
 }
 
+#[cfg(test)]
 fn blob_digest_from_file_type(file: &nr_storage::FileFileType) -> Option<String> {
     file.file_hash
         .sha2_256
@@ -140,6 +218,7 @@ pub struct PackageListResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 struct PackageObject {
     /// Repository-relative object key (no bucket or repository prefix)
     key: String,
@@ -151,6 +230,7 @@ struct PackageObject {
 /// admin packages table. Objects must already be scoped to the repository and returned in
 /// lexicographic key order (S3 default). Hidden files (".nr-meta") should be filtered out
 /// by callers before invoking this helper.
+#[cfg(test)]
 fn build_package_page_from_objects(
     objects: impl IntoIterator<Item = PackageObject>,
     base: Option<&str>,
@@ -268,6 +348,7 @@ fn build_package_page_from_objects(
     }
 }
 
+#[cfg(test)]
 fn matches_search(entry: &PackageFileEntry, term: &str) -> bool {
     let needle = term.to_lowercase();
     let haystack = format!(
@@ -284,6 +365,7 @@ fn matches_search(entry: &PackageFileEntry, term: &str) -> bool {
     haystack.contains(&needle)
 }
 
+#[cfg(test)]
 async fn collect_directory_package_page(
     storage: &DynStorage,
     repository_id: Uuid,
@@ -336,6 +418,7 @@ async fn collect_directory_package_page(
     })
 }
 
+#[cfg(test)]
 async fn collect_go_package_page(
     storage: &DynStorage,
     repository_id: Uuid,
@@ -628,184 +711,37 @@ pub async fn list_cached_packages(
     {
         return Ok(MissingPermission::ReadRepository(repository.id()).into_response());
     }
-    let searcher = PackageSearchRepository::new(&site.database);
-    let has_index_rows = searcher.repository_has_index_rows(repository.id()).await?;
+    let current_page = query.page.max(1);
+    let per_page = query.per_page.clamp(1, MAX_PER_PAGE);
+    let params = PackageFileListParams {
+        repository_id: repository.id(),
+        page: current_page,
+        per_page,
+        search: search_term.clone(),
+        sort_by: query.sort_by.into(),
+        sort_dir: query.sort_dir.into(),
+    };
+    let (total_packages, rows) = DBPackageFile::list_repository_page(&site.database, &params).await?;
+    let items = rows
+        .into_iter()
+        .map(|row| PackageFileEntry {
+            package: row.package,
+            name: row.name,
+            cache_path: row.path,
+            blob_digest: row.content_digest.or(row.upstream_digest),
+            size: row.size_bytes.max(0) as u64,
+            modified: row.modified_at,
+        })
+        .collect();
+    let response_body = PackageListResponse {
+        page: current_page,
+        per_page,
+        total_packages,
+        items,
+    };
+    let mut response = ResponseBuilder::ok().json(&response_body);
+    let has_index_rows = DBPackageFile::repository_has_rows(&site.database, repository.id()).await?;
     let repository_name = repository.name();
-    let mut response = match package_strategy(&repository) {
-        PackageStrategy::PackagesDirectory { base } => {
-            let storage = repository.get_storage();
-            if let DynStorage::S3(s3_storage) = storage.clone() {
-                list_directory_packages_s3(
-                    repository.id(),
-                    s3_storage,
-                    query.page,
-                    query.per_page,
-                    base,
-                    search_term.as_deref(),
-                )
-                .await
-            } else {
-                list_directory_packages(
-                    repository,
-                    query.page,
-                    query.per_page,
-                    base,
-                    search_term.as_deref(),
-                )
-                .await
-            }
-        }
-        PackageStrategy::NpmHosted => {
-            list_npm_hosted_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::NpmVirtual => {
-            list_npm_virtual_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::NpmProxy => {
-            list_npm_proxy_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::MavenHosted => {
-            list_maven_hosted_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::PhpHosted => {
-            list_php_hosted_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::PhpProxy => {
-            list_php_proxy_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::MavenProxy => {
-            list_maven_proxy_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::PythonHosted => {
-            list_python_hosted_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::PythonProxy => {
-            list_python_proxy_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::DockerHosted | PackageStrategy::DockerProxy => {
-            list_docker_catalog_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::Helm => {
-            list_helm_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::GoHosted => {
-            list_go_catalog_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::GoProxy => {
-            list_go_proxy_catalog_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::Cargo => {
-            list_cargo_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-        PackageStrategy::DebHosted => {
-            list_deb_packages(
-                site,
-                repository,
-                query.page,
-                query.per_page,
-                search_term.as_deref(),
-            )
-            .await
-        }
-    }?;
 
     if !has_index_rows {
         if let Ok(value) = HeaderValue::from_str(&format!(
@@ -819,12 +755,16 @@ pub async fn list_cached_packages(
     Ok(response)
 }
 
+#[cfg(test)]
 fn should_ignore(name: &str) -> bool {
     name.starts_with('.') || name.ends_with(".nr-meta")
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 const MAX_STORAGE_CONCURRENCY: usize = 8;
 
+#[cfg(test)]
 async fn map_ordered_concurrent<T, R, E, Fut, F>(
     items: Vec<T>,
     concurrency: usize,
@@ -852,6 +792,8 @@ where
     Ok(ordered.into_iter().map(|(_, value)| value).collect())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_directory_packages(
     repository: DynRepository,
     page: usize,
@@ -866,6 +808,7 @@ async fn list_directory_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
 fn file_name_from_path(path: &str) -> String {
     path.rsplit('/')
         .next()
@@ -874,6 +817,8 @@ fn file_name_from_path(path: &str) -> String {
         .to_string()
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn load_single_file_entry(
     storage: DynStorage,
     repository_id: Uuid,
@@ -905,6 +850,8 @@ async fn load_single_file_entry(
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_directory_packages_s3(
     repository_id: Uuid,
     storage: S3Storage,
@@ -938,12 +885,14 @@ async fn list_directory_packages_s3(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg(test)]
 enum GoFileKind {
     Info,
     Mod,
     Zip,
 }
 
+#[cfg(test)]
 impl GoFileKind {
     const fn priority(self) -> u8 {
         match self {
@@ -954,6 +903,7 @@ impl GoFileKind {
     }
 }
 
+#[cfg(test)]
 fn parse_go_file_name(name: &str) -> Option<(String, GoFileKind)> {
     if name == "list" {
         return None;
@@ -970,10 +920,12 @@ fn parse_go_file_name(name: &str) -> Option<(String, GoFileKind)> {
     None
 }
 
+#[cfg(test)]
 fn should_replace_go_file(current: GoFileKind, candidate: GoFileKind) -> bool {
     candidate.priority() > current.priority()
 }
 
+#[cfg(test)]
 #[cfg(test)]
 async fn collect_go_package_entries(
     storage: &nr_storage::DynStorage,
@@ -999,6 +951,8 @@ struct GoDeletionResult {
 }
 
 #[derive(sqlx::FromRow)]
+#[cfg(test)]
+#[allow(dead_code)]
 struct DebPackageRow {
     project_name: String,
     version: String,
@@ -1007,6 +961,7 @@ struct DebPackageRow {
 }
 
 #[derive(sqlx::FromRow)]
+#[cfg(test)]
 struct HostedCatalogRow {
     project_key: String,
     version: String,
@@ -1016,6 +971,7 @@ struct HostedCatalogRow {
 }
 
 #[derive(sqlx::FromRow)]
+#[cfg(test)]
 struct ProxyCatalogRow {
     project_key: String,
     version: String,
@@ -1024,6 +980,7 @@ struct ProxyCatalogRow {
     updated_at: DateTime<FixedOffset>,
 }
 
+#[cfg(test)]
 async fn fetch_maven_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -1084,6 +1041,8 @@ async fn fetch_maven_catalog_page(
     .await
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn fetch_maven_proxy_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -1144,6 +1103,7 @@ async fn fetch_maven_proxy_catalog_page(
     .await
 }
 
+#[cfg(test)]
 async fn fetch_php_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -1155,6 +1115,8 @@ async fn fetch_php_catalog_page(
     fetch_maven_catalog_page(database, repository_id, per_page, offset, search).await
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn fetch_php_proxy_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -1217,6 +1179,7 @@ async fn fetch_php_proxy_catalog_page(
     .await
 }
 
+#[cfg(test)]
 async fn fetch_npm_proxy_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -1227,6 +1190,7 @@ async fn fetch_npm_proxy_catalog_page(
     fetch_proxy_catalog_page(database, repository_id, per_page, offset, search).await
 }
 
+#[cfg(test)]
 async fn fetch_proxy_catalog_page(
     database: &PgPool,
     repository_id: Uuid,
@@ -1287,6 +1251,8 @@ async fn fetch_proxy_catalog_page(
     .await
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn deb_metadata(data: &VersionData) -> Option<DebPackageMetadata> {
     data.extra
         .as_ref()
@@ -1334,24 +1300,28 @@ async fn delete_go_package(
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 struct PackageDirEntry {
     display_name: String,
     storage_relative: String,
     directory_path: String,
 }
 
+#[cfg(test)]
 struct PackageDirVisit {
     entry: PackageDirEntry,
     files: Vec<StorageFileMeta<FileType>>,
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 struct DirNode {
     path: String,
     relative: String,
     sort_key: String,
 }
 
+#[cfg(test)]
 impl DirNode {
     fn root(path: String, base: Option<&str>) -> Self {
         Self::new(path, String::new(), base)
@@ -1393,20 +1363,24 @@ impl DirNode {
     }
 }
 
+#[cfg(test)]
 impl PartialEq for DirNode {
     fn eq(&self, other: &Self) -> bool {
         self.sort_key == other.sort_key && self.path == other.path
     }
 }
 
+#[cfg(test)]
 impl Eq for DirNode {}
 
+#[cfg(test)]
 impl PartialOrd for DirNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+#[cfg(test)]
 impl Ord for DirNode {
     fn cmp(&self, other: &Self) -> Ordering {
         self.sort_key
@@ -1415,6 +1389,7 @@ impl Ord for DirNode {
     }
 }
 
+#[cfg(test)]
 struct PackageDirectoryWalker<'a> {
     storage: &'a DynStorage,
     repository_id: Uuid,
@@ -1422,6 +1397,7 @@ struct PackageDirectoryWalker<'a> {
     pending: BinaryHeap<Reverse<DirNode>>,
 }
 
+#[cfg(test)]
 impl<'a> PackageDirectoryWalker<'a> {
     fn new(storage: &'a DynStorage, repository_id: Uuid, base: Option<&str>) -> Self {
         let base_prefix = base.map(|value| value.to_string());
@@ -1491,6 +1467,7 @@ impl<'a> PackageDirectoryWalker<'a> {
     }
 }
 
+#[cfg(test)]
 fn compute_package_names(node: &DirNode, base: Option<&str>) -> Option<(String, String)> {
     let storage_relative = if !node.relative.is_empty() {
         node.relative.trim_matches('/').to_string()
@@ -1524,6 +1501,7 @@ fn compute_package_names(node: &DirNode, base: Option<&str>) -> Option<(String, 
     Some((display_name, storage_relative))
 }
 
+#[cfg(test)]
 fn build_package_entries_from_directory(
     display_name: &str,
     files: &[StorageFileMeta<FileType>],
@@ -1554,6 +1532,7 @@ fn build_package_entries_from_directory(
     items
 }
 
+#[cfg(test)]
 fn build_go_entries_from_directory(
     display_name: &str,
     files: &[StorageFileMeta<FileType>],
@@ -1600,6 +1579,7 @@ fn build_go_entries_from_directory(
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 async fn list_go_packages(
     repository: DynRepository,
     base: &str,
@@ -1614,6 +1594,8 @@ async fn list_go_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_helm_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -1772,6 +1754,8 @@ async fn list_helm_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_cargo_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -1925,6 +1909,7 @@ async fn list_cargo_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
 fn build_cargo_package_entry(
     crate_name: &str,
     project_key: &str,
@@ -1942,6 +1927,7 @@ fn build_cargo_package_entry(
     }
 }
 
+#[cfg(test)]
 fn cargo_cache_path(project_key: &str, version: &str) -> String {
     format!(
         "crates/{key}/{ver}/{key}-{ver}.crate",
@@ -1950,6 +1936,8 @@ fn cargo_cache_path(project_key: &str, version: &str) -> String {
     )
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_npm_proxy_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2030,6 +2018,8 @@ async fn list_npm_proxy_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_npm_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2124,6 +2114,8 @@ async fn list_npm_hosted_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_npm_virtual_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2134,6 +2126,8 @@ async fn list_npm_virtual_packages(
     list_npm_hosted_packages(site, repository, page, per_page_raw, search).await
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_python_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2228,6 +2222,8 @@ async fn list_python_hosted_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_python_proxy_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2308,6 +2304,8 @@ async fn list_python_proxy_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_go_catalog_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2404,6 +2402,8 @@ async fn list_go_catalog_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn go_entry_from_proxy_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
     let (size, modified, blob_digest) = match row.version_data.0.proxy_artifact() {
         Some(proxy_meta) => (
@@ -2423,6 +2423,8 @@ fn go_entry_from_proxy_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_go_proxy_catalog_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2505,6 +2507,8 @@ async fn list_go_proxy_catalog_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn docker_entry_from_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
     let (package, size, modified, blob_digest) = match row.version_data.0.proxy_artifact() {
         Some(proxy_meta) => (
@@ -2534,6 +2538,8 @@ fn docker_entry_from_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_docker_catalog_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2614,6 +2620,8 @@ async fn list_docker_catalog_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_maven_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2701,6 +2709,8 @@ async fn list_maven_hosted_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_php_hosted_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -2788,6 +2798,8 @@ async fn list_php_hosted_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn load_maven_version_entries(
     storage: DynStorage,
     repository_id: Uuid,
@@ -2876,6 +2888,8 @@ async fn load_maven_version_entries(
     Ok(Vec::new())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn load_maven_proxy_version_entries(
     storage: DynStorage,
     repository_id: Uuid,
@@ -2954,6 +2968,7 @@ async fn load_maven_proxy_version_entries(
     Ok(Vec::new())
 }
 
+#[cfg(test)]
 async fn load_php_version_entries(
     storage: DynStorage,
     repository_id: Uuid,
@@ -3020,6 +3035,7 @@ async fn load_php_version_entries(
     }])
 }
 
+#[cfg(test)]
 fn proxy_entry_from_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
     let (cache_path, size, modified, blob_digest) = match row.version_data.0.proxy_artifact() {
         Some(proxy_meta) => (
@@ -3041,6 +3057,8 @@ fn proxy_entry_from_row(row: &ProxyCatalogRow) -> Option<PackageFileEntry> {
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_deb_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -3180,6 +3198,8 @@ async fn list_deb_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_php_proxy_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -3270,6 +3290,8 @@ async fn list_php_proxy_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn list_maven_proxy_packages(
     site: NitroRepo,
     repository: DynRepository,
@@ -3357,6 +3379,7 @@ async fn list_maven_proxy_packages(
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 async fn build_maven_proxy_package_list(
     storage: &DynStorage,
     repository_id: Uuid,
@@ -3462,6 +3485,7 @@ async fn build_maven_proxy_package_list(
     })
 }
 
+#[cfg(test)]
 fn ensure_trailing_slash(path: &str) -> String {
     if path.ends_with('/') {
         path.to_string()
@@ -3470,6 +3494,7 @@ fn ensure_trailing_slash(path: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn derive_maven_package_label(path: &str) -> Option<String> {
     let trimmed = path.trim_matches('/');
     if trimmed.is_empty() {
@@ -3498,6 +3523,7 @@ fn derive_maven_package_label(path: &str) -> Option<String> {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 async fn list_docker_packages(
     repository: DynRepository,
     page: usize,
@@ -4234,6 +4260,7 @@ pub async fn delete_cached_packages(
     let mut deleted = 0usize;
     let mut missing = Vec::new();
     let mut rejected = Vec::new();
+    let mut deleted_paths: HashSet<String> = HashSet::new();
     let catalog_mode = catalog_deletion_mode(&repository);
     let mut catalog_targets: HashSet<String> = HashSet::new();
 
@@ -4270,6 +4297,9 @@ pub async fn delete_cached_packages(
 
         if deleted_objects > 0 {
             deleted += batch_deleted_packages;
+            for path in request.paths.iter() {
+                deleted_paths.insert(path.clone());
+            }
         } else {
             missing.extend(request.paths.clone());
         }
@@ -4285,7 +4315,10 @@ pub async fn delete_cached_packages(
             if let PackageStrategy::Helm = strategy {
                 if let Some(hosted) = helm_repository.as_ref() {
                     match delete_helm_package(&site, hosted, path).await {
-                        Ok(true) => deleted += 1,
+                        Ok(true) => {
+                            deleted += 1;
+                            deleted_paths.insert(path.clone());
+                        }
                         Ok(false) => missing.push(path.clone()),
                         Err(err) => {
                             warn!(?err, path, "Failed to delete Helm chart package");
@@ -4308,6 +4341,9 @@ pub async fn delete_cached_packages(
                 match delete_go_package(&storage, repository.id(), path).await {
                     Ok(Some(result)) => {
                         deleted += result.removed;
+                        if result.removed > 0 {
+                            deleted_paths.insert(path.clone());
+                        }
                         missing.extend(result.missing);
                         continue;
                     }
@@ -4324,6 +4360,7 @@ pub async fn delete_cached_packages(
             match storage.delete_file(repository.id(), &storage_path).await {
                 Ok(true) => {
                     deleted += 1;
+                    deleted_paths.insert(path.clone());
                     if let Some(version_path) = derive_version_path(path, catalog_mode) {
                         catalog_targets.insert(version_path);
                     }
@@ -4375,6 +4412,11 @@ pub async fn delete_cached_packages(
             .await
             .map_err(|err| InternalError::from(OtherInternalError::new(err)))?;
     }
+    if !deleted_paths.is_empty() {
+        let mut paths: Vec<String> = deleted_paths.into_iter().collect();
+        paths.sort();
+        let _ = DBPackageFile::soft_delete_by_paths(&site.database, repository.id(), &paths).await;
+    }
 
     let response = PackageDeleteResponse {
         deleted,
@@ -4384,6 +4426,7 @@ pub async fn delete_cached_packages(
     Ok(ResponseBuilder::ok().json(&response))
 }
 
+#[cfg(test)]
 async fn gather_package_dirs(
     storage: &nr_storage::DynStorage,
     repository_id: Uuid,

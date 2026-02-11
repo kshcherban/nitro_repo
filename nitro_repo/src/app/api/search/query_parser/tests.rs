@@ -110,3 +110,27 @@ fn parse_multiple_terms_and_filters() {
     assert_eq!(query.storage_filter, Some("primary".to_string()));
     assert_eq!(query.terms, vec!["latest".to_string()]);
 }
+
+#[test]
+fn parse_digest_filter_with_alias() {
+    let query = parse_search_query("digest:sha256:deadbeef").expect("query should parse");
+    assert_eq!(
+        query.digest_filter,
+        Some((Operator::Equals, "sha256:deadbeef".to_string()))
+    );
+}
+
+#[test]
+fn parse_hash_filter_defaults_to_contains() {
+    let query = parse_search_query("hash:deadbeef").expect("query should parse");
+    assert_eq!(
+        query.digest_filter,
+        Some((Operator::Contains, "deadbeef".to_string()))
+    );
+}
+
+#[test]
+fn rejects_range_operator_for_digest_filter() {
+    let err = parse_search_query("digest:>sha256:deadbeef").unwrap_err();
+    assert!(matches!(err, ParseError::InvalidOperator(_, Field::Digest)));
+}

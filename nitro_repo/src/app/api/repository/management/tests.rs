@@ -2,17 +2,15 @@
 use super::*;
 
 use crate::repository::NewRepository;
+use crate::test_support::DB_TEST_LOCK;
 use http::StatusCode;
 use nr_core::{
     database::{DatabaseConfig, entities::storage::NewDBStorage, migration::run_migrations},
     storage::StorageName,
 };
-use once_cell::sync::Lazy;
 use sqlx::{Connection, PgPool, postgres::PgPoolOptions};
 use testcontainers::{Container, clients::Cli, images::generic::GenericImage};
 use uuid::Uuid;
-
-static DB_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 struct TestDb {
     pool: PgPool,
@@ -39,7 +37,7 @@ async fn start_postgres() -> TestDb {
     let url = format!("postgres://postgres:password@127.0.0.1:{port}/postgres");
 
     let mut last_err: Option<anyhow::Error> = None;
-    for _ in 0..30 {
+    for _ in 0..60 {
         match PgPoolOptions::new().max_connections(4).connect(&url).await {
             Ok(pool) => {
                 return TestDb {
@@ -160,7 +158,7 @@ fn sample_auth_token(user_id: i32) -> nr_core::database::entities::user::auth_to
 
 #[tokio::test]
 async fn deb_refresh_requires_edit_permission() {
-    let _guard = DB_LOCK.lock().await;
+    let _guard = DB_TEST_LOCK.lock().await;
     let db = fresh_db().await;
     let storage_root = tempfile::tempdir().expect("tempdir");
 
@@ -209,7 +207,7 @@ async fn deb_refresh_requires_edit_permission() {
 
 #[tokio::test]
 async fn deb_refresh_returns_conflict_when_advisory_lock_is_held() {
-    let _guard = DB_LOCK.lock().await;
+    let _guard = DB_TEST_LOCK.lock().await;
     let db = fresh_db().await;
     let storage_root = tempfile::tempdir().expect("tempdir");
 

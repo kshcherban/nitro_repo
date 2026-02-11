@@ -1,4 +1,4 @@
-//! Database-backed package search over the `project_versions` catalog.
+//! Database-backed package search over the `package_files` catalog.
 //!
 //! This module owns the low-level SQL used by the search API
 //! (`app::api::search`) to fetch packages for a single repository.
@@ -53,40 +53,64 @@ impl<'a> PackageSearchRepository<'a> {
         let mut builder = QueryBuilder::<Postgres>::new(
             r#"
                 SELECT
-                    p.name AS package_name,
-                    p.key AS package_key,
-                    pv.version,
-                    pv.path,
-                    pv.extra,
-                    pv.updated_at
-                FROM project_versions pv
-                INNER JOIN projects p ON pv.project_id = p.id
-                WHERE pv.repository_id = 
+                    pf.package AS package_name,
+                    pf.package AS package_key,
+                    COALESCE(pv.version, pf.name) AS version,
+                    pf.path,
+                    jsonb_build_object(
+                        'size', GREATEST(pf.size_bytes, 0),
+                        'content_digest', pf.content_digest,
+                        'upstream_digest', pf.upstream_digest
+                    ) AS extra,
+                    pf.modified_at AS updated_at
+                FROM package_files pf
+                LEFT JOIN project_versions pv ON pv.id = pf.project_version_id
+                WHERE pf.repository_id =
             "#,
         );
         builder.push_bind(repository_id);
+        builder.push(" AND pf.deleted_at IS NULL");
 
         if let Some((operator, filter)) = &query.package_filter {
             let normalized = filter.to_lowercase();
             match operator {
                 Operator::Equals => {
-                    builder.push(" AND (LOWER(p.name) = ");
+                    builder.push(" AND (LOWER(pf.package) = ");
                     builder.push_bind(normalized.clone());
-                    builder.push(" OR LOWER(p.key) = ");
+                    builder.push(" OR LOWER(pf.name) = ");
                     builder.push_bind(normalized);
                     builder.push(")");
                 }
                 Operator::Contains => {
                     let pattern = format!("%{normalized}%");
                     builder.push(" AND (");
-                    push_collated_lower(&mut builder, "p.name");
+                    push_collated_lower(&mut builder, "pf.package");
                     builder.push(" LIKE ");
                     builder.push_bind(pattern.clone());
                     builder.push(" OR ");
-                    push_collated_lower(&mut builder, "p.key");
+                    push_collated_lower(&mut builder, "pf.name");
                     builder.push(" LIKE ");
                     builder.push_bind(pattern);
                     builder.push(")");
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((operator, digest)) = &query.digest_filter {
+            let normalized = digest.to_lowercase();
+            match operator {
+                Operator::Equals => {
+                    builder.push(
+                        " AND LOWER(COALESCE(pf.content_digest, pf.upstream_digest, '')) = ",
+                    );
+                    builder.push_bind(normalized);
+                }
+                Operator::Contains => {
+                    builder.push(
+                        " AND LOWER(COALESCE(pf.content_digest, pf.upstream_digest, '')) LIKE ",
+                    );
+                    builder.push_bind(format!("%{normalized}%"));
                 }
                 _ => {}
             }
@@ -99,25 +123,32 @@ impl<'a> PackageSearchRepository<'a> {
             let lowered = term.to_lowercase();
             let pattern = format!("%{lowered}%");
             builder.push(" AND (");
-            push_collated_lower(&mut builder, "p.name");
+            push_collated_lower(&mut builder, "pf.package");
             builder.push(" LIKE ");
             builder.push_bind(pattern.clone());
             builder.push(" OR ");
-            push_collated_lower(&mut builder, "p.key");
+            push_collated_lower(&mut builder, "pf.name");
             builder.push(" LIKE ");
             builder.push_bind(pattern.clone());
             builder.push(" OR ");
-            push_collated_lower(&mut builder, "pv.version");
+            push_collated_lower(&mut builder, "COALESCE(pv.version, pf.name)");
             builder.push(" LIKE ");
             builder.push_bind(pattern.clone());
             builder.push(" OR ");
-            push_collated_lower(&mut builder, "COALESCE(pv.extra::text, '')");
+            push_collated_lower(&mut builder, "pf.path");
+            builder.push(" LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR ");
+            push_collated_lower(
+                &mut builder,
+                "COALESCE(pf.content_digest, pf.upstream_digest, '')",
+            );
             builder.push(" LIKE ");
             builder.push_bind(pattern);
             builder.push(")");
         }
 
-        builder.push(" ORDER BY pv.updated_at DESC LIMIT ");
+        builder.push(" ORDER BY pf.modified_at DESC LIMIT ");
         builder.push_bind(fetch_limit as i64);
 
         let start = Instant::now();
@@ -134,7 +165,7 @@ impl<'a> PackageSearchRepository<'a> {
         repository_id: Uuid,
     ) -> Result<bool, sqlx::Error> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM project_versions WHERE repository_id = $1)",
+            "SELECT EXISTS (SELECT 1 FROM package_files WHERE repository_id = $1 AND deleted_at IS NULL)",
         )
         .bind(repository_id)
         .fetch_one(self.database)

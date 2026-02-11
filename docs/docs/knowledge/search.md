@@ -8,18 +8,23 @@ This guide explains how the pipeline works, how to interact with `/api/search/pa
 
 | Stage | Hosted repositories | Proxy repositories |
 | ----- | ------------------- | ------------------ |
-| **Write metadata** | Upload handlers create or update `projects` + `project_versions` rows via helpers such as `delete_version_records_by_path` and `VersionData::set_*` | Cache fills call `ProxyIndexing::record_cached_artifact`, evictions call `ProxyIndexing::evict_cached_artifact`, both implemented by `DatabaseProxyIndexer` |
-| **Persist columns** | `project_versions` stores `repository_id`, `project_id`, `version`, `path`, `extra` (JSON metadata), `updated_at` | Same columns, plus proxy-specific metadata (Docker manifests, Maven coordinates, etc.) serialized in `extra` |
-| **Query path** | `/api/search/packages` builds a single `PackageSearchRepository` query per eligible repository | same |
+| **Write metadata** | Upload handlers create/update `projects` + `project_versions`; package rows are mirrored into `package_files` (`NewVersion::insert` + update sync) | Cache fills and evictions update `project_versions` metadata and the `package_files` row set |
+| **Persist columns** | `package_files` stores row-level package view/search fields (`package`, `name`, `path`, `size_bytes`, digests, timestamps) | Same table, with `upstream_digest` populated when available |
+| **Query path** | `/api/search/packages` and `/api/repository/<id>/packages` read from `package_files` | same |
 | **Response** | JSON list of `PackageSearchResult` entries + optional `X-Nitro-Warning` header when a repository has zero indexed rows | same |
 
 ### Key tables & indexes
 - `projects(id, repository_id, key, name, path, …)`
 - `project_versions(id, project_id, repository_id, version, path, extra JSONB, updated_at, created_at)`
+- `package_files(id, repository_id, project_id, project_version_id, package, name, path, size_bytes, content_digest, upstream_digest, modified_at, deleted_at)`
 - Composite indexes added in migration `20251130123000_add_search_indexes.*`:
   - `(repository_id, updated_at DESC)`
   - `(repository_id, lower(path))`
   - GIN on `extra` for metadata filtering
+- Row catalog indexes added in migration `20260211100000_package_files.*`:
+  - unique `(repository_id, lower(path))`
+  - listing `(repository_id, modified_at DESC, id DESC)`
+  - search `(repository_id, lower(package), lower(name))` + digest lookup
 
 ## 2. Search API Contract
 
@@ -30,6 +35,7 @@ GET /api/search/packages?q=<query>&limit=<1-200>
 ### Query syntax
 - Free-text terms (minimum 2 characters unless filters are present)
 - Field filters using the query parser (`package:foo`, `repository:npm-public`, `type:docker`, `storage:primary`)
+- Digest filters: `digest:sha256:...` or `hash:deadbeef`
 - Version constraints: `version:=1.2.3`, `version:>1.0.0`, or semver ranges (`version:^1.2`)
 
 ### Behavior
@@ -81,7 +87,7 @@ X-Nitro-Warning: Repositories awaiting indexing: docker-proxy
 Current CLI coverage:
 
 ```bash
-nitro_repo search reindex python-hosted --repository <uuid>
+nitro_repo search reindex <target> --repository <uuid>
 ```
 
 General checklist:
@@ -133,4 +139,3 @@ Use this to validate schema/index changes before rollout.
 - Proxy cache notice component: `site/src/components/nr/repository/ProxyCacheNotice.vue`
 
 Keeping search healthy is primarily about ensuring every repository writes metadata consistently. Monitor the warnings, keep Postgres tuned, and build reindex muscle memory before migrations.
-

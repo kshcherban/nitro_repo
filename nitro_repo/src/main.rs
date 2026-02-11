@@ -40,6 +40,8 @@ mod exporter;
 pub mod logging;
 pub mod repository;
 mod search;
+#[cfg(test)]
+pub mod test_support;
 pub mod utils;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ExportOptions {
@@ -119,13 +121,45 @@ enum SearchCommands {
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 enum SearchReindexKind {
+    NpmHosted,
+    NpmProxy,
     PythonHosted,
+    PythonProxy,
+    MavenHosted,
+    MavenProxy,
+    PhpHosted,
+    PhpProxy,
+    GoHosted,
+    GoProxy,
+    DockerHosted,
+    DockerProxy,
+    CargoHosted,
+    HelmHosted,
+    DebHosted,
+    DebProxy,
+    RubyHosted,
 }
 
 impl From<SearchReindexKind> for ReindexKind {
     fn from(value: SearchReindexKind) -> Self {
         match value {
+            SearchReindexKind::NpmHosted => ReindexKind::NpmHosted,
+            SearchReindexKind::NpmProxy => ReindexKind::NpmProxy,
             SearchReindexKind::PythonHosted => ReindexKind::PythonHosted,
+            SearchReindexKind::PythonProxy => ReindexKind::PythonProxy,
+            SearchReindexKind::MavenHosted => ReindexKind::MavenHosted,
+            SearchReindexKind::MavenProxy => ReindexKind::MavenProxy,
+            SearchReindexKind::PhpHosted => ReindexKind::PhpHosted,
+            SearchReindexKind::PhpProxy => ReindexKind::PhpProxy,
+            SearchReindexKind::GoHosted => ReindexKind::GoHosted,
+            SearchReindexKind::GoProxy => ReindexKind::GoProxy,
+            SearchReindexKind::DockerHosted => ReindexKind::DockerHosted,
+            SearchReindexKind::DockerProxy => ReindexKind::DockerProxy,
+            SearchReindexKind::CargoHosted => ReindexKind::CargoHosted,
+            SearchReindexKind::HelmHosted => ReindexKind::HelmHosted,
+            SearchReindexKind::DebHosted => ReindexKind::DebHosted,
+            SearchReindexKind::DebProxy => ReindexKind::DebProxy,
+            SearchReindexKind::RubyHosted => ReindexKind::RubyHosted,
         }
     }
 }
