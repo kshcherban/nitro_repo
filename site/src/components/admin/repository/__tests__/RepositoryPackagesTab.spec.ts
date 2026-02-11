@@ -287,6 +287,53 @@ describe("RepositoryPackagesTab.vue", () => {
     });
   });
 
+  it("keeps search field visible when search returns zero results", async () => {
+    const httpGet = http.get as vi.Mock;
+    httpGet.mockClear();
+    httpGet
+      .mockResolvedValueOnce({
+        data: {
+          total_packages: 1,
+          items: [
+            {
+              name: "express",
+              size: 1024,
+              cache_path: "/pkg/express-1.0.0.tgz",
+              modified: "2024-01-01T00:00:00Z",
+              package: "express",
+            },
+          ],
+        },
+        headers: {},
+      })
+      .mockResolvedValueOnce({
+        data: {
+          total_packages: 0,
+          items: [],
+        },
+        headers: {},
+      });
+
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "1",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const field = wrapper.getComponent(VTextFieldStub);
+    field.vm.$emit("update:modelValue", "missing-package");
+    await flushPromises();
+
+    expect(wrapper.find(".v-text-field").exists()).toBe(true);
+    expect(wrapper.vm.searchTerm).toBe("missing-package");
+  });
+
   it("labels name column as Version for PHP proxy repositories", async () => {
     const wrapper = mount(RepositoryPackagesTab, {
       props: {

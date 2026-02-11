@@ -5,7 +5,7 @@
         <span class="text-h6">{{ headerTitle }}</span>
         <v-spacer />
         <v-text-field
-          v-if="totalPackages > 0"
+          v-if="totalPackages > 0 || normalizedSearchTerm.length > 0"
           v-model="searchTerm"
           :placeholder="`Search ${headerTitle.toLowerCase()}…`"
           prepend-inner-icon="mdi-magnify"
@@ -128,9 +128,18 @@
         <div class="text-error">Failed to load packages: {{ error }}</div>
       </v-card-text>
 
-      <v-card-text v-else-if="totalPackages === 0" class="text-center py-8">
+      <v-card-text
+        v-else-if="totalPackages === 0 && normalizedSearchTerm.length === 0"
+        class="text-center py-8">
         <v-icon color="medium-emphasis" size="48" class="mb-2">mdi-package-variant</v-icon>
         <div class="text-medium-emphasis">{{ emptyRepositoryMessage }}</div>
+      </v-card-text>
+
+      <v-card-text
+        v-else-if="totalPackages === 0 && normalizedSearchTerm.length > 0"
+        class="text-center py-8">
+        <v-icon color="medium-emphasis" size="48" class="mb-2">mdi-magnify</v-icon>
+        <div class="text-medium-emphasis">No packages match your search. Try different search terms.</div>
       </v-card-text>
 
       <v-card-text v-else-if="visiblePackages.length === 0" class="text-center py-8">
