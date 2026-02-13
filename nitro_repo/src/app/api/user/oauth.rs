@@ -64,7 +64,6 @@ pub struct OAuthProvidersResponse {
     pub providers: Vec<OAuthProviderDescriptor>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 struct IdTokenClaims {
     sub: String,
@@ -76,8 +75,6 @@ struct IdTokenClaims {
     name: Option<String>,
     #[serde(default)]
     given_name: Option<String>,
-    #[serde(default)]
-    family_name: Option<String>,
     #[serde(default)]
     roles: Option<Vec<String>>,
     #[serde(default)]

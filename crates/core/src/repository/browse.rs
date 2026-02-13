@@ -22,7 +22,6 @@ pub enum BrowseFile {
     Directory {
         name: String,
         number_of_files: usize,
-        //modified: DateTime<FixedOffset>,
     },
 }
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]

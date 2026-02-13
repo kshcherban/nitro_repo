@@ -57,8 +57,6 @@ pub async fn write_multiple_then_list<ST: Storage>(
     for path in paths.iter() {
         let (_, _) = storage.save_file(repository, content.clone(), path).await?;
     }
-    //let expected: Vec<u8> = content.try_into()?;
-
     let read_content = storage
         .open_file(repository, &StoragePath::from("/hello"))
         .await?;

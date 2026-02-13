@@ -24,8 +24,6 @@ pub struct CouchDBLoginRequest {
     pub login_type: String,
     #[serde(default)]
     pub roles: Vec<Value>,
-    //#[serde(with = "nr_core::utils::time::iso_8601")]
-    //pub date: DateTime<FixedOffset>,
 }
 impl Debug for CouchDBLoginRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -35,7 +33,6 @@ impl Debug for CouchDBLoginRequest {
             .field("email", &self.email)
             .field("login_type", &self.login_type)
             .field("roles", &self.roles)
-            //            .field("date", &self.date)
             .finish()
     }
 }

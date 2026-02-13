@@ -290,53 +290,6 @@ impl NpmProxyRegistry {
         Ok(false)
     }
 
-    #[allow(dead_code)]
-    async fn cache_tarball(
-        &self,
-        url: &Url,
-        cache_path: &StoragePath,
-    ) -> Result<(), NPMRegistryError> {
-        let response = crate::utils::upstream::send(&self.0.client, self.0.client.get(url.clone()))
-            .await
-            .map_err(|err| NPMRegistryError::ProxyFetch {
-                url: url.to_string(),
-                error: err.to_string(),
-            })?;
-
-        if !response.status().is_success() {
-            return Err(NPMRegistryError::ProxyFetch {
-                url: url.to_string(),
-                error: format!("status {}", response.status()),
-            });
-        }
-
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| NPMRegistryError::ProxyFetch {
-                url: url.to_string(),
-                error: err.to_string(),
-            })?;
-
-        match self
-            .storage()
-            .save_file(self.0.id, FileContent::Bytes(bytes.clone()), cache_path)
-            .await
-        {
-            Ok(_) | Err(nr_storage::StorageError::PathCollision(_)) => {
-                record_npm_proxy_cache_hit(
-                    self.indexer().as_ref(),
-                    cache_path,
-                    bytes.len() as u64,
-                    Some(url),
-                )
-                .await?;
-                Ok(())
-            }
-            Err(other) => Err(other.into()),
-        }
-    }
-
     async fn proxy_passthrough(
         &self,
         path: &StoragePath,

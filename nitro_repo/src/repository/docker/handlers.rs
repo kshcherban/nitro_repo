@@ -1474,11 +1474,6 @@ async fn delete_manifest(
 ) -> Result<RepoResponse, DockerError> {
     info!("Deleting manifest: {}/{}", repository_name, reference);
 
-    // Check authentication
-    // if request.authentication.get_user().is_none() {
-    //     return Ok(RepoResponse::unauthorized());
-    // }
-
     let manifest_path =
         StoragePath::from(format!("v2/{}/manifests/{}", repository_name, reference));
     let manifest_path_str = manifest_path.to_string();

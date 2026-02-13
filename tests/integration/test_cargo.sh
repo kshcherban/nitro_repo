@@ -46,7 +46,13 @@ else
 fi
 
 ARCHIVE_PATH="${CRATE_DIR}/target/package/${CRATE_NAME}-${VERSION}.crate"
-print_test "Verify crate archive produced locally"
+print_test "Ensure local crate archive is available"
+if [[ ! -f "${ARCHIVE_PATH}" ]]; then
+    if ! run_cmd cargo package --allow-dirty --no-verify; then
+        fail "Failed to create local crate archive"
+    fi
+fi
+
 if assert_file_exists "${ARCHIVE_PATH}"; then
     pass
 else

@@ -1,5 +1,4 @@
 mod content;
-mod err;
 mod file;
 mod file_meta;
 

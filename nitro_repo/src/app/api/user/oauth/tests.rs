@@ -9,7 +9,6 @@ fn extract_roles_combines_roles_and_groups() {
         preferred_username: None,
         name: None,
         given_name: None,
-        family_name: None,
         roles: Some(vec!["admin".to_string(), "admin".to_string()]),
         groups: Some(vec!["team-a".to_string()]),
     };
@@ -26,7 +25,6 @@ fn extract_roles_adds_google_fallback_when_missing() {
         preferred_username: None,
         name: None,
         given_name: None,
-        family_name: None,
         roles: None,
         groups: None,
     };

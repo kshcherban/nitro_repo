@@ -3,23 +3,7 @@ use std::borrow::Cow;
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use syn::{Attribute, Expr, Ident, Lit, LitStr};
-#[allow(dead_code)]
-pub fn doc_attr_to_string(attr: &Attribute) -> syn::Result<String> {
-    match &attr.meta {
-        syn::Meta::NameValue(syn::MetaNameValue { value, .. }) => match value {
-            Expr::Lit(lit) => match &lit.lit {
-                Lit::Str(lit_str) => Ok(lit_str.value()),
-                _ => Err(syn::Error::new_spanned(lit, "Expected a string literal")),
-            },
-            _ => Err(syn::Error::new_spanned(value, "Expected a string literal")),
-        },
-        _ => Err(syn::Error::new_spanned(
-            &attr.meta,
-            "Expected a string literal",
-        )),
-    }
-}
+use syn::{Ident, LitStr};
 pub struct DisplayStringEnum<'ident, 'entries, T: StringEnum> {
     pub ident: &'ident Ident,
     pub entries: &'entries [T],
@@ -161,12 +145,4 @@ impl<T: StringEnum> ToTokens for AsRefImpl<'_, '_, '_, T> {
         };
         tokens.extend(result);
     }
-}
-#[allow(dead_code)]
-pub fn display_path(path: &syn::Path) -> String {
-    path.segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect::<Vec<_>>()
-        .join("::")
 }
