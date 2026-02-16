@@ -47,7 +47,7 @@
           <RepositoryPackagesTab
             :repository-id="repositoryId"
             :repository-type="repository?.repository_type"
-            :repository-kind="repositoryKind" />
+            :repository-kind="repositoryKind ?? repository?.repository_kind ?? null" />
         </v-window-item>
 
         <v-window-item

@@ -16,15 +16,6 @@
       </v-col>
     </v-row>
 
-    <v-row class="align-center mb-4" justify="center">
-      <v-col cols="12" lg="10">
-        <h2 class="text-h4 font-weight-medium mb-1">Repository Catalog</h2>
-        <p class="text-body-1 text-medium-emphasis">
-          Review repository status, confirm authentication posture, and drill into details.
-        </p>
-      </v-col>
-    </v-row>
-
     <v-row v-if="loading && !error" justify="center">
       <v-col cols="12" lg="10">
         <v-card class="text-center py-8">

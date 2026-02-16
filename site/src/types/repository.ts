@@ -171,6 +171,15 @@ export function supportsRepositoryPackageView(repositoryType: string | null | un
   return packageViewRepositoryTypeSet.has(repositoryType.toLowerCase());
 }
 
+export function shouldDisplayRepositoryIndexingWarning(
+  repositoryType: string | null | undefined,
+  repositoryKind: string | null | undefined,
+): boolean {
+  const normalizedType = typeof repositoryType === "string" ? repositoryType.toLowerCase() : null;
+  const normalizedKind = typeof repositoryKind === "string" ? repositoryKind.toLowerCase() : null;
+  return !(normalizedType === "ruby" && normalizedKind === "proxy");
+}
+
 export function findRepositoryType(name: string): FrontendRepositoryType | undefined {
   return repositoryTypes.find((repositoryType) => repositoryType.name === name);
 }

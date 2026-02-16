@@ -62,7 +62,7 @@
         </v-alert>
       </v-card-text>
       <v-card-text
-        v-if="!isLoading && indexingWarning"
+        v-if="!isLoading && visibleIndexingWarning"
         class="pt-0 px-4">
         <v-alert
           data-testid="packages-indexing-warning"
@@ -71,7 +71,7 @@
           border="start"
           class="packages__indexing-alert">
           <div class="text-body-2">
-            {{ indexingWarning }}
+            {{ visibleIndexingWarning }}
           </div>
         </v-alert>
       </v-card-text>
@@ -180,6 +180,7 @@ import http from "@/http";
 import { computed, onMounted, ref, watch, nextTick } from "vue";
 import { useAlertsStore } from "@/stores/alerts";
 import { useResizableColumns } from "@/composables/useResizableColumns";
+import { shouldDisplayRepositoryIndexingWarning } from "@/types/repository";
 
 interface PackageEntry {
   name: string;
@@ -341,6 +342,12 @@ const derivedHostedFromPackages = computed(() => {
 });
 
 const repositoryType = computed(() => props.repositoryType?.toLowerCase() ?? "");
+const showIndexingWarning = computed(() =>
+  shouldDisplayRepositoryIndexingWarning(props.repositoryType, props.repositoryKind),
+);
+const visibleIndexingWarning = computed(() =>
+  showIndexingWarning.value ? indexingWarning.value : null,
+);
 const isDockerRepository = computed(() => repositoryType.value === "docker");
 const isDebRepository = computed(() => repositoryType.value === "deb");
 const isDockerProxy = computed(
@@ -434,8 +441,10 @@ async function loadPackages() {
     packages.value = items;
     totalPackages.value = data.total_packages ?? 0;
     const warning = response.headers?.["x-nitro-warning"] ?? response.headers?.["X-Nitro-Warning"];
-    indexingWarning.value =
+    const normalizedWarning =
       typeof warning === "string" && warning.trim().length > 0 ? warning.trim() : null;
+    indexingWarning.value =
+      showIndexingWarning.value ? normalizedWarning : null;
     selected.value = [];
 
     if (pendingDeletionPaths.value.length > 0) {

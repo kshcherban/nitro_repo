@@ -12,7 +12,7 @@
           :image="'/icon-128.png'"
           size="40"
           class="mr-3" />
-        <span class="text-h6 font-weight-medium text-primary">Nitro Repository</span>
+        <span class="text-h6 font-weight-medium text-primary">Nitro Repo</span>
       </router-link>
 
       <v-spacer />

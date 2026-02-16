@@ -258,6 +258,30 @@ describe("RepositoryPackagesTab.vue", () => {
     expect(warning.text()).toContain("Repository indexing in progress");
   });
 
+  it("suppresses indexing warning headers for Ruby proxy repositories", async () => {
+    const httpGet = http.get as vi.Mock;
+    httpGet.mockResolvedValueOnce({
+      data: { total_packages: 0, items: [] },
+      headers: { "x-nitro-warning": "Repository awaiting indexing" },
+    });
+
+    const wrapper = mount(RepositoryPackagesTab, {
+      props: {
+        repositoryId: "1",
+        repositoryType: "ruby",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const warning = wrapper.find('[data-testid="packages-indexing-warning"]');
+    expect(warning.exists()).toBe(false);
+  });
+
   it("requests server-side search across all pages", async () => {
     const httpGet = http.get as vi.Mock;
     httpGet.mockClear();

@@ -8,7 +8,7 @@
         <img
           src="/icon-128.png"
           alt="Logo" />
-        <span>Nitro Repository</span>
+        <span>Nitro Repo</span>
       </router-link>
     </div>
 

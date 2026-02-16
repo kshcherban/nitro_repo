@@ -1,14 +1,36 @@
-# nitro_repo [![Documentation](https://img.shields.io/static/v1?label=nitro-repo.kingtux.dev&message=Here&style=for-the-badge&color=green)](https://nitro-repo.kingtux.dev/) [![Powered By Actix](https://img.shields.io/badge/Powered%20By-Actix-red?style=for-the-badge&logo=rust)](https://github.com/actix/actix-web)
+# nitro_repo [![Documentation](https://img.shields.io/static/v1?label=nitro-docs.sudoers.dev&message=Here&style=for-the-badge&color=green)](https://nitro-docs.sudoers.dev/) [![Powered By Actix](https://img.shields.io/badge/Powered%20By-Actix-red?style=for-the-badge&logo=rust)](https://github.com/actix/actix-web)
 
-[![issues](https://img.shields.io/github/issues/wherkamp/nitro_repo/help%20wanted)](https://github.com/wherkamp/nitro_repo/issues)
+Nitro Repo is an open source free artifact manager. Written with a Rust back end and a Vue front end.
 
-Nitro Repo is an open source free artifact manager. Written with a Rust back end and a Vue front end to create a fast
-and modern experience.
+## UI Preview
 
-### History
+<p align="center">
+  <img src="docs/images/main.png" alt="Nitro Repo Main View" width="960" />
+</p>
 
-After years of using Nexus and then a bit of time of using StrongBox I decided I should design my own Artifact Manager
-to create a fast and modern experience.
+More UI screenshots:
+- [Repository view](docs/images/repo-view.png)
+- [Search view](docs/images/search-view.png)
+- [Admin repository management](docs/images/admin-repo-mgmt.png)
+- [Admin repository packages](docs/images/admin-repo-packages.png)
+- [Admin user management](docs/images/admin-user-mgmt.png)
+
+### Overview
+
+After years of using Artifactory and then switching to Nexus it turned out that there're no good, feature rich open source artifacts repository managers. Please welcome Nitro with S3 backend and SSO auth support.
+
+At the moment it supports virtual, proxied and hosted repositories of:
+
+- debian
+- python
+- php (composer)
+- java maven
+- ruby (gems)
+- docker (oci, v2 and v1)
+- helm (oci and http)
+- go
+- npm
+- rust cargo (hosted only)
 
 ### Technical Design
 

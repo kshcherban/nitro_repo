@@ -9,7 +9,7 @@
                 :image="'/icon-128.png'"
                 size="64"
                 class="mb-4" />
-              <span class="text-h4 font-weight-medium text-primary">Nitro Repository</span>
+              <span class="text-h4 font-weight-medium text-primary">Nitro Repo</span>
               <span class="text-body-1 text-medium-emphasis mt-1">Sign in to your account</span>
             </div>
           </v-card-title>

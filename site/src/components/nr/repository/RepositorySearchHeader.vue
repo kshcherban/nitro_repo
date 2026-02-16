@@ -1,6 +1,5 @@
 <template>
   <div class="repository-search-header">
-    <h2 class="repository-search-header__title">Repositories</h2>
     <div class="repository-search-header__controls">
       <div class="repository-search-header__input">
         <v-text-field
@@ -208,12 +207,6 @@ function clearSearch() {
   flex-direction: column;
   gap: 0.75rem;
   padding: 1rem 0;
-}
-
-.repository-search-header__title {
-  margin: 0;
-  font-weight: 600;
-  color: var(--nr-text-primary, #0f172a);
 }
 
 .repository-search-header__controls {

@@ -234,6 +234,22 @@ describe("HomeView.vue", () => {
     expect((wrapper.vm as any).searchValue).toBe("");
   });
 
+  it("does not render repository title and catalog intro block", async () => {
+    const wrapper = mount(HomeView, {
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find(".repository-search-header__title").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Repository Catalog");
+    expect(wrapper.text()).not.toContain(
+      "Review repository status, confirm authentication posture, and drill into details.",
+    );
+  });
+
   it("uses the ruby language icon for ruby repositories", async () => {
     repositoriesMock.mockResolvedValueOnce([
       {

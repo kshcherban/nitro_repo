@@ -53,6 +53,34 @@ const VIconStub = {
 };
 
 describe("AppBar.vue", () => {
+  it("renders Nitro Repo brand title", () => {
+    const wrapper = mount(AppBar, {
+      props: {
+        user: undefined,
+      },
+      global: {
+        stubs: {
+          "router-link": {
+            template: "<a class='router-link'><slot /></a>",
+          },
+          "v-app-bar": VAppBarStub,
+          "v-container": VContainerStub,
+          "v-avatar": VAvatarStub,
+          "v-btn": VBtnStub,
+          "v-menu": VMenuStub,
+          "v-list": VListStub,
+          "v-list-item": VListItemStub,
+          "v-list-item-title": VListItemTitleStub,
+          "v-divider": VDividerStub,
+          "v-icon": VIconStub,
+        },
+      },
+    });
+
+    expect(wrapper.text()).toContain("Nitro Repo");
+    expect(wrapper.text()).not.toContain("Nitro Repository");
+  });
+
   it("renders browse repositories button when user is present", () => {
     const wrapper = mount(AppBar, {
       props: {

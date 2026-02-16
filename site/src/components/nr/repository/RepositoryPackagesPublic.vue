@@ -30,10 +30,10 @@
         </span>
       </div>
       <div
-        v-if="!isLoading && indexingWarning"
+        v-if="!isLoading && visibleIndexingWarning"
         data-testid="public-packages-indexing-warning"
         class="packages__indexing-warning">
-        {{ indexingWarning }}
+        {{ visibleIndexingWarning }}
       </div>
     </header>
 
@@ -209,6 +209,7 @@
 import http from "@/http";
 import { computed, nextTick, ref, watch } from "vue";
 import { useResizableColumns } from "@/composables/useResizableColumns";
+import { shouldDisplayRepositoryIndexingWarning } from "@/types/repository";
 
 interface PackageEntry {
   name: string;
@@ -290,6 +291,12 @@ const derivedHostedFromPackages = computed(() => {
 });
 
 const repositoryType = computed(() => props.repositoryType?.toLowerCase() ?? "");
+const showIndexingWarning = computed(() =>
+  shouldDisplayRepositoryIndexingWarning(props.repositoryType, props.repositoryKind),
+);
+const visibleIndexingWarning = computed(() =>
+  showIndexingWarning.value ? indexingWarning.value : null,
+);
 const isDockerRepository = computed(() => repositoryType.value === "docker");
 const isGoRepository = computed(() => repositoryType.value === "go");
 const isDebRepository = computed(() => repositoryType.value === "deb");
@@ -478,8 +485,10 @@ async function loadPackages() {
     packages.value = items;
     totalPackages.value = Number(data.total_packages ?? 0);
     const warning = response.headers?.["x-nitro-warning"] ?? response.headers?.["X-Nitro-Warning"];
-    indexingWarning.value =
+    const normalizedWarning =
       typeof warning === "string" && warning.trim().length > 0 ? warning.trim() : null;
+    indexingWarning.value =
+      showIndexingWarning.value ? normalizedWarning : null;
   } catch (err) {
     if (lastRequestToken.value !== requestToken) {
       return;
