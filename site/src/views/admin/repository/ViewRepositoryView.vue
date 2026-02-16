@@ -74,6 +74,7 @@ import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
 import {
   getConfigType,
+  supportsRepositoryPackageView,
   type ConfigDescription,
   type RepositoryWithStorageName,
 } from "@/types/repository";
@@ -89,11 +90,7 @@ const repositoryKind = ref<string | null>(null);
 const activeTab = ref("main");
 
 const showPackagesTab = computed(() => {
-  const type = repository.value?.repository_type?.toLowerCase();
-  if (!type) {
-    return false;
-  }
-  return ["python", "npm", "maven", "docker", "go", "helm", "cargo", "deb", "php", "ruby"].includes(type);
+  return supportsRepositoryPackageView(repository.value?.repository_type);
 });
 
 function getConfigTitleOrFallback(config: string) {

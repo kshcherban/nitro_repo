@@ -159,6 +159,18 @@ export const repositoryTypes: FrontendRepositoryType[] = [
   DockerFrontendDefinition,
   DebFrontendDefinition,
 ];
+
+const packageViewRepositoryTypeSet = new Set(
+  repositoryTypes.map((repositoryType) => repositoryType.name.toLowerCase()),
+);
+
+export function supportsRepositoryPackageView(repositoryType: string | null | undefined): boolean {
+  if (typeof repositoryType !== "string") {
+    return false;
+  }
+  return packageViewRepositoryTypeSet.has(repositoryType.toLowerCase());
+}
+
 export function findRepositoryType(name: string): FrontendRepositoryType | undefined {
   return repositoryTypes.find((repositoryType) => repositoryType.name === name);
 }

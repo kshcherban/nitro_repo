@@ -37,7 +37,7 @@ import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
 import type { ProjectResolution, RawBrowseFile, WSBrowseResponse } from "@/types/browse";
-import { type RepositoryWithStorageName } from "@/types/repository";
+import { supportsRepositoryPackageView, type RepositoryWithStorageName } from "@/types/repository";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 const repoStore = useRepositoryStore();
 const session = sessionStore();
@@ -100,13 +100,7 @@ async function loadRepository() {
 const numberOfFiles = ref(0);
 
 const supportsPackageListing = computed(() => {
-  const type = repository.value?.repository_type?.toLowerCase();
-  if (!type) {
-    return false;
-  }
-  return ["python", "npm", "maven", "docker", "go", "helm", "cargo", "deb", "php"].includes(
-    type,
-  );
+  return supportsRepositoryPackageView(repository.value?.repository_type);
 });
 
 const isRootPath = computed(() => catchAll.value === "" || catchAll.value === "/");

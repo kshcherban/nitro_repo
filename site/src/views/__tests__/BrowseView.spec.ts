@@ -206,4 +206,68 @@ describe("BrowseView", () => {
     expect(options).toBeDefined();
     expect(options).toEqual([50, 100, 200, 500, 1000]);
   });
+
+  it("renders packages table for Ruby repositories at the root path", async () => {
+    http.get.mockImplementation((url: string) => {
+      if (url === "/api/repository/repo-ruby") {
+        return Promise.resolve({
+          data: {
+            id: "repo-ruby",
+            name: "rubygems-hosted",
+            storage_id: "storage-123",
+            storage_name: "primary",
+            repository_type: "ruby",
+            repository_kind: "hosted",
+            visibility: "Private",
+            active: true,
+            updated_at: "2025-12-08T12:00:00Z",
+            created_at: "2025-12-08T10:00:00Z",
+            auth_enabled: true,
+            storage_usage_bytes: null,
+            storage_usage_updated_at: null,
+          },
+        });
+      }
+      return Promise.reject(new Error(`Unhandled URL ${url}`));
+    });
+
+    const router = (await import("@/router")).default;
+    router.currentRoute.value.params.id = "repo-ruby";
+    router.currentRoute.value.params.catchAll = undefined;
+
+    const BrowseView = (await import("@/views/BrowseView.vue")).default;
+
+    const wrapper = mount(BrowseView, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          BrowseHeader: {
+            template: "<div data-testid='browse-header'></div>",
+          },
+          BrowseList: {
+            template: "<div data-testid='browse-list'></div>",
+          },
+          BrowseProject: {
+            template: "<div data-testid='browse-project'></div>",
+          },
+          RepositoryPackagesPublic: defineComponent({
+            props: {
+              perPageOptions: {
+                type: Array,
+                default: undefined,
+              },
+            },
+            template: "<div data-testid='packages-public'></div>",
+          }),
+        },
+      },
+    });
+
+    await flushPromises();
+
+    MockWebSocket.instances[0]?.emitOpen();
+    await flushPromises();
+
+    expect(wrapper.find("[data-testid='packages-public']").exists()).toBe(true);
+  });
 });
