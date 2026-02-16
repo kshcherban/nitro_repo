@@ -106,6 +106,14 @@ const phpRepositoryResponse = {
   repository_kind: "hosted",
 };
 
+const rubyRepositoryResponse = {
+  ...repositoryResponse,
+  id: "repo-ruby",
+  name: "rubygems-hosted",
+  repository_type: "ruby",
+  repository_kind: "hosted",
+};
+
 const s3StorageResponse = {
   id: "storage-123",
   name: "s3-store",
@@ -159,6 +167,24 @@ function mockPhpHttpSequence() {
       return Promise.resolve({ data: ["php"] });
     }
     if (url === "/api/repository/repo-php/config/php") {
+      return Promise.resolve({ data: { type: "Hosted" } });
+    }
+    if (url === "/api/storage/storage-123") {
+      return Promise.resolve({ data: s3StorageResponse });
+    }
+    return Promise.reject(new Error(`Unhandled URL ${url}`));
+  });
+}
+
+function mockRubyHttpSequence() {
+  http.get.mockImplementation((url: string) => {
+    if (url === "/api/repository/repo-ruby") {
+      return Promise.resolve({ data: rubyRepositoryResponse });
+    }
+    if (url === "/api/repository/repo-ruby/configs") {
+      return Promise.resolve({ data: ["ruby"] });
+    }
+    if (url === "/api/repository/repo-ruby/config/ruby") {
       return Promise.resolve({ data: { type: "Hosted" } });
     }
     if (url === "/api/storage/storage-123") {
@@ -244,6 +270,38 @@ describe("ViewRepositoryView", () => {
     const tabs = wrapper.findAll(".v-tab");
     const packagesTab = tabs.find((tab) => tab.attributes("data-value") === "packages");
     expect(packagesTab, "Packages tab should be visible for PHP repositories").toBeDefined();
+    expect(wrapper.find("[data-testid='packages-tab']").exists()).toBe(true);
+  });
+
+  it("shows packages tab for Ruby repositories", async () => {
+    routerMock.currentRoute.value.params.id = "repo-ruby";
+    mockRubyHttpSequence();
+    const ViewRepositoryView = (await import("@/views/admin/repository/ViewRepositoryView.vue")).default;
+
+    const wrapper = mount(ViewRepositoryView, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          BasicRepositoryInfo: BasicRepositoryInfoStub,
+          RepositoryPackagesTab: RepositoryPackagesTabStub,
+          FallBackEditor: DynamicConfigStub,
+          RubyConfig: DynamicConfigStub,
+          "v-container": VContainerStub,
+          "v-card": VCardStub,
+          "v-tabs": VTabsStub,
+          "v-tab": VTabStub,
+          "v-divider": VDividerStub,
+          "v-window": VWindowStub,
+          "v-window-item": VWindowItemStub,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    const tabs = wrapper.findAll(".v-tab");
+    const packagesTab = tabs.find((tab) => tab.attributes("data-value") === "packages");
+    expect(packagesTab, "Packages tab should be visible for Ruby repositories").toBeDefined();
     expect(wrapper.find("[data-testid='packages-tab']").exists()).toBe(true);
   });
 });
