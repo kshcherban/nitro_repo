@@ -65,6 +65,7 @@ Operational and query details live in `docs/docs/knowledge/search.md`.
 
 ## Observability
 - Request-scoped tracing is wired through repository handling (`RepositoryRequestTracing`) and exported via OpenTelemetry.
+- A separate audit stream is emitted at `info` level under the `nitro_repo::audit` target. It records successful and denied business actions rather than raw transport events, so operators can distinguish package downloads/uploads/deletes, CRUD on users/repositories/storages, security changes, and search/list activity from the lower-level `nitro_repo::access` request log.
 - When running via the dev compose stack, traces are viewable in Jaeger (see `docker-compose.dev.yml` and the project dev workflow).
 
 ## Front End Integration

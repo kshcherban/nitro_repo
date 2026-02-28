@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Request, State},
+    extract::{Extension, Request, State},
     response::Response,
 };
 use http::{StatusCode, Uri};
@@ -24,7 +24,10 @@ pub mod user_management;
 use super::{Instance, NitroRepo, NitroRepoState, authentication::password};
 use crate::{
     error::InternalError,
-    utils::{ResponseBuilder, api_error_response::APIErrorResponse},
+    utils::{
+        ResponseBuilder, api_error_response::APIErrorResponse,
+        request_logging::access_log::AccessLogContext,
+    },
 };
 pub fn api_routes() -> axum::Router<NitroRepo> {
     axum::Router::new()
@@ -89,6 +92,7 @@ pub struct InstallRequest {
 #[instrument(skip(site, request))]
 pub async fn install(
     State(site): NitroRepoState,
+    Extension(access_log): Extension<AccessLogContext>,
     Json(request): Json<InstallRequest>,
 ) -> Result<StatusCode, InternalError> {
     {
@@ -107,7 +111,9 @@ pub async fn install(
         return Ok(StatusCode::BAD_REQUEST);
     }
     user.password = password;
-    user.insert_admin(&site.database).await?;
+    let created_user = user.insert_admin(&site.database).await?;
+    access_log.set_user(created_user.username.as_ref().to_string());
+    access_log.set_user_id(created_user.id);
     {
         let mut instance = site.instance.lock();
         instance.is_installed = true;

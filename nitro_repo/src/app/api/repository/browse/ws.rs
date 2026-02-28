@@ -25,6 +25,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::BrowseStreamPrimaryData;
 use crate::{
+    audit::{AuditActor, AuditMetadata, AuditOutcome, emit_named_audit_log},
     app::{
         NitroRepo,
         authentication::ws::{WebSocketAuthentication, WebSocketAuthenticationMessage},
@@ -89,6 +90,37 @@ pub struct BrowseWSState {
     pub active_path: StoragePathStream,
     pub auth_config: RepositoryAuthConfig,
 }
+
+fn ws_audit_actor(authentication: Option<&WebSocketAuthentication>) -> AuditActor {
+    match authentication {
+        Some(WebSocketAuthentication::AuthToken { user, .. })
+        | Some(WebSocketAuthentication::Session { user, .. }) => AuditActor {
+            username: user.username.as_ref().to_string(),
+            user_id: Some(user.id),
+        },
+        None => AuditActor::default(),
+    }
+}
+
+fn ws_audit_metadata(
+    repository: &DynRepository,
+    authentication: Option<&WebSocketAuthentication>,
+    path: Option<&StoragePath>,
+) -> AuditMetadata {
+    let storage = repository.get_storage();
+    let storage_config = storage.storage_config();
+    AuditMetadata {
+        actor: ws_audit_actor(authentication),
+        resource_kind: Some("repository".to_string()),
+        resource_id: Some(repository.id().to_string()),
+        resource_name: Some(repository.name()),
+        repository_id: Some(repository.id().to_string()),
+        storage_id: Some(storage_config.storage_config.storage_id.to_string()),
+        path: path.map(ToString::to_string),
+        ..Default::default()
+    }
+}
+
 impl BrowseWSState {
     pub fn new(
         repository: DynRepository,
@@ -169,6 +201,7 @@ impl BrowseWSState {
             debug!(?incoming_message, "Received message");
             match incoming_message {
                 WebsocketIncomingMessage::ListDirectory(path) => {
+                    let audit_path = path.clone();
                     if self.access_status != WSPermissionsStatus::Authorized {
                         if !can_read_repository_with_auth(
                             &self.authentication,
@@ -180,6 +213,16 @@ impl BrowseWSState {
                         .await?
                         {
                             info!(?self.authentication, "Access denied. Closing connection");
+                            emit_named_audit_log(
+                                &span,
+                                "repository.browse_ws.list_directory",
+                                AuditOutcome::Denied,
+                                &ws_audit_metadata(
+                                    &self.repository,
+                                    self.authentication.as_ref(),
+                                    Some(&audit_path),
+                                ),
+                            );
                             self.access_status = WSPermissionsStatus::Unauthorized;
                             let message = WebsocketOutgoingMessage::Unauthorized;
                             socket.send(message.into()).await?;
@@ -192,6 +235,16 @@ impl BrowseWSState {
                     match self.active_path.change_directory(path).await {
                         Ok(ok) => {
                             event!(Level::DEBUG, ?ok, "Opened directory");
+                            emit_named_audit_log(
+                                &span,
+                                "repository.browse_ws.list_directory",
+                                AuditOutcome::Success,
+                                &ws_audit_metadata(
+                                    &self.repository,
+                                    self.authentication.as_ref(),
+                                    Some(&audit_path),
+                                ),
+                            );
                             let message = WebsocketOutgoingMessage::OpenedDirectory(ok);
                             socket.send(message.into()).await?;
                         }
@@ -221,6 +274,16 @@ impl BrowseWSState {
                             .await?
                             {
                                 info!(?self.authentication, "Access denied. Closing connection");
+                                emit_named_audit_log(
+                                    &span,
+                                    "repository.browse_ws.authenticate",
+                                    AuditOutcome::Denied,
+                                    &ws_audit_metadata(
+                                        &self.repository,
+                                        self.authentication.as_ref(),
+                                        None,
+                                    ),
+                                );
 
                                 self.access_status = WSPermissionsStatus::Unauthorized;
                                 let message = WebsocketOutgoingMessage::Unauthorized;
@@ -229,6 +292,16 @@ impl BrowseWSState {
                             } else {
                                 self.access_status = WSPermissionsStatus::Authorized;
                             }
+                            emit_named_audit_log(
+                                &span,
+                                "repository.browse_ws.authenticate",
+                                AuditOutcome::Success,
+                                &ws_audit_metadata(
+                                    &self.repository,
+                                    self.authentication.as_ref(),
+                                    None,
+                                ),
+                            );
                             let message = WebsocketOutgoingMessage::Authorized;
                             socket.send(message.into()).await?;
                             Ok(false)
@@ -236,6 +309,12 @@ impl BrowseWSState {
                         Err(err) => {
                             span.set_status(Status::error(err.to_string()));
                             event!(Level::ERROR, ?err, "Failed to authenticate");
+                            emit_named_audit_log(
+                                &span,
+                                "repository.browse_ws.authenticate",
+                                AuditOutcome::Denied,
+                                &ws_audit_metadata(&self.repository, None, None),
+                            );
                             let message = WebsocketOutgoingMessage::Error(err.to_string());
                             socket.send(message.into()).await?;
                             Ok(true)
@@ -289,8 +368,15 @@ pub(super) async fn handle_socket(
     site: NitroRepo,
     span: Span,
 ) {
+    let span_for_connect = span.clone();
     async move {
         info!(?who, "New websocket connection");
+        emit_named_audit_log(
+            &span_for_connect,
+            "repository.browse_ws.connect",
+            AuditOutcome::Success,
+            &ws_audit_metadata(&repository, None, None),
+        );
 
         if let Err(socket) = socket.send(Message::Ping(Default::default())).await {
             event!(Level::ERROR, ?socket, "Failed to send ping");

@@ -2,7 +2,7 @@ use std::{net::SocketAddr, str::FromStr};
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Extension, Path, State},
     response::Response,
     routing::{get, post},
 };
@@ -26,7 +26,7 @@ use crate::{
         email_service::{Email, EmailDebug, template},
     },
     error::InternalError,
-    utils::ResponseBuilder,
+    utils::{ResponseBuilder, request_logging::access_log::AccessLogContext},
 };
 
 pub fn password_reset_routes() -> axum::Router<NitroRepo> {
@@ -71,6 +71,7 @@ impl Email for PasswordResetEmail {
 )]
 async fn request_password_reset(
     State(site): State<NitroRepo>,
+    Extension(access_log): Extension<AccessLogContext>,
     TypedHeader(origin): TypedHeader<Origin>,
     TypedHeader(user_agent): TypedHeader<UserAgent>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -95,6 +96,8 @@ async fn request_password_reset(
     debug!(?request_details, ?origin, "Requesting password reset");
     let user = User::get_by_email(&password_reset.email, &site.database).await?;
     if let Some(user) = user {
+        access_log.set_user(user.username.as_ref().to_string());
+        access_log.set_user_id(user.id);
         let token = UserPasswordReset::create(user.id, request_details, &site.database).await?;
         let email: PasswordResetEmail = PasswordResetEmail {
             token,
@@ -137,6 +140,7 @@ async fn does_exist(
 )]
 async fn perform_password_change(
     State(site): State<NitroRepo>,
+    Extension(access_log): Extension<AccessLogContext>,
     Path(token): Path<String>,
     Json(password_reset): Json<ChangePasswordNoCheck>,
 ) -> Result<Response, InternalError> {
@@ -150,6 +154,8 @@ async fn perform_password_change(
     let Some(user) = UserSafeData::get_by_id(request.user_id, &site.database).await? else {
         return Ok(ResponseBuilder::not_found().empty());
     };
+    access_log.set_user(user.username.as_ref().to_string());
+    access_log.set_user_id(user.id);
     user.update_password(Some(encrypted_password), &site.database)
         .await?;
 

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, str::FromStr};
 
 use axum::{
-    extract::{ConnectInfo, Query, State},
+    extract::{ConnectInfo, Extension, Query, State},
     http::{
         HeaderMap, HeaderName, StatusCode,
         header::{LOCATION, SET_COOKIE},
@@ -35,7 +35,10 @@ use crate::{
         config::{OidcProviderConfig, SsoSettings, TokenSource},
     },
     error::InternalError,
-    utils::{ResponseBuilder, api_error_response::APIErrorResponse},
+    utils::{
+        ResponseBuilder, api_error_response::APIErrorResponse,
+        request_logging::access_log::AccessLogContext,
+    },
 };
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -72,6 +75,7 @@ pub type SsoLoginResponse = Result<Response, InternalError>;
 )]
 pub async fn login(
     State(site): State<NitroRepo>,
+    Extension(access_log): Extension<AccessLogContext>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     user_agent: Option<TypedHeader<UserAgent>>,
     headers: HeaderMap,
@@ -132,6 +136,9 @@ pub async fn login(
         .header(SET_COOKIE, cookie.encoded().to_string())
         .header(LOCATION, redirect_target)
         .empty();
+
+    access_log.set_user(user.username.as_ref().to_string());
+    access_log.set_user_id(user.id);
 
     if !principal.roles.is_empty() {
         if let Err(err) = site

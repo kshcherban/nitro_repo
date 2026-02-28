@@ -13,6 +13,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use uuid::Uuid;
 
 use super::{layer::ActiveRequestGuard, request_span};
+use crate::audit::{AuditActor, AuditMetadata, emit_http_audit_log};
 use crate::app::AppMetrics;
 use crate::utils::request_logging::access_log::AccessLogContext;
 use crate::utils::request_logging::request_id::RequestId;
@@ -81,6 +82,14 @@ impl Body for TraceResponseBody {
                     Some(*this.total_bytes),
                     this.access_log,
                 );
+                emit_audit_log(
+                    this.span,
+                    this.http_method,
+                    this.http_route,
+                    this.url_path,
+                    this.status_code.map(i64::from),
+                    this.access_log,
+                );
                 *this.access_logged = true;
                 this.metrics
                     .response_size_bytes
@@ -117,6 +126,14 @@ impl PinnedDrop for TraceResponseBody {
                 this.url_path,
                 this.status_code.map(i64::from),
                 Some(*this.total_bytes),
+                this.access_log,
+            );
+            emit_audit_log(
+                this.span,
+                this.http_method,
+                this.http_route,
+                this.url_path,
+                this.status_code.map(i64::from),
                 this.access_log,
             );
             *this.access_logged = true;
@@ -208,4 +225,33 @@ pub(crate) fn emit_access_log(
             );
         }
     }
+}
+
+pub(crate) fn emit_audit_log(
+    span: &Span,
+    http_method: &str,
+    http_route: &str,
+    url_path: &str,
+    status_code: Option<i64>,
+    ctx: &AccessLogContext,
+) {
+    let status_code = status_code.unwrap_or(500);
+    let snapshot = ctx.snapshot();
+    let metadata = AuditMetadata {
+        actor: AuditActor {
+            username: snapshot.user.unwrap_or_default(),
+            user_id: snapshot.user_id,
+        },
+        action: snapshot.audit_action,
+        resource_kind: snapshot.resource_kind,
+        resource_id: snapshot.resource_id,
+        resource_name: snapshot.resource_name,
+        repository_id: snapshot.repository_id.map(|value| value.to_string()),
+        storage_id: snapshot.storage_id.map(|value| value.to_string()),
+        target_user_id: snapshot.target_user_id,
+        token_id: snapshot.token_id,
+        path: snapshot.audit_path,
+        query: snapshot.audit_query,
+    };
+    emit_http_audit_log(span, http_method, http_route, url_path, status_code, &metadata);
 }

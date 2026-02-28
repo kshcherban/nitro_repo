@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Extension, State},
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -41,7 +41,7 @@ use crate::{
         },
     },
     error::InternalError,
-    utils::ResponseBuilder,
+    utils::{ResponseBuilder, request_logging::access_log::AccessLogContext},
 };
 #[derive(OpenApi)]
 #[openapi(
@@ -213,6 +213,7 @@ fn login_success_response(cookie: Cookie<'static>, user_with_session: MeWithSess
 #[instrument(skip(site, user_agent, addr, login))]
 pub async fn login(
     State(site): State<NitroRepo>,
+    Extension(access_log): Extension<AccessLogContext>,
     TypedHeader(user_agent): TypedHeader<UserAgent>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(login): axum::Json<LoginRequest>,
@@ -227,6 +228,8 @@ pub async fn login(
             return Ok(err.into_response());
         }
     };
+    access_log.set_user(user.username.as_ref().to_string());
+    access_log.set_user_id(user.id);
     let duration = chrono::Duration::days(1);
     let user_agent = user_agent.to_string();
     let ip = addr.ip().to_string();

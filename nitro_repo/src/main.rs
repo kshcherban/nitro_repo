@@ -32,6 +32,7 @@ use clap::{Parser, Subcommand};
 use config_editor::ConfigSection;
 use search::reindex::{self, ReindexKind};
 use uuid::Uuid;
+pub mod audit;
 pub mod app;
 pub mod config;
 mod config_editor;

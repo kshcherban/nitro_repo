@@ -43,3 +43,39 @@ After migrations, rebuild and restart the services:
    ```
 
 Keep maintenance windows short: apply migrations first, then restart services once the schema is in place so requests hitting old binaries do not fail mid-migration.
+
+## Audit logging
+
+Nitro Repo now emits a dedicated audit stream at `info` level under the `nitro_repo::audit`
+target.
+
+What is logged:
+
+- Successful user actions on the management API (`/api/**`) such as user, storage, repository, security, and token operations.
+- Successful and denied package operations routed through repository protocol endpoints (`/v2/**`, `/repositories/**`, direct `/{storage}/{repository}/...` paths).
+- Successful and denied search, package listing, browse, and websocket browse actions.
+
+What is not logged in the first pass:
+
+- Static/frontend asset requests.
+- `/api/info` and similar low-value informational routes.
+- Validation, conflict, not-found, or internal-error outcomes unless the result is an authorization failure (`401` or `403`).
+
+Important fields:
+
+- `action`
+- `outcome`
+- `actor_username`
+- `actor_id`
+- `repository_id`
+- `storage_id`
+- `path`
+- `trace_id`
+
+The existing access log target, `nitro_repo::access`, is still emitted separately. Use:
+
+```bash
+docker compose logs nitro | grep 'nitro_repo::audit'
+```
+
+If you run JSON logs, filter on `"target":"nitro_repo::audit"` and join on `trace_id` when you need to correlate an audit event with lower-level request or tracing data.

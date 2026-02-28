@@ -3,7 +3,7 @@ use std::{io, net::SocketAddr, str::FromStr};
 use crate::app::authentication::jwks::{JwksManager, ReqwestJwksFetcher};
 use crate::app::config::{OidcProviderConfig, TokenSource};
 use axum::{
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Extension, Path, Query, State},
     http::{
         StatusCode,
         header::{LOCATION, SET_COOKIE},
@@ -32,7 +32,10 @@ use crate::{
         config::{OAuth2GroupRoleMapping, OAuth2ProviderKind, OAuth2Settings},
     },
     error::{InternalError, OtherInternalError},
-    utils::{ResponseBuilder, api_error_response::APIErrorResponse},
+    utils::{
+        ResponseBuilder, api_error_response::APIErrorResponse,
+        request_logging::access_log::AccessLogContext,
+    },
 };
 
 use super::sso::{SsoPrincipal, create_user, normalize_username, sanitize_redirect};
@@ -254,6 +257,7 @@ pub async fn authorize(
 )]
 pub async fn callback(
     State(site): State<NitroRepo>,
+    Extension(access_log): Extension<AccessLogContext>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     user_agent: Option<TypedHeader<UserAgent>>,
     Query(query): Query<OAuthCallbackQuery>,
@@ -629,6 +633,9 @@ pub async fn callback(
         .header(SET_COOKIE, cookie.encoded().to_string())
         .header(LOCATION, redirect_header)
         .empty();
+
+    access_log.set_user(user.username.as_ref().to_string());
+    access_log.set_user_id(user.id);
 
     Ok(response)
 }

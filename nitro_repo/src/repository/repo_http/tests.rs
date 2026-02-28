@@ -150,6 +150,43 @@ fn npm_login_paths_bypass_auth() {
     assert!(!requires, "npm login endpoints must remain open");
 }
 
+#[test]
+fn classify_repo_audit_action_marks_write_operations() {
+    let action = super::classify_repo_audit_action(
+        &Method::PUT,
+        &StoragePath::from("crate/file.tgz"),
+        None,
+    );
+    assert_eq!(action, "package.upload");
+}
+
+#[test]
+fn classify_repo_audit_action_marks_delete_operations() {
+    let action = super::classify_repo_audit_action(
+        &Method::DELETE,
+        &StoragePath::from("crate/file.tgz"),
+        None,
+    );
+    assert_eq!(action, "package.delete");
+}
+
+#[test]
+fn classify_repo_audit_action_marks_directory_reads_as_list() {
+    let action =
+        super::classify_repo_audit_action(&Method::GET, &StoragePath::from("simple/"), None);
+    assert_eq!(action, "package.list");
+}
+
+#[test]
+fn classify_repo_audit_action_marks_file_reads_as_download() {
+    let action = super::classify_repo_audit_action(
+        &Method::GET,
+        &StoragePath::from("crates/foo-1.0.0.crate"),
+        None,
+    );
+    assert_eq!(action, "package.download");
+}
+
 #[tokio::test]
 async fn virtual_repository_auth_checks_read_permission_on_virtual_repo() {
     let _guard = DB_LOCK.lock().await;

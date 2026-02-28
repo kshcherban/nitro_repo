@@ -171,6 +171,7 @@ where
                     .ok_or(AuthenticationError::Unauthorized)?;
                 if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
                     ctx.set_user(user.username.as_ref().to_string());
+                    ctx.set_user_id(user.id);
                 }
                 return Ok(OnlySessionAllowedAuthentication { user, session });
             }
@@ -239,6 +240,7 @@ where
                 let (user, auth_token) = get_user_and_auth_token(&token, &repo.database).await?;
                 if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
                     ctx.set_user(user.username.as_ref().to_string());
+                    ctx.set_user_id(user.id);
                 }
                 Authentication::AuthToken(auth_token, user)
             }
@@ -248,6 +250,7 @@ where
                     .ok_or(AuthenticationError::Unauthorized)?;
                 if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
                     ctx.set_user(user.username.as_ref().to_string());
+                    ctx.set_user_id(user.id);
                 }
                 Authentication::Session(session, user)
             }
@@ -282,6 +285,7 @@ where
                 let (user, auth_token) = get_user_and_auth_token(&token, &repo.database).await?;
                 if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
                     ctx.set_user(user.username.as_ref().to_string());
+                    ctx.set_user_id(user.id);
                 }
                 Authentication::AuthToken(auth_token, user)
             }
@@ -291,6 +295,7 @@ where
                     .ok_or(AuthenticationError::Unauthorized)?;
                 if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
                     ctx.set_user(user.username.as_ref().to_string());
+                    ctx.set_user_id(user.id);
                 }
                 Authentication::Session(session, user)
             }

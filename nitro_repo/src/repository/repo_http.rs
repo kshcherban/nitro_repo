@@ -40,7 +40,7 @@ use http::{
 };
 use http_body_util::BodyExt;
 use nr_core::storage::{InvalidStoragePath, StoragePath};
-use nr_storage::{FileFileType, FileType, StorageFile, StorageFileMeta, StorageFileReader};
+use nr_storage::{FileFileType, FileType, Storage, StorageFile, StorageFileMeta, StorageFileReader};
 use serde::Deserialize;
 use tracing::{Instrument as _, Level, Span, debug, debug_span, error, event, info, instrument};
 mod header;
@@ -68,6 +68,37 @@ fn docker_v2_unauthorized_response(challenge: &str, body: &str) -> Response {
         .header("Docker-Distribution-API-Version", DOCKER_API_VERSION)
         .header(CONTENT_TYPE, DOCKER_JSON_CONTENT_TYPE)
         .body(body.to_string())
+}
+
+fn classify_repo_audit_action(
+    method: &Method,
+    path: &StoragePath,
+    response: Option<&RepoResponse>,
+) -> &'static str {
+    match method {
+        &Method::POST | &Method::PUT | &Method::PATCH => "package.upload",
+        &Method::DELETE => "package.delete",
+        &Method::HEAD => "package.read_metadata",
+        &Method::GET => match response {
+            Some(RepoResponse::FileResponse(file)) => match file.as_ref() {
+                StorageFile::Directory { .. } => "package.list",
+                StorageFile::File { .. } => "package.download",
+            },
+            Some(RepoResponse::FileMetaResponse(meta)) => match meta.as_ref().file_type() {
+                FileType::Directory { .. } => "package.list",
+                FileType::File(_) => "package.read_metadata",
+            },
+            Some(RepoResponse::Other(_)) | None => {
+                let raw_path = path.to_string();
+                if raw_path.is_empty() || raw_path.ends_with('/') {
+                    "package.list"
+                } else {
+                    "package.download"
+                }
+            }
+        },
+        _ => "package.read",
+    }
 }
 
 #[cfg(test)]
@@ -618,13 +649,20 @@ async fn handle_repo_request_core(
             return Ok(RepoResponse::disabled_repository().into_response_default());
         }
         let (parts, body) = request.into_parts();
-        if let Some(ctx) = parts.extensions.get::<AccessLogContext>() {
+        let audit_ctx = parts.extensions.get::<AccessLogContext>().cloned();
+        let path = path.unwrap_or_default();
+        if let Some(ctx) = &audit_ctx {
             ctx.set_repository_id(repository.id());
+            ctx.set_storage_id(repository.get_storage().storage_config().storage_config.storage_id);
+            ctx.set_resource_kind("repository");
+            ctx.set_resource_id(repository.id().to_string());
+            ctx.set_resource_name(repository.name());
+            ctx.set_audit_path(path.to_string());
             if let Some(user) = authentication.get_user() {
                 ctx.set_user(user.username.as_ref().to_string());
+                ctx.set_user_id(user.id);
             }
         }
-        let path = path.unwrap_or_default();
         let trace = RepositoryRequestTracing::new(
             &repository,
             &parent_span,
@@ -675,6 +713,9 @@ async fn handle_repo_request_core(
         );
 
         if requires_auth && !is_authenticated {
+            if let Some(ctx) = &audit_ctx {
+                ctx.set_audit_action(classify_repo_audit_action(&method, &path, None));
+            }
             if matches!(repository, DynRepository::Docker(_)) {
                 let actions: &[&str] = if is_read_operation {
                     &["pull"][..]
@@ -742,7 +783,12 @@ async fn handle_repo_request_core(
         };
 
         match &response {
-            Ok(_) => trace.ok(),
+            Ok(ok) => {
+                if let Some(ctx) = &audit_ctx {
+                    ctx.set_audit_action(classify_repo_audit_action(&method, &path, Some(ok)));
+                }
+                trace.ok()
+            }
             Err(err) => trace.error(err),
         }
         event!(Level::DEBUG, "Repository Request Completed");
