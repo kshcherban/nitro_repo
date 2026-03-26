@@ -14,6 +14,10 @@ const VAvatarStub = {
   template: "<div class='v-avatar'><slot /></div>",
 };
 
+const VSpacerStub = {
+  template: "<div class='v-spacer'></div>",
+};
+
 const VBtnStub = {
   props: {
     to: {
@@ -66,6 +70,7 @@ describe("AppBar.vue", () => {
           "v-app-bar": VAppBarStub,
           "v-container": VContainerStub,
           "v-avatar": VAvatarStub,
+          "v-spacer": VSpacerStub,
           "v-btn": VBtnStub,
           "v-menu": VMenuStub,
           "v-list": VListStub,
@@ -81,7 +86,7 @@ describe("AppBar.vue", () => {
     expect(wrapper.text()).not.toContain("Nitro Repository");
   });
 
-  it("renders browse repositories button when user is present", () => {
+  it("does not render browse repositories button when user is present", () => {
     const wrapper = mount(AppBar, {
       props: {
         user: {
@@ -96,6 +101,7 @@ describe("AppBar.vue", () => {
           "v-app-bar": VAppBarStub,
           "v-container": VContainerStub,
           "v-avatar": VAvatarStub,
+          "v-spacer": VSpacerStub,
           "v-btn": VBtnStub,
           "v-menu": VMenuStub,
           "v-list": VListStub,
@@ -109,7 +115,7 @@ describe("AppBar.vue", () => {
 
     const buttons = wrapper.findAll(".v-btn");
     const browseButton = buttons.find((btn) => btn.text().includes("Browse Repositories"));
-    expect(browseButton).toBeTruthy();
+    expect(browseButton).toBeUndefined();
   });
 
   it("does not render browse button when user is missing", () => {
@@ -125,6 +131,7 @@ describe("AppBar.vue", () => {
           "v-app-bar": VAppBarStub,
           "v-container": VContainerStub,
           "v-avatar": VAvatarStub,
+          "v-spacer": VSpacerStub,
           "v-btn": VBtnStub,
           "v-menu": VMenuStub,
           "v-list": VListStub,

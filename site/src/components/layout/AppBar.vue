@@ -19,14 +19,6 @@
 
       <!-- User section -->
       <div v-if="user" class="d-flex align-center">
-        <v-btn
-          :to="{ name: 'repositories' }"
-          color="primary"
-          variant="text"
-          prepend-icon="mdi-browse"
-          class="text-none mr-2">
-          Browse Repositories
-        </v-btn>
         <v-menu offset-y>
           <template v-slot:activator="{ props }">
             <v-btn

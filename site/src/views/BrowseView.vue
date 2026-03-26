@@ -1,12 +1,6 @@
 <template>
   <main v-if="repository">
     <BrowseHeader :repository="repository" />
-    <RepositoryPackagesPublic
-      v-if="showPackages"
-      :repository-id="repository.id"
-      :repository-type="repository.repository_type"
-      :repository-kind="repository.repository_kind ?? null"
-      :per-page-options="packagePerPageOptions" />
     <div v-if="files">
       <div class="browse">
         <BrowseList
@@ -30,15 +24,14 @@
 import BrowseHeader from "@/components/nr/repository/browse/BrowseHeader.vue";
 import BrowseList from "@/components/nr/repository/browse/BrowseList.vue";
 import BrowseProject from "@/components/nr/repository/project/BrowseProject.vue";
-import RepositoryPackagesPublic from "@/components/nr/repository/RepositoryPackagesPublic.vue";
 import { websocketPath } from "@/config";
 
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
 import { sessionStore } from "@/stores/session";
 import type { ProjectResolution, RawBrowseFile, WSBrowseResponse } from "@/types/browse";
-import { supportsRepositoryPackageView, type RepositoryWithStorageName } from "@/types/repository";
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import type { RepositoryWithStorageName } from "@/types/repository";
+import { onBeforeUnmount, ref, watch } from "vue";
 const repoStore = useRepositoryStore();
 const session = sessionStore();
 const repositoryId = ref(router.currentRoute.value.params.id as string);
@@ -49,8 +42,6 @@ console.log(`Browsing repository ${repositoryId.value} with catchAll ${catchAll.
 
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
 const websocket = new WebSocket(websocketPath(`api/repository/browse-ws/${repositoryId.value}`));
-
-const packagePerPageOptions = [50, 100, 200, 500, 1000];
 
 onBeforeUnmount(() => {
   console.log("Closing websocket");
@@ -99,24 +90,7 @@ async function loadRepository() {
 }
 const numberOfFiles = ref(0);
 
-const supportsPackageListing = computed(() => {
-  return supportsRepositoryPackageView(repository.value?.repository_type);
-});
-
-const isRootPath = computed(() => catchAll.value === "" || catchAll.value === "/");
-
-const showPackages = computed(() => {
-  return repository.value !== undefined && supportsPackageListing.value && isRootPath.value;
-});
-
 loadRepository();
-
-watch(showPackages, (value) => {
-  if (value && files.value === undefined) {
-    files.value = [];
-    numberOfFiles.value = 0;
-  }
-});
 
 function changeDirectory(path: string) {
   console.log(`Changing directory to ${path}`);

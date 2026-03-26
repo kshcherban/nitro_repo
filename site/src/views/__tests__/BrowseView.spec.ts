@@ -1,7 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
-import { defineComponent } from "vue";
 
 const mockLocalStorage = {
   getItem: () => null,
@@ -84,7 +83,7 @@ describe("BrowseView", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders packages table for PHP repositories at the root path", async () => {
+  it("renders the browse list for PHP repositories at the root path", async () => {
     http.get.mockImplementation((url: string) => {
       if (url === "/api/repository/repo-php") {
         return Promise.resolve({
@@ -123,29 +122,22 @@ describe("BrowseView", () => {
           BrowseProject: {
             template: "<div data-testid='browse-project'></div>",
           },
-          RepositoryPackagesPublic: defineComponent({
-            props: {
-              perPageOptions: {
-                type: Array,
-                default: undefined,
-              },
-            },
-            template: "<div data-testid='packages-public'></div>",
-          }),
         },
       },
     });
 
     await flushPromises();
 
-    // Simulate websocket open to mirror browse behavior; not required for the packages visibility check
     MockWebSocket.instances[0]?.emitOpen();
     await flushPromises();
 
-    expect(wrapper.find("[data-testid='packages-public']").exists()).toBe(true);
+    expect(wrapper.find("[data-testid='packages-public']").exists()).toBe(false);
+    expect(MockWebSocket.instances[0]?.sent).toContain(
+      JSON.stringify({ type: "ListDirectory", data: "" }),
+    );
   });
 
-  it("passes expanded per-page package options to packages table", async () => {
+  it("renders the browse list once directory entries are available", async () => {
     http.get.mockImplementation((url: string) => {
       if (url === "/api/repository/repo-php") {
         return Promise.resolve({
@@ -171,16 +163,6 @@ describe("BrowseView", () => {
 
     const BrowseView = (await import("@/views/BrowseView.vue")).default;
 
-    const RepositoryPackagesPublicStub = defineComponent({
-      props: {
-        perPageOptions: {
-          type: Array,
-          default: undefined,
-        },
-      },
-      template: "<div data-testid='packages-public'></div>",
-    });
-
     const wrapper = mount(BrowseView, {
       global: {
         plugins: [pinia],
@@ -194,20 +176,29 @@ describe("BrowseView", () => {
           BrowseProject: {
             template: "<div data-testid='browse-project'></div>",
           },
-          RepositoryPackagesPublic: RepositoryPackagesPublicStub,
         },
       },
     });
 
     await flushPromises();
+    MockWebSocket.instances[0]?.emitOpen();
+    MockWebSocket.instances[0]?.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "OpenedDirectory",
+          data: {
+            number_of_files: 1,
+            project_resolution: null,
+          },
+        }),
+      }),
+    );
+    await flushPromises();
 
-    const packages = wrapper.getComponent(RepositoryPackagesPublicStub);
-    const options = packages.props("perPageOptions") as unknown as number[] | undefined;
-    expect(options).toBeDefined();
-    expect(options).toEqual([50, 100, 200, 500, 1000]);
+    expect(wrapper.find("[data-testid='browse-list']").exists()).toBe(true);
   });
 
-  it("renders packages table for Ruby repositories at the root path", async () => {
+  it("renders the browse list for Ruby repositories at the root path", async () => {
     http.get.mockImplementation((url: string) => {
       if (url === "/api/repository/repo-ruby") {
         return Promise.resolve({
@@ -250,15 +241,6 @@ describe("BrowseView", () => {
           BrowseProject: {
             template: "<div data-testid='browse-project'></div>",
           },
-          RepositoryPackagesPublic: defineComponent({
-            props: {
-              perPageOptions: {
-                type: Array,
-                default: undefined,
-              },
-            },
-            template: "<div data-testid='packages-public'></div>",
-          }),
         },
       },
     });
@@ -268,6 +250,9 @@ describe("BrowseView", () => {
     MockWebSocket.instances[0]?.emitOpen();
     await flushPromises();
 
-    expect(wrapper.find("[data-testid='packages-public']").exists()).toBe(true);
+    expect(wrapper.find("[data-testid='packages-public']").exists()).toBe(false);
+    expect(MockWebSocket.instances[0]?.sent).toContain(
+      JSON.stringify({ type: "ListDirectory", data: "" }),
+    );
   });
 });

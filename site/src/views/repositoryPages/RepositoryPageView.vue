@@ -19,16 +19,6 @@
             </div>
           </div>
         </div>
-        <v-btn
-          color="primary"
-          variant="tonal"
-          class="text-none"
-          :to="{
-            name: 'Browse',
-            params: { id: repository.id, catchAll: '' },
-          }">
-          Browse
-        </v-btn>
       </v-card-text>
     </v-card>
 
@@ -43,6 +33,12 @@
         <RepositoryHelper :repository="repository" />
       </v-col>
     </v-row>
+    <RepositoryPackagesPublic
+      v-if="showPackages"
+      :repository-id="repository.id"
+      :repository-type="repository.repository_type"
+      :repository-kind="repository.repository_kind ?? null"
+      :per-page-options="packagePerPageOptions" />
   </v-container>
   <ErrorOnRequest
     v-else-if="error"
@@ -55,6 +51,7 @@ import CopyURL from "@/components/core/code/CopyCode.vue";
 import ErrorOnRequest from "@/components/ErrorOnRequest.vue";
 import RepositoryHelper from "@/components/nr/repository/RepositoryHelper.vue";
 import RepositoryIcon from "@/components/nr/repository/RepositoryIcon.vue";
+import RepositoryPackagesPublic from "@/components/nr/repository/RepositoryPackagesPublic.vue";
 import RepositoryPageViewer from "@/components/nr/repository/RepositoryPageViewer.vue";
 import { computed, onMounted, ref } from "vue";
 import http from "@/http";
@@ -63,6 +60,7 @@ import { useRepositoryStore } from "@/stores/repositories";
 import {
   createRepositoryRoute,
   findRepositoryType,
+  supportsRepositoryPackageView,
   type RepositoryPage,
   type RepositoryWithStorageName,
 } from "@/types/repository";
@@ -80,6 +78,10 @@ const repositoryType = computed(() => {
     return findRepositoryType(repository.value.repository_type);
   }
   return undefined;
+});
+const packagePerPageOptions = [50, 100, 200, 500, 1000];
+const showPackages = computed(() => {
+  return supportsRepositoryPackageView(repository.value?.repository_type);
 });
 
 const url = computed(() => {

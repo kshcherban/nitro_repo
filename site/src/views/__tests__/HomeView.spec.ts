@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { defineComponent, nextTick } from "vue";
 import HomeView from "@/views/HomeView.vue";
 
+const routerPush = vi.fn();
+
 vi.mock("vue-router", () => ({
   useRouter: () => ({
-    push: vi.fn(),
+    push: routerPush,
   }),
 }));
 
@@ -182,6 +184,28 @@ const vuetifyStubs = {
 };
 
 describe("HomeView.vue", () => {
+  it("opens repository cards on the repository page route", async () => {
+    routerPush.mockReset();
+
+    const wrapper = mount(HomeView, {
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    await wrapper.get(".repository-card").trigger("click");
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: "repository_page_by_name",
+      params: {
+        storageName: "Primary",
+        repositoryName: "Alpha",
+      },
+    });
+  });
+
   it("does not render welcome banner for authenticated user", async () => {
     const wrapper = mount(HomeView, {
       global: {

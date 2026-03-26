@@ -2,10 +2,18 @@ import { config, flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const routerPush = vi.fn();
+
 vi.mock("@/http", () => ({
   default: {
     get: vi.fn(),
   },
+}));
+
+vi.mock("vue-router", () => ({
+  useRouter: () => ({
+    push: routerPush,
+  }),
 }));
 
 import RepositoryPackagesPublic from "@/components/nr/repository/RepositoryPackagesPublic.vue";
@@ -289,6 +297,80 @@ describe("RepositoryPackagesPublic.vue", () => {
     const nameHeader = wrapper.find('th[data-column="name"]');
     expect(nameHeader.exists()).toBe(true);
     expect(nameHeader.text()).toContain("Version");
+  });
+
+  it("opens docker package browse from the existing package column", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "local/dockerhub/postgres",
+          name: "sha256:1090bc3a8ccfb0b55f78a494d76f8d603434f7e4553543d6e807bc7bd6bbd17f",
+          size: 1024,
+          cache_path: "v2/local/dockerhub/postgres/manifests/sha256:1090bc3a8ccfb0b55f78a494d76f8d603434f7e4553543d6e807bc7bd6bbd17f",
+          modified: "2025-11-06T11:45:00Z",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-123",
+        repositoryType: "docker",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('th[data-column="repository"]').exists()).toBe(false);
+    expect(wrapper.get('th[data-column="package"]').text()).toContain("Repository");
+
+    await wrapper.get('[data-testid="package-cell"]').trigger("click");
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: "Browse",
+      params: {
+        id: "repo-123",
+        catchAll: "local/dockerhub/postgres",
+      },
+    });
+  });
+
+  it("falls back to repository root browse when package path has no parent directory", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "pkg-root",
+          name: "1.0.0",
+          size: 512,
+          cache_path: "pkg-root.tgz",
+          modified: "2025-11-06T11:45:00Z",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-root",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+    await wrapper.get('[data-testid="package-cell"]').trigger("click");
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: "Browse",
+      params: {
+        id: "repo-root",
+        catchAll: "",
+      },
+    });
   });
 
   it("renders indexing warning headers", async () => {

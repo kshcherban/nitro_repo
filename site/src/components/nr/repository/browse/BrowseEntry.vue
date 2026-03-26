@@ -3,7 +3,10 @@
     v-if="props.file.type === 'File'"
     :file="props.file.value as RawFile"
     :currentPath="props.currentPath"
-    :repository="props.repository" />
+    :repository="props.repository"
+    :selected="props.selected"
+    :selectable="props.selectable"
+    @toggle-select="emit('toggle-select', $event)" />
   <BrowseFolder
     v-else-if="props.file.type === 'Directory'"
     :file="props.file.value as RawDirectory"
@@ -31,5 +34,16 @@ const props = defineProps({
     type: Object as PropType<RepositoryWithStorageName>,
     required: true,
   },
+  selected: {
+    type: Boolean,
+    default: false,
+  },
+  selectable: {
+    type: Boolean,
+    default: true,
+  },
 });
+const emit = defineEmits<{
+  "toggle-select": [checked: boolean];
+}>();
 </script>

@@ -101,8 +101,8 @@
           </v-card-text>
 
           <v-card-actions class="pa-4 pt-0">
-            <v-btn color="primary" variant="text" prepend-icon="mdi-browse" class="text-none">
-              Browse
+            <v-btn color="primary" variant="text" prepend-icon="mdi-open-in-new" class="text-none">
+              Open
             </v-btn>
             <v-spacer />
             <v-chip
@@ -335,8 +335,11 @@ function formatBytes(bytes?: number | null): string {
 // Navigate to repository
 function navigateToRepository(repo: RepositoryWithStorageName) {
   router.push({
-    name: "Browse",
-    params: { id: repo.id, catchAll: "" },
+    name: "repository_page_by_name",
+    params: {
+      storageName: repo.storage_name,
+      repositoryName: repo.name,
+    },
   });
 }
 

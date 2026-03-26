@@ -19,6 +19,13 @@ describe("router security metadata", () => {
     expect(home?.meta?.requiresAuth).toBe(true);
   });
 
+  it("does not expose the removed repositories page route", async () => {
+    const router = (await import("@/router")).default;
+    const routes = router.getRoutes();
+    const repositories = routes.find((route) => route.name === "repositories");
+    expect(repositories).toBeUndefined();
+  });
+
   it("redirects admin home to repositories list", async () => {
     const router = (await import("@/router")).default;
     const routes = router.getRoutes();

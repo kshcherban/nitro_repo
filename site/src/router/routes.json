@@ -12,10 +12,6 @@
         "name": "logout"
     },
     {
-        "path": "/page/repositories",
-        "name": "repositories"
-    },
-    {
         "path": "/page/repository/:repositoryId",
         "name": "repository_page_by_id"
     },

@@ -1,12 +1,22 @@
 <template>
   <tr
     class="browse__row browse__row--file"
+    :data-testid="`browse-row-file-${props.file.name}`"
     data-type="file"
     role="button"
     tabindex="0"
     @click="activate"
     @keyup.enter.prevent="activate"
     @keyup.space.prevent="activate">
+    <td class="browse__cell browse__cell--select">
+      <input
+        type="checkbox"
+        :checked="props.selected"
+        :disabled="!props.selectable"
+        :data-testid="`browse-select-file-${props.file.name}`"
+        @click.stop
+        @change="toggleSelection(($event.target as HTMLInputElement).checked)" />
+    </td>
     <td class="browse__cell browse__cell--name">
       <div class="browse__cell-content">
         <font-awesome-icon :icon="fileIcon" />
@@ -20,8 +30,9 @@
 </template>
 
 <script setup lang="ts">
-import { fixCurrentPath, type RawFile } from "@/types/browse";
-import { createRepositoryRoute, type RepositoryWithStorageName } from "@/types/repository";
+import { type RawFile } from "@/types/browse";
+import { type RepositoryWithStorageName } from "@/types/repository";
+import { createBrowseFileRoute } from "@/types/repositoryRoute";
 import { computed, type PropType } from "vue";
 import "./browse.scss";
 const props = defineProps({
@@ -37,10 +48,22 @@ const props = defineProps({
     type: Object as PropType<RepositoryWithStorageName>,
     required: true,
   },
+  selected: {
+    type: Boolean,
+    default: false,
+  },
+  selectable: {
+    type: Boolean,
+    default: true,
+  },
 });
+const emit = defineEmits<{
+  "toggle-select": [checked: boolean];
+}>();
 
-const fixedPath = fixCurrentPath(props.currentPath);
-const repositoryURL = createRepositoryRoute(props.repository, `${fixedPath}/${props.file.name}`);
+const repositoryURL = computed(() =>
+  createBrowseFileRoute(props.repository, props.currentPath, props.file.name),
+);
 
 const fileIcon = computed(() => "fa-solid fa-file" /* TODO: file-type specific */);
 
@@ -49,6 +72,16 @@ const formattedModified = computed(() =>
 );
 
 function activate() {
-  window.open(repositoryURL, "_blank");
+  if (repositoryURL.value === null) {
+    return;
+  }
+  window.open(repositoryURL.value, "_blank");
+}
+
+function toggleSelection(checked: boolean) {
+  if (!props.selectable) {
+    return;
+  }
+  emit("toggle-select", checked);
 }
 </script>

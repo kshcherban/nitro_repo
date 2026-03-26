@@ -157,11 +157,14 @@
                   <code>{{ cellText(column.key, pkg) }}</code>
                 </template>
                 <template v-else>
-                  <span
+                  <button
                     v-if="column.key === 'package'"
-                    data-testid="package-cell">
+                    type="button"
+                    class="packages__repository-link"
+                    data-testid="package-cell"
+                    @click="browsePackage(pkg)">
                     {{ cellText(column.key, pkg) }}
-                  </span>
+                  </button>
                   <span v-else>
                     {{ cellText(column.key, pkg) }}
                   </span>
@@ -208,6 +211,7 @@
 <script setup lang="ts">
 import http from "@/http";
 import { computed, nextTick, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useResizableColumns } from "@/composables/useResizableColumns";
 import { shouldDisplayRepositoryIndexingWarning } from "@/types/repository";
 
@@ -228,6 +232,7 @@ interface ColumnDefinition {
   label: string;
   optional: boolean;
   align?: "left" | "right";
+  sortable?: boolean;
 }
 
 const props = defineProps<{
@@ -236,6 +241,7 @@ const props = defineProps<{
   repositoryKind?: string | null;
   perPageOptions?: number[] | null;
 }>();
+const router = useRouter();
 
 const packages = ref<PackageEntry[]>([]);
 const isLoading = ref(false);
@@ -352,12 +358,12 @@ const timestampColumnTitle = "Uploaded At";
 
 const columns = computed<ColumnDefinition[]>(() => {
   const base: ColumnDefinition[] = [
-    { key: "package", label: packageColumnTitle.value, optional: false },
-    { key: "name", label: nameColumnTitle.value, optional: false },
-    { key: "digest", label: "Blob Digest", optional: true },
-    { key: "size", label: "Size", optional: false, align: "right" },
-    { key: "path", label: pathColumnTitle.value, optional: true },
-    { key: "timestamp", label: timestampColumnTitle, optional: true },
+    { key: "package", label: packageColumnTitle.value, optional: false, sortable: true },
+    { key: "name", label: nameColumnTitle.value, optional: false, sortable: true },
+    { key: "digest", label: "Blob Digest", optional: true, sortable: true },
+    { key: "size", label: "Size", optional: false, align: "right", sortable: true },
+    { key: "path", label: pathColumnTitle.value, optional: true, sortable: true },
+    { key: "timestamp", label: timestampColumnTitle, optional: true, sortable: true },
   ];
   return base;
 });
@@ -504,6 +510,10 @@ async function loadPackages() {
 }
 
 function toggleSort(key: ColumnKey) {
+  const column = columns.value.find((item) => item.key === key);
+  if (!column?.sortable) {
+    return;
+  }
   if (sortState.value && sortState.value.key === key) {
     sortState.value = {
       key,
@@ -623,6 +633,31 @@ function cellTitle(column: ColumnKey, pkg: PackageEntry): string {
     default:
       return cellText(column, pkg);
   }
+}
+
+function browsePackage(pkg: PackageEntry) {
+  router.push({
+    name: "Browse",
+    params: {
+      id: props.repositoryId,
+      catchAll: packageBrowsePath(pkg),
+    },
+  });
+}
+
+function packageBrowsePath(pkg: PackageEntry): string {
+  if (repositoryType.value === "docker") {
+    return pkg.package.trim().replace(/^\/+|\/+$/g, "");
+  }
+  const cachePath = pkg.cachePath;
+  const segments = cachePath
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length <= 1) {
+    return "";
+  }
+  return segments.slice(0, -1).join("/");
 }
 
 function rowKey(pkg: PackageEntry): string {
@@ -991,6 +1026,19 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.packages__repository-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: $accent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.packages__repository-link:hover {
+  text-decoration: underline;
 }
 
 .packages__cell code {

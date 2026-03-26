@@ -4,8 +4,6 @@ import BrowseView from "@/views/BrowseView.vue";
 import LoginView from "@/views/LoginView.vue";
 import LogoutView from "@/views/LogoutView.vue";
 import OAuthDeniedView from "@/views/OAuthDeniedView.vue";
-
-import RepositoriesView from "@/views/RepositoriesView.vue";
 import type { Component } from "vue";
 
 import { adminRoutes } from "@/views/admin/adminRoutes";
@@ -57,11 +55,6 @@ const routes = [
     meta: {
       skipRoutesJson: true,
     },
-  },
-  {
-    path: "/page/repositories",
-    name: "repositories",
-    component: RepositoriesView,
   },
   ...repositoryPages,
   ...adminRoutes,

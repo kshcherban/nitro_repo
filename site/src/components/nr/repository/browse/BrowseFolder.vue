@@ -7,6 +7,7 @@
     @click="activate"
     @keyup.enter.prevent="activate"
     @keyup.space.prevent="activate">
+    <td class="browse__cell browse__cell--select"></td>
     <td class="browse__cell browse__cell--name">
       <div class="browse__cell-content">
         <font-awesome-icon icon="fa-solid fa-folder" />

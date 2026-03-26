@@ -82,6 +82,7 @@ describe("RepositoryPageView.vue", () => {
           CopyURL: simpleStub,
           RepositoryHelper: simpleStub,
           RepositoryIcon: simpleStub,
+          RepositoryPackagesPublic: simpleStub,
           RepositoryPageViewer: simpleStub,
         },
       },
@@ -90,5 +91,6 @@ describe("RepositoryPageView.vue", () => {
     await flushPromises();
 
     expect(wrapper.text()).not.toContain("This repository does not define a custom page yet.");
+    expect(wrapper.find("button").exists()).toBe(false);
   });
 });
