@@ -67,6 +67,7 @@ watch(internalValue, async () => {
   const { isValid: newIsValid, validationResults: newValidationResults } = await checkValidations(
     props.validations,
     internalValue.value,
+    props.originalValue,
   );
   validationResults.value = newValidationResults;
 

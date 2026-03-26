@@ -26,6 +26,7 @@ export type ValidationType = AsyncValidationType | SyncValidationType;
 export async function checkValidations(
   validations: ValidationType[],
   value: string,
+  originalValue?: string,
 ): Promise<{
   isValid: boolean;
   validationResults: Record<string, boolean>;
@@ -41,9 +42,9 @@ export async function checkValidations(
     }
     let isValid;
     if (validation.isAsync) {
-      isValid = await validation.validate(value);
+      isValid = await validation.validate(value, originalValue);
     } else {
-      isValid = validation.validate(value);
+      isValid = validation.validate(value, originalValue);
     }
     if (isCompletelyValid && !isValid) {
       isCompletelyValid = false;
