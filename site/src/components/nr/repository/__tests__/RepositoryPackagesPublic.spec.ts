@@ -1,5 +1,5 @@
 import { config, flushPromises, mount } from "@vue/test-utils";
-import { defineComponent, h } from "vue";
+import { defineComponent, h, nextTick } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const routerPush = vi.fn();
@@ -203,6 +203,61 @@ describe("RepositoryPackagesPublic.vue", () => {
     await wrapper.get('[data-testid="sort-size"]').trigger("click");
     await flushPromises();
     expect(rowOrder()).toEqual(["pkg-beta", "pkg-gamma", "pkg-alpha"]);
+  });
+
+  it("keeps package counts visible and avoids refetching when sorting the current page", async () => {
+    const pendingResponse = new Promise(() => {});
+    (http.get as vi.Mock)
+      .mockResolvedValueOnce(
+        createPackages([
+          {
+            package: "pkg-beta",
+            name: "Beta",
+            size: 2048,
+            cache_path: "cache/pkg-beta",
+            modified: "2025-11-05T09:30:00Z",
+          },
+          {
+            package: "pkg-alpha",
+            name: "Alpha",
+            size: 1024,
+            cache_path: "cache/pkg-alpha",
+            modified: "2025-11-06T11:45:00Z",
+          },
+          {
+            package: "pkg-gamma",
+            name: "Gamma",
+            size: 1536,
+            cache_path: "cache/pkg-gamma",
+            modified: "2025-11-04T18:15:00Z",
+          },
+        ]),
+      )
+      .mockReturnValueOnce(pendingResponse);
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-123",
+        repositoryType: "python",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find(".packages__counts").text()).toContain("3 package(s)");
+    expect(http.get).toHaveBeenCalledTimes(1);
+
+    await wrapper.get('[data-testid="sort-size"]').trigger("click");
+    await nextTick();
+
+    expect(http.get).toHaveBeenCalledTimes(1);
+    expect(wrapper.find(".packages__counts").exists()).toBe(true);
+    expect(wrapper.find(".packages__counts").text()).toContain("3 package(s)");
+    expect(wrapper.find(".packages__state").exists()).toBe(false);
   });
 
   it("filters packages with the inline search input", async () => {

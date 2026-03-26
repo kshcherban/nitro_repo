@@ -712,16 +712,6 @@ watch(
   { immediate: true },
 );
 
-watch(
-  () => sortState.value,
-  () => {
-    if (!props.repositoryId) {
-      return;
-    }
-    loadPackages();
-  },
-);
-
 // Enable resizable columns
 const { initResizable: initPackageTableResizers } = useResizableColumns('.packages__table');
 
