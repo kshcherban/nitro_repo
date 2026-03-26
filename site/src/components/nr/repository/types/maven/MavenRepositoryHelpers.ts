@@ -1,7 +1,7 @@
 import type { CodeSnippet } from "@/components/core/code/code";
-import { apiURL } from "@/config";
 import type { Project } from "@/types/project";
-import { createRepositoryRoute, type RepositoryWithStorageName } from "@/types/repository";
+import { createRepositoryRoute } from "@/types/repositoryRoute";
+import type { RepositoryWithStorageName } from "@/types/repository";
 export function createSnippetsForPulling(
   repository: RepositoryWithStorageName,
 ): Array<CodeSnippet> {

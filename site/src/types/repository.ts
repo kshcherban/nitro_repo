@@ -12,7 +12,6 @@ import RubyConfig from "@/components/nr/repository/types/ruby/RubyConfig.vue";
 import type { Component } from "vue";
 import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
 import RepositoryAuthConfig from "@/components/admin/repository/configs/RepositoryAuthConfig.vue";
-import { apiURL } from "@/config";
 
 import { MavenFrontendDefinition } from "@/components/nr/repository/types/maven/maven";
 import { PythonFrontendDefinition } from "@/components/nr/repository/types/python/python";
@@ -26,6 +25,7 @@ import { CargoFrontendDefinition } from "@/components/nr/repository/types/cargo/
 import { DebFrontendDefinition } from "@/components/nr/repository/types/deb/deb";
 import NPMConfig from "@/components/nr/repository/types/npm/NPMConfig.vue";
 import type { RepositoryActionsType } from "./user";
+export { createRepositoryRoute } from "./repositoryRoute";
 
 export interface RepositoryTypeDescription {
   type_name: string;
@@ -217,20 +217,6 @@ export enum PageType {
 export interface RepositoryPage {
   page_type: PageType;
   content: string | undefined;
-}
-export function createRepositoryRoute(
-  repository: { storage_name: string; name: string },
-  route?: string,
-): string {
-  let backend = apiURL;
-  if (backend.endsWith("/")) {
-    backend = backend.substring(0, backend.length - 1);
-  }
-  if (route === undefined) {
-    return `${backend}/repositories/${repository.storage_name}/${repository.name}`;
-  } else {
-    return `${backend}/repositories/${repository.storage_name}/${repository.name}/${route}`;
-  }
 }
 export interface RepositoryToActions {
   repositoryId: string;

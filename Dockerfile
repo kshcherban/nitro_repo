@@ -6,7 +6,7 @@ FROM node:25-trixie AS frontend-builder
 WORKDIR /app/site
 
 COPY site/package*.json ./
-RUN --mount=type=cache,target=/root/.npm npm install
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY site .
 RUN --mount=type=cache,target=/root/.npm npm run build
 
@@ -21,10 +21,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.lock Cargo.toml ./
-COPY crates crates
-COPY nitro_repo nitro_repo
 COPY docs docs
 COPY site site
+COPY crates crates
+COPY nitro_repo nitro_repo
 COPY --from=frontend-builder /app/site/dist ./site/dist
 
 ENV FRONTEND_DIST=/app/site/dist
