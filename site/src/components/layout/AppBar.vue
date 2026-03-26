@@ -15,6 +15,15 @@
         <span class="text-h6 font-weight-medium text-primary">Nitro Repo</span>
       </router-link>
 
+      <v-btn
+        v-if="user?.admin"
+        :to="{ name: 'admin' }"
+        variant="text"
+        class="text-none app-bar__admin-link">
+        <v-icon start>mdi-shield-account</v-icon>
+        Admin Panel
+      </v-btn>
+
       <v-spacer />
 
       <!-- User section -->
@@ -35,12 +44,6 @@
               :to="{ name: 'profile' }"
               prepend-icon="mdi-account">
               <v-list-item-title>Profile</v-list-item-title>
-            </v-list-item>
-            <v-list-item
-              v-if="user.admin"
-              :to="{ name: 'admin' }"
-              prepend-icon="mdi-shield-account">
-              <v-list-item-title>Admin Panel</v-list-item-title>
             </v-list-item>
             <v-divider />
             <v-list-item
@@ -96,5 +99,9 @@ defineProps({
 
 .app-bar__login {
   margin-right: 0.5rem;
+}
+
+.app-bar__admin-link {
+  margin-left: 0.25rem;
 }
 </style>

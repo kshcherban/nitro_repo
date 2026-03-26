@@ -147,4 +147,69 @@ describe("AppBar.vue", () => {
     const browseButton = buttons.find((btn) => btn.text().includes("Browse Repositories"));
     expect(browseButton).toBeUndefined();
   });
+
+  it("renders admin panel button in the top bar for admin users", () => {
+    const wrapper = mount(AppBar, {
+      props: {
+        user: {
+          username: "chief",
+          admin: true,
+        },
+      },
+      global: {
+        stubs: {
+          "router-link": {
+            template: "<a class='router-link'><slot /></a>",
+          },
+          "v-app-bar": VAppBarStub,
+          "v-container": VContainerStub,
+          "v-avatar": VAvatarStub,
+          "v-spacer": VSpacerStub,
+          "v-btn": VBtnStub,
+          "v-menu": VMenuStub,
+          "v-list": VListStub,
+          "v-list-item": VListItemStub,
+          "v-list-item-title": VListItemTitleStub,
+          "v-divider": VDividerStub,
+          "v-icon": VIconStub,
+        },
+      },
+    });
+
+    const topBarButtons = wrapper.findAll(".v-btn");
+    expect(topBarButtons.some((btn) => btn.text().includes("Admin Panel"))).toBe(true);
+    expect(wrapper.find(".v-list").text()).not.toContain("Admin Panel");
+  });
+
+  it("does not render admin panel button for non-admin users", () => {
+    const wrapper = mount(AppBar, {
+      props: {
+        user: {
+          username: "chief",
+          admin: false,
+        },
+      },
+      global: {
+        stubs: {
+          "router-link": {
+            template: "<a class='router-link'><slot /></a>",
+          },
+          "v-app-bar": VAppBarStub,
+          "v-container": VContainerStub,
+          "v-avatar": VAvatarStub,
+          "v-spacer": VSpacerStub,
+          "v-btn": VBtnStub,
+          "v-menu": VMenuStub,
+          "v-list": VListStub,
+          "v-list-item": VListItemStub,
+          "v-list-item-title": VListItemTitleStub,
+          "v-divider": VDividerStub,
+          "v-icon": VIconStub,
+        },
+      },
+    });
+
+    const topBarButtons = wrapper.findAll(".v-btn");
+    expect(topBarButtons.some((btn) => btn.text().includes("Admin Panel"))).toBe(false);
+  });
 });
