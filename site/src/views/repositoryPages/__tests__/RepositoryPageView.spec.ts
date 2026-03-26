@@ -91,6 +91,48 @@ describe("RepositoryPageView.vue", () => {
     await flushPromises();
 
     expect(wrapper.text()).not.toContain("This repository does not define a custom page yet.");
-    expect(wrapper.find("button").exists()).toBe(false);
+  });
+
+  it("keeps the header collapsed by default and expands it with helper content and icon-first metadata", async () => {
+    const wrapper = mount(RepositoryPageView, {
+      global: {
+        stubs: {
+          "v-container": simpleStub,
+          "v-card": simpleStub,
+          "v-card-text": simpleStub,
+          "v-row": simpleStub,
+          "v-col": simpleStub,
+          "v-alert": defineComponent({ template: "<div class='alert'><slot /></div>" }),
+          CopyURL: defineComponent({
+            template: "<div data-testid='copy-url'>Copy URL</div>",
+          }),
+          RepositoryHelper: defineComponent({
+            template: "<div data-testid='repository-helper'>Repository helper</div>",
+          }),
+          RepositoryIcon: defineComponent({
+            template: "<div data-testid='repository-icon'>Repo icon</div>",
+          }),
+          RepositoryPackagesPublic: defineComponent({
+            template: "<div data-testid='repository-packages'>Packages</div>",
+          }),
+          RepositoryPageViewer: defineComponent({
+            template: "<div data-testid='repository-page-viewer'>Page</div>",
+          }),
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find(".repository-page__header-details").exists()).toBe(false);
+    expect(wrapper.find(".repository-page__content").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="repository-packages"]').exists()).toBe(true);
+
+    await wrapper.get('[data-testid="repository-header-toggle"]').trigger("click");
+
+    const header = wrapper.get(".repository-page__header");
+    const meta = wrapper.get(".repository-page__meta").html();
+    expect(header.text()).toContain("Repository helper");
+    expect(meta.indexOf("repository-icon")).toBeLessThan(meta.indexOf("copy-url"));
   });
 });

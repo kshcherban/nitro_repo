@@ -1,10 +1,8 @@
 <template>
-  <div v-if="repositoryHelper">
-    <component
-      :is="repositoryHelper.component"
-      :repository="repository" />
-  </div>
-  <div v-else />
+  <component
+    :is="repositoryHelper.component"
+    v-if="repositoryHelper"
+    :repository="repository" />
 </template>
 
 <script setup lang="ts">

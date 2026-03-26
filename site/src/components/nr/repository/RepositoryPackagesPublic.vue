@@ -61,6 +61,13 @@
       v-else
       class="packages__table-container">
       <table class="packages__table">
+        <colgroup>
+          <col
+            v-for="column in visibleColumns"
+            :key="column.key"
+            :class="`packages__col--${column.key}`"
+            :style="columnStyle(column.key)" />
+        </colgroup>
         <thead>
           <tr>
             <th
@@ -69,6 +76,7 @@
               :data-column="column.key"
               :class="[
                 'packages__header-cell',
+                `packages__column--${column.key}`,
                 column.align === 'right' ? 'packages__header-cell--numeric' : 'packages__header-cell--text',
                 sortState?.key === column.key ? 'packages__header-cell--sorted' : '',
               ]">
@@ -148,6 +156,7 @@
               :key="column.key"
               :class="[
                 'packages__cell',
+                `packages__column--${column.key}`,
                 column.align === 'right' ? 'packages__cell--numeric' : 'packages__cell--text',
               ]">
               <div
@@ -429,6 +438,15 @@ const pageLabel = computed(() => {
   return `Page ${currentPage.value} of ${totalPages.value} · Showing ${Math.max(start, 0)}-${Math.max(end, 0)}`;
 });
 
+function defaultHiddenColumns(): Set<ColumnKey> {
+  const defaults = new Set<ColumnKey>();
+  if (isDockerRepository.value) {
+    defaults.add("digest");
+    defaults.add("path");
+  }
+  return defaults;
+}
+
 const emptyRepositoryMessage = computed(() => {
   if (isDockerRepository.value) {
     if (isDockerProxy.value) {
@@ -557,14 +575,14 @@ function prevPage() {
 function loadPreferences() {
   if (typeof window === "undefined" || !storageKey.value) {
     perPage.value = 100;
-    hiddenColumns.value = new Set<ColumnKey>();
+    hiddenColumns.value = defaultHiddenColumns();
     return;
   }
   try {
     const raw = window.localStorage.getItem(storageKey.value);
     if (!raw) {
       perPage.value = 100;
-      hiddenColumns.value = new Set<ColumnKey>();
+      hiddenColumns.value = defaultHiddenColumns();
       return;
     }
     const parsed = JSON.parse(raw) as { hiddenColumns?: ColumnKey[]; perPage?: number };
@@ -572,8 +590,10 @@ function loadPreferences() {
       ? parsed.hiddenColumns.filter((key: ColumnKey) =>
           columns.value.some((column) => column.optional && column.key === key),
         )
-      : [];
-    hiddenColumns.value = new Set<ColumnKey>(hidden);
+      : Array.from(defaultHiddenColumns());
+    hiddenColumns.value = new Set<ColumnKey>(
+      hidden.length > 0 ? hidden : Array.from(defaultHiddenColumns()),
+    );
     if (typeof parsed.perPage === "number" && perPageOptions.value.includes(parsed.perPage)) {
       perPage.value = parsed.perPage;
     } else {
@@ -582,7 +602,7 @@ function loadPreferences() {
   } catch (err) {
     console.error("Failed to load package view preferences", err);
     perPage.value = 100;
-    hiddenColumns.value = new Set<ColumnKey>();
+    hiddenColumns.value = defaultHiddenColumns();
   }
 }
 
@@ -663,6 +683,13 @@ function packageBrowsePath(pkg: PackageEntry): string {
 function rowKey(pkg: PackageEntry): string {
   const identifier = pkg.cachePath || `${pkg.package}-${pkg.name}`;
   return `${identifier}-${pkg.modified}`;
+}
+
+function columnStyle(columnKey: ColumnKey): { width: string } | undefined {
+  if (columnKey === "size") {
+    return { width: "1%" };
+  }
+  return undefined;
 }
 
 function onSearchInput(event: Event) {
@@ -914,7 +941,7 @@ watch(
   width: 100%;
   min-width: 720px;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
   color: var(--nr-text-color, inherit);
 }
 
@@ -942,6 +969,10 @@ watch(
 
 .packages__header-cell--sorted {
   background: var(--nr-background-tertiary-emphasis, rgba(0, 0, 0, 0.02));
+}
+
+.packages__column--size {
+  white-space: nowrap;
 }
 
 .packages__header-content {

@@ -163,12 +163,20 @@ const repoTypesStore = useRepositoryStore();
 const selectedRepositoryType = ref("");
 const repositoryTypes = ref<RepositoryTypeDescription[]>([]);
 const storages = ref<StorageItem[]>([]);
-const selectedStorage = computed(() => storages.value.find((s) => s.id === input.value.storage));
+const sortedStorages = computed(() =>
+  [...storages.value].sort((left, right) =>
+    left.name.localeCompare(right.name, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    }),
+  ),
+);
+const selectedStorage = computed(() => sortedStorages.value.find((s) => s.id === input.value.storage));
 const isS3Storage = computed(
   () => selectedStorage.value?.storage_type.toLowerCase() === "s3",
 );
 const storageItemOptions = computed(() => {
-  return storages.value.map((storage) => {
+  return sortedStorages.value.map((storage) => {
     return {
       value: storage.id,
       label: `${storage.name} (${storage.storage_type})`,
@@ -283,6 +291,22 @@ function loadS3CacheFromStorage(storage?: StorageItem) {
 watch(
   () => selectedStorage.value,
   (storage) => loadS3CacheFromStorage(storage),
+  { immediate: true },
+);
+
+watch(
+  sortedStorages,
+  (availableStorages) => {
+    const [firstStorage] = availableStorages;
+    if (!firstStorage) {
+      input.value.storage = "";
+      return;
+    }
+    const hasSelectedStorage = availableStorages.some((storage) => storage.id === input.value.storage);
+    if (!hasSelectedStorage) {
+      input.value.storage = firstStorage.id;
+    }
+  },
   { immediate: true },
 );
 

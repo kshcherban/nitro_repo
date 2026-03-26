@@ -1,22 +1,16 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, ref } from "vue";
+import { defineComponent } from "vue";
 
 vi.mock("@vue/devtools-kit", () => ({}));
 
+const mockGetStorages = vi.fn();
+const mockGetRepositoryTypes = vi.fn();
+
 vi.mock("@/stores/repositories", () => ({
   useRepositoryStore: () => ({
-    getStorages: vi.fn().mockResolvedValue([
-      { id: "storage-1", name: "Primary", storage_type: "s3" },
-    ]),
-    getRepositoryTypes: vi.fn().mockResolvedValue([
-      {
-        type_name: "npm",
-        name: "NPM",
-        description: "Node packages",
-        required_configs: [],
-      },
-    ]),
+    getStorages: mockGetStorages,
+    getRepositoryTypes: mockGetRepositoryTypes,
   }),
 }));
 
@@ -54,18 +48,16 @@ const controlStubs = {
     props: ["modelValue", "options", "id"],
     emits: ["update:modelValue"],
     setup(props, { emit, slots }) {
-      const value = ref(props.modelValue ?? "");
       const onChange = (event: Event) => {
         const next = (event.target as HTMLSelectElement).value;
-        value.value = next;
         emit("update:modelValue", next);
       };
-      return { props, slots, value, onChange };
+      return { props, slots, onChange };
     },
     template: `
       <label class="dropdown">
         <slot />
-        <select :value="value" @change="onChange">
+        <select :value="props.modelValue ?? ''" @change="onChange">
           <option value="" disabled>Select…</option>
           <option
             v-for="option in props.options"
@@ -174,6 +166,19 @@ describe("CreateRepositoryView.vue", () => {
   beforeEach(async () => {
     mockAlerts.success.mockReset();
     mockAlerts.error.mockReset();
+    mockGetStorages.mockReset();
+    mockGetRepositoryTypes.mockReset();
+    mockGetStorages.mockResolvedValue([
+      { id: "storage-1", name: "Primary", storage_type: "s3" },
+    ]);
+    mockGetRepositoryTypes.mockResolvedValue([
+      {
+        type_name: "npm",
+        name: "NPM",
+        description: "Node packages",
+        required_configs: [],
+      },
+    ]);
     Object.defineProperty(globalThis, "localStorage", {
       value: mockLocalStorage,
       configurable: true,
@@ -204,5 +209,29 @@ describe("CreateRepositoryView.vue", () => {
 
     expect(wrapper.find('[data-testid="repository-create-card"]').exists()).toBe(true);
     expect(wrapper.find(".v-btn").text()).toContain("Create");
+  });
+
+  it("preselects the alphabetically first storage", async () => {
+    mockGetStorages.mockResolvedValue([
+      { id: "storage-z", name: "Zulu", storage_type: "fs" },
+      { id: "storage-a", name: "Alpha", storage_type: "s3" },
+      { id: "storage-m", name: "Mike", storage_type: "fs" },
+    ]);
+
+    const wrapper = mount(CreateRepositoryView, {
+      global: {
+        stubs: {
+          ...vuetifyStubs,
+          ...controlStubs,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    const selects = wrapper.findAll("select");
+    expect(selects).toHaveLength(2);
+    expect((selects[1].element as HTMLSelectElement).value).toBe("storage-a");
+    expect(selects[1].text()).toContain("Alpha (s3)");
   });
 });

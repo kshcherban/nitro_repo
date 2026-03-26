@@ -1,36 +1,56 @@
 <template>
   <v-container v-if="repository" class="repository-page" fluid>
     <v-card variant="flat" class="repository-page__header">
-      <v-card-text class="repository-page__header-content">
-        <div class="repository-page__title">
-          <h1 class="text-h5 text-md-h4 font-weight-semibold mb-1">
-            {{ repository.storage_name }}/{{ repository.name }}
-          </h1>
-          <div class="repository-page__meta">
-            <CopyURL :code="url" />
-            <div
-              v-if="repositoryType"
-              class="repository-page__icons">
-              <RepositoryIcon
-                v-for="icon in repositoryType.icons"
-                :key="icon.name"
-                :name="repositoryType.name"
-                :icon="icon" />
+      <v-card-text class="repository-page__header-shell">
+        <div class="repository-page__header-summary">
+          <div class="repository-page__title">
+            <h1 class="text-h5 text-md-h4 font-weight-semibold mb-0">
+              {{ repository.storage_name }}/{{ repository.name }}
+            </h1>
+          </div>
+          <button
+            type="button"
+            class="repository-page__header-toggle"
+            data-testid="repository-header-toggle"
+            :aria-expanded="isHeaderExpanded"
+            @click="isHeaderExpanded = !isHeaderExpanded">
+            {{ isHeaderExpanded ? "Hide Setup" : "Show Setup" }}
+          </button>
+        </div>
+
+        <div
+          v-if="isHeaderExpanded"
+          class="repository-page__header-details">
+          <div class="repository-page__header-main">
+            <div class="repository-page__meta">
+              <div
+                v-if="repositoryType"
+                class="repository-page__icons">
+                <RepositoryIcon
+                  v-for="icon in repositoryType.icons"
+                  :key="icon.name"
+                  :name="repositoryType.name"
+                  :icon="icon" />
+              </div>
+              <CopyURL :code="url" />
             </div>
+          </div>
+          <div class="repository-page__header-helper">
+            <RepositoryHelper :repository="repository" />
           </div>
         </div>
       </v-card-text>
     </v-card>
 
-    <v-row class="repository-page__content" align="stretch" no-gutters>
-      <v-col cols="12" lg="8" class="pr-lg-6 mb-6 mb-lg-0">
+    <v-row
+      v-if="repositoryPage"
+      class="repository-page__content"
+      align="stretch"
+      no-gutters>
+      <v-col cols="12">
         <RepositoryPageViewer
-          v-if="repositoryPage"
           :repository="repository"
           :page="repositoryPage" />
-      </v-col>
-      <v-col cols="12" lg="4">
-        <RepositoryHelper :repository="repository" />
       </v-col>
     </v-row>
     <RepositoryPackagesPublic
@@ -72,6 +92,7 @@ const repository = ref<RepositoryWithStorageName | undefined>(undefined);
 const repositoryPage = ref<RepositoryPage | undefined>(undefined);
 const error = ref<string | null>(null);
 const errorCode = ref<number | undefined>(undefined);
+const isHeaderExpanded = ref(false);
 
 const repositoryType = computed(() => {
   if (repository.value) {
@@ -167,16 +188,52 @@ onMounted(() => {
   border-radius: 16px;
 }
 
-.repository-page__header-content {
+.repository-page__header-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.repository-page__header-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.repository-page__header-toggle {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+  background: #fff;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.repository-page__header-toggle:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.repository-page__header-details {
   display: flex;
   flex-direction: column;
   gap: 1rem;
 
   @media (min-width: 960px) {
     flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    align-items: flex-start;
   }
+}
+
+.repository-page__header-main {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.repository-page__header-helper {
+  flex: 2 1 560px;
+  min-width: 0;
 }
 
 .repository-page__meta {
@@ -189,6 +246,10 @@ onMounted(() => {
 .repository-page__icons {
   display: flex;
   gap: 0.5rem;
+}
+
+.repository-page__meta :deep(.copyURL) {
+  margin: 0;
 }
 
 .repository-page__content {

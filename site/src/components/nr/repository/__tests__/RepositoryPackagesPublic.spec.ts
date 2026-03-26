@@ -354,6 +354,36 @@ describe("RepositoryPackagesPublic.vue", () => {
     expect(nameHeader.text()).toContain("Version");
   });
 
+  it("renders an explicit narrow size column definition", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "pkg-one",
+          name: "1.0.0",
+          size: 1024,
+          cache_path: "cache/pkg-one",
+          modified: "2025-11-05T09:30:00Z",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-size",
+        repositoryType: "npm",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    const sizeCol = wrapper.get('col.packages__col--size');
+    expect(sizeCol.attributes("style")).toContain("width: 1%");
+    expect(wrapper.get('[data-testid="package-row"] td.packages__column--size').text()).toContain("KB");
+  });
+
   it("opens docker package browse from the existing package column", async () => {
     (http.get as vi.Mock).mockResolvedValue(
       createPackages([
@@ -530,6 +560,42 @@ describe("RepositoryPackagesPublic.vue", () => {
 
     await flushPromises();
     expect(wrapperAgain.find('th[data-column="path"]').exists()).toBe(false);
+  });
+
+  it("hides blob digest and manifest path by default for Docker repositories", async () => {
+    (http.get as vi.Mock).mockResolvedValue(
+      createPackages([
+        {
+          package: "nginx",
+          name: "alpine",
+          size: 10332,
+          cache_path: "v2/nginx/manifests/alpine",
+          modified: "2025-11-06T11:45:00Z",
+        },
+      ]),
+    );
+
+    const wrapper = mount(RepositoryPackagesPublic, {
+      props: {
+        repositoryId: "repo-docker-defaults",
+        repositoryType: "docker",
+        repositoryKind: "proxy",
+      },
+      global: {
+        stubs: vuetifyStubs,
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('th[data-column="digest"]').exists()).toBe(false);
+    expect(wrapper.find('th[data-column="path"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="packages-config-toggle"]').trigger("click");
+    const digestToggle = wrapper.get('[data-testid="toggle-digest"]');
+    const pathToggle = wrapper.get('[data-testid="toggle-path"]');
+    expect((digestToggle.element as HTMLInputElement).checked).toBe(false);
+    expect((pathToggle.element as HTMLInputElement).checked).toBe(false);
   });
 
   it("keeps column resizers after navigating to the next page", async () => {
