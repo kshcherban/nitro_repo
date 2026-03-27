@@ -20,8 +20,12 @@ use nr_core::{
         ChangePasswordNoCheck, ChangePasswordWithCheck, User, UserSafeData, UserType,
         auth_token::{AuthTokenRepositoryScope, AuthTokenScope},
         permissions::FullUserPermissions,
+        user_utils,
     },
-    user::token::{AuthTokenFullResponse, AuthTokenResponse},
+    user::{
+        Email,
+        token::{AuthTokenFullResponse, AuthTokenResponse},
+    },
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -41,7 +45,9 @@ use crate::{
         },
     },
     error::InternalError,
-    utils::{ResponseBuilder, request_logging::access_log::AccessLogContext},
+    utils::{
+        ResponseBuilder, conflict::ConflictResponse, request_logging::access_log::AccessLogContext,
+    },
 };
 #[derive(OpenApi)]
 #[openapi(
@@ -55,6 +61,7 @@ use crate::{
         oauth::callback,
         get_sessions,
         logout,
+        change_email,
         change_password,
         password_reset::request_password_reset,
         password_reset::does_exist,
@@ -69,6 +76,7 @@ use crate::{
         Session,
         password_reset::RequestPasswordReset,
         ChangePasswordWithCheck,
+        ChangeEmailRequest,
         ChangePasswordNoCheck,
         AuthTokenFullResponse,
         AuthTokenResponse,
@@ -81,6 +89,7 @@ pub fn user_routes() -> axum::Router<NitroRepo> {
     axum::Router::new()
         .route("/me", axum::routing::get(me))
         .route("/me/permissions", axum::routing::get(me_permissions))
+        .route("/change-email", post(change_email))
         .route("/change-password", post(change_password))
         .route("/whoami", axum::routing::get(whoami))
         .route("/login", axum::routing::post(login))
@@ -268,6 +277,53 @@ pub async fn logout(
             Ok((cookies, StatusCode::NO_CONTENT).into_response())
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct ChangeEmailRequest {
+    pub email: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/change-email",
+    request_body = ChangeEmailRequest,
+    responses(
+        (status = 200, description = "Successfully Changed Email", body = UserSafeData),
+        (status = 400, description = "Bad Request. Must be a session or email is invalid"),
+        (status = 409, description = "Email already in use")
+    )
+)]
+pub async fn change_email(
+    auth: Authentication,
+    State(site): State<NitroRepo>,
+    Json(change_email): Json<ChangeEmailRequest>,
+) -> Result<Response, InternalError> {
+    let Authentication::Session(_, user) = auth else {
+        return Ok(plain_response(StatusCode::BAD_REQUEST, "Must be a session"));
+    };
+
+    let new_email = match Email::new(change_email.email) {
+        Ok(email) => email,
+        Err(err) => return Ok(plain_response(StatusCode::BAD_REQUEST, err.to_string())),
+    };
+
+    if new_email == user.email {
+        return Ok(Json(user).into_response());
+    }
+
+    if user_utils::is_email_taken_by_other(new_email.as_ref(), user.id, &site.database).await? {
+        return Ok(ConflictResponse::from("email").into_response());
+    }
+
+    user.update_email_address(new_email.as_ref(), &site.database)
+        .await?;
+
+    let Some(updated_user) = UserSafeData::get_by_id(user.id, &site.database).await? else {
+        return Ok(plain_response(StatusCode::NOT_FOUND, "User not found"));
+    };
+
+    Ok(Json(updated_user).into_response())
 }
 
 #[utoipa::path(

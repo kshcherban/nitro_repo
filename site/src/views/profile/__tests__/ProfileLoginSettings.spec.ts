@@ -23,10 +23,12 @@ const sessionUser = {
   username: "testuser",
 };
 
+const sessionState = {
+  user: sessionUser,
+};
+
 vi.mock("@/stores/session", () => ({
-  sessionStore: vi.fn(() => ({
-    user: sessionUser,
-  })),
+  sessionStore: vi.fn(() => sessionState),
 }));
 
 const postMock = vi.fn();
@@ -80,6 +82,31 @@ const PasswordInputStub = defineComponent({
       h("input", {
         id: props.id,
         type: "password",
+        value: props.modelValue,
+        onInput: (event: Event) => emit("update:modelValue", (event.target as HTMLInputElement).value),
+      });
+  },
+});
+
+const TextInputStub = defineComponent({
+  name: "TextInputStub",
+  props: {
+    modelValue: String,
+    id: {
+      type: String,
+      required: true,
+    },
+    type: {
+      type: String,
+      default: "text",
+    },
+  },
+  emits: ["update:modelValue"],
+  setup(props, { emit }) {
+    return () =>
+      h("input", {
+        id: props.id,
+        type: props.type,
         value: props.modelValue,
         onInput: (event: Event) => emit("update:modelValue", (event.target as HTMLInputElement).value),
       });
@@ -140,6 +167,10 @@ const NewPasswordInputStub = defineComponent({
 
 describe("ProfileLoginSettings.vue", () => {
   beforeEach(() => {
+    sessionState.user = {
+      email: "user@example.com",
+      username: "testuser",
+    };
     postMock.mockReset();
     getInfoMock.mockReset();
     localStorageMock.getItem.mockReset();
@@ -156,6 +187,7 @@ describe("ProfileLoginSettings.vue", () => {
       global: {
         stubs: {
           SubmitButton: SubmitButtonStub,
+          TextInput: TextInputStub,
           PasswordInput: PasswordInputStub,
           NewPasswordInput: NewPasswordInputStub,
           "v-progress-circular": { template: "<div class=\"spinner\"></div>" },
@@ -181,6 +213,7 @@ describe("ProfileLoginSettings.vue", () => {
           "v-card": { template: "<div class=\"v-card\"><slot /></div>" },
           "v-card-title": { template: "<div class=\"v-card-title\"><slot /></div>" },
           "v-card-text": { template: "<div class=\"v-card-text\"><slot /></div>" },
+          "v-divider": { template: "<hr class=\"v-divider\" />" },
         },
       },
     });
@@ -188,7 +221,7 @@ describe("ProfileLoginSettings.vue", () => {
 
   it("disables submit until fields are populated and matching", async () => {
     const wrapper = await factory();
-    const submit = wrapper.find(".submit-button-stub");
+    const submit = wrapper.find('[data-testid="password-form"] .submit-button-stub');
     expect(submit.attributes("disabled")).toBeDefined();
 
     await wrapper.find("#currentPassword").setValue("oldPass123");
@@ -215,7 +248,7 @@ describe("ProfileLoginSettings.vue", () => {
     (wrapper.vm as any).newPassword = "NewPass123";
     await nextTick();
 
-    await wrapper.find("form").trigger("submit.prevent");
+    await wrapper.find('[data-testid="password-form"]').trigger("submit.prevent");
 
     expect(postMock).toHaveBeenCalledWith("/api/user/change-password", {
       old_password: "oldPass123",
@@ -227,8 +260,56 @@ describe("ProfileLoginSettings.vue", () => {
     expect((wrapper.find("#currentPassword").element as HTMLInputElement).value).toBe("");
     expect((wrapper.find("#newPassword").element as HTMLInputElement).value).toBe("");
     expect((wrapper.find("#newPassword-confirm").element as HTMLInputElement).value).toBe("");
-    const submit = wrapper.find(".submit-button-stub");
+    const submit = wrapper.find('[data-testid="password-form"] .submit-button-stub');
     expect(submit.attributes("disabled")).toBeDefined();
+  });
+
+  it("submits email change and updates the session user", async () => {
+    postMock.mockResolvedValue({
+      data: {
+        email: "updated@example.com",
+        username: "testuser",
+      },
+    });
+    const wrapper = await factory();
+
+    await wrapper.find("#profileEmail").setValue("updated@example.com");
+    await nextTick();
+
+    const submit = wrapper.find('[data-testid="email-form"] .submit-button-stub');
+    expect(submit.attributes("disabled")).toBeUndefined();
+
+    await wrapper.find('[data-testid="email-form"]').trigger("submit.prevent");
+
+    expect(postMock).toHaveBeenCalledWith("/api/user/change-email", {
+      email: "updated@example.com",
+    });
+    expect(sessionState.user.email).toBe("updated@example.com");
+    const alert = wrapper.find(".v-alert.success");
+    expect(alert.exists()).toBe(true);
+    expect(alert.text()).toContain("Email updated");
+  });
+
+  it("shows a conflict message when the new email is already in use", async () => {
+    postMock.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 409,
+      },
+    });
+    const wrapper = await factory();
+
+    await wrapper.find("#profileEmail").setValue("taken@example.com");
+    await nextTick();
+    await wrapper.find('[data-testid="email-form"]').trigger("submit.prevent");
+
+    expect(postMock).toHaveBeenCalledWith("/api/user/change-email", {
+      email: "taken@example.com",
+    });
+    const alert = wrapper.find(".v-alert.error");
+    expect(alert.exists()).toBe(true);
+    expect(alert.text()).toContain("Email update failed");
+    expect(alert.text()).toContain("already in use");
   });
 
   it("shows an error when confirmation does not match", async () => {
@@ -240,10 +321,10 @@ describe("ProfileLoginSettings.vue", () => {
     (wrapper.vm as any).newPassword = undefined;
     await nextTick();
 
-    await wrapper.find("form").trigger("submit.prevent");
+    await wrapper.find('[data-testid="password-form"]').trigger("submit.prevent");
 
     expect(postMock).not.toHaveBeenCalled();
-    const submit = wrapper.find(".submit-button-stub");
+    const submit = wrapper.find('[data-testid="password-form"] .submit-button-stub');
     expect(submit.attributes("disabled")).toBeDefined();
   });
 
@@ -257,7 +338,7 @@ describe("ProfileLoginSettings.vue", () => {
     (wrapper.vm as any).newPassword = "NewPass123";
     await nextTick();
 
-    await wrapper.find("form").trigger("submit.prevent");
+    await wrapper.find('[data-testid="password-form"]').trigger("submit.prevent");
 
     expect(postMock).toHaveBeenCalled();
     const alert = wrapper.find(".v-alert.error");
