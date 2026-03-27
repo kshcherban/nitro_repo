@@ -14,17 +14,13 @@ use nr_core::{
     repository::{
         RepositoryName, Visibility,
         browse::{BrowseFile, BrowseResponse},
-        config::{
-            RepositoryConfigType,
-            repository_page::{PageType, RepositoryPage},
-        },
+        config::RepositoryConfigType,
         project::ProjectResolution,
     },
     storage::{StorageName, StoragePath},
     user::permissions::{HasPermissions, RepositoryActions},
 };
 use nr_storage::{FileType, Storage, StorageFile};
-use page::RepositoryPageRoutes;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::{instrument, warn};
@@ -45,7 +41,6 @@ mod browse;
 mod config;
 mod management;
 pub mod packages;
-mod page;
 mod r#virtual;
 use self::r#virtual as virtual_api;
 mod types;
@@ -77,9 +72,7 @@ mod types;
         DBRepository,
         DBRepositoryWithStorageName,
         RepositoryTypeDescription,
-        RepositoryPage,
         NewRepositoryRequest,
-        PageType,
         BrowseFile,
         BrowseResponse,
         ProjectResolution,
@@ -91,9 +84,6 @@ mod types;
         , crate::repository::deb::proxy_refresh::DebProxyRefreshSummary
         , virtual_api::VirtualConfigView, virtual_api::VirtualMemberView, virtual_api::UpdateMembersRequest, virtual_api::UpdateResolutionOrderRequest
     )),
-    nest(
-        (path = "/page", api = RepositoryPageRoutes, tags=["repository", "page"]),
-    )
 )]
 pub struct RepositoryAPI;
 pub fn repository_routes() -> axum::Router<NitroRepo> {
@@ -105,7 +95,6 @@ pub fn repository_routes() -> axum::Router<NitroRepo> {
         )
         .route("/{repository_id}", get(get_repository))
         .route("/{repository_id}/names", get(get_repository_names))
-        .nest("/page", page::page_apis())
         .route("/types", get(types::repository_types))
         .merge(browse::browse_routes())
         .merge(packages::package_routes())

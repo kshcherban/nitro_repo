@@ -20,7 +20,7 @@ use nr_core::{
             user::user_utils,
         },
     },
-    repository::config::{RepositoryConfigType, repository_page::RepositoryPageType},
+    repository::config::RepositoryConfigType,
 };
 use nr_storage::{DynStorage, STORAGE_FACTORIES, Storage, StorageConfig, StorageFactory};
 use opentelemetry::{
@@ -877,7 +877,6 @@ impl NitroRepo {
 pub type NitroRepoState = State<NitroRepo>;
 
 pub static REPOSITORY_CONFIG_TYPES: &[&dyn RepositoryConfigType] = &[
-    &RepositoryPageType,
     &DockerRegistryConfigType,
     &DockerPushRulesConfigType,
     &GoRepositoryConfigType,

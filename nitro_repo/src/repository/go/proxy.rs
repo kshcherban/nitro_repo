@@ -39,8 +39,6 @@ use crate::{
     repository::{RepositoryAuthConfigType, go::GoRepositoryError},
 };
 
-use nr_core::repository::config::repository_page::RepositoryPageType;
-
 // Default Go proxy route
 static DEFAULT_GO_PROXY_ROUTE: LazyLock<GoProxyRoute> = LazyLock::new(|| GoProxyRoute {
     url: ProxyURL::try_from(String::from("https://proxy.golang.org"))
@@ -670,7 +668,6 @@ impl Repository for GoProxy {
     fn config_types(&self) -> Vec<&str> {
         vec![
             GoRepositoryConfigType::get_type_static(),
-            RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
     }

@@ -24,7 +24,6 @@ without guesswork.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Project Pages | Yes | Repositories surface uploaded components in the UI, enabling per-project landing pages with metadata and usage summaries. |
 | API / Token Security | Yes | Scoped automation tokens back every repository type; Docker additionally mints short-lived bearer tokens for `/v2/**` routes ([architecture](./knowledge/Architecture.md#authentication)). |
 | Repository Search | Yes | Global and per-repository search filter packages, tags, and metadata (including Docker manifests) directly from the UI and API. |
 | Audit Logging | Yes | Dedicated `info`-level audit events under `nitro_repo::audit` record successful and denied user actions across API management routes, package operations, search/listing, and repository protocol traffic. |

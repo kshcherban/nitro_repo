@@ -10,7 +10,6 @@ import DockerConfig from "@/components/nr/repository/types/docker/DockerConfig.v
 import RubyConfig from "@/components/nr/repository/types/ruby/RubyConfig.vue";
 
 import type { Component } from "vue";
-import RepositoryPageEditor from "@/components/admin/repository/configs/RepositoryPageEditor.vue";
 import RepositoryAuthConfig from "@/components/admin/repository/configs/RepositoryAuthConfig.vue";
 
 import { MavenFrontendDefinition } from "@/components/nr/repository/types/maven/maven";
@@ -81,11 +80,6 @@ export const configTypes: ConfigType[] = [
     name: "python",
     title: "Python Repository Config",
     component: PythonConfig,
-  },
-  {
-    name: "page",
-    title: "Repository Page",
-    component: RepositoryPageEditor,
   },
   {
     name: "auth",
@@ -208,15 +202,6 @@ export async function validateConfig(name: string, config: any): Promise<any> {
     .catch((error: any) => {
       console.error(error);
     });
-}
-export enum PageType {
-  Markdown = "Markdown",
-  HTML = "HTML",
-  None = "None",
-}
-export interface RepositoryPage {
-  page_type: PageType;
-  content: string | undefined;
 }
 export interface RepositoryToActions {
   repositoryId: string;

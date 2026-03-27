@@ -73,7 +73,7 @@ Administrators can update these settings without restarting the server under **A
 
 ## Frontend Experience
 
-When SSO is enabled, the login page shows a "Sign in with SSO" button above the traditional username/password form. Users bypass the password flow entirely once the SSO proxy authenticates them. The frontend app automatically handles redirect targets (e.g., deep links to repository pages) when returning from `/api/user/sso/login`.
+When SSO is enabled, the login page shows a "Sign in with SSO" button above the traditional username/password form. Users bypass the password flow entirely once the SSO proxy authenticates them. The frontend app automatically handles redirect targets (e.g., deep links to browse or project views) when returning from `/api/user/sso/login`.
 
 ## Reverse Proxy Checklist
 
@@ -285,5 +285,4 @@ server {
   }
 }
 ```
-
 

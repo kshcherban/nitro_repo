@@ -41,56 +41,31 @@ vi.mock("@/stores/repositories", () => ({
   }),
 }));
 
-vi.mock("@/http", () => ({
-  default: {
-    get: vi.fn().mockImplementation((url: string) => {
-      if (url === `/api/repository/${mockRepository.id}`) {
-        return Promise.resolve({ data: mockRepository });
-      }
-      if (url === `/api/repository/${mockRepository.id}/configs`) {
-        return Promise.resolve({ data: [] });
-      }
-      if (url === `/api/repository/page/${mockRepository.id}`) {
-        return Promise.reject({
-          response: {
-            status: 404,
-            data: "does not support config key page",
-          },
-        });
-      }
-      return Promise.resolve({ data: {} });
-    }),
-  },
-}));
-
 const simpleStub = defineComponent({
   template: "<div><slot /></div>",
 });
 
 describe("RepositoryPageView.vue", () => {
-  it("does not show an info alert when no custom page is defined", async () => {
+  it("renders packages without requiring a custom page", async () => {
     const wrapper = mount(RepositoryPageView, {
       global: {
         stubs: {
           "v-container": simpleStub,
           "v-card": simpleStub,
           "v-card-text": simpleStub,
-          "v-row": simpleStub,
-          "v-col": simpleStub,
-          "v-btn": defineComponent({ template: "<button><slot /></button>" }),
-          "v-alert": defineComponent({ template: "<div class='alert'><slot /></div>" }),
           CopyURL: simpleStub,
           RepositoryHelper: simpleStub,
           RepositoryIcon: simpleStub,
-          RepositoryPackagesPublic: simpleStub,
-          RepositoryPageViewer: simpleStub,
+          RepositoryPackagesPublic: defineComponent({
+            template: "<div data-testid='repository-packages'>Packages</div>",
+          }),
         },
       },
     });
 
     await flushPromises();
 
-    expect(wrapper.text()).not.toContain("This repository does not define a custom page yet.");
+    expect(wrapper.find('[data-testid="repository-packages"]').exists()).toBe(true);
   });
 
   it("keeps the header collapsed by default and expands it with helper content and icon-first metadata", async () => {
@@ -100,9 +75,6 @@ describe("RepositoryPageView.vue", () => {
           "v-container": simpleStub,
           "v-card": simpleStub,
           "v-card-text": simpleStub,
-          "v-row": simpleStub,
-          "v-col": simpleStub,
-          "v-alert": defineComponent({ template: "<div class='alert'><slot /></div>" }),
           CopyURL: defineComponent({
             template: "<div data-testid='copy-url'>Copy URL</div>",
           }),
@@ -115,9 +87,6 @@ describe("RepositoryPageView.vue", () => {
           RepositoryPackagesPublic: defineComponent({
             template: "<div data-testid='repository-packages'>Packages</div>",
           }),
-          RepositoryPageViewer: defineComponent({
-            template: "<div data-testid='repository-page-viewer'>Page</div>",
-          }),
         },
       },
     });
@@ -125,7 +94,6 @@ describe("RepositoryPageView.vue", () => {
     await flushPromises();
 
     expect(wrapper.find(".repository-page__header-details").exists()).toBe(false);
-    expect(wrapper.find(".repository-page__content").exists()).toBe(false);
     expect(wrapper.find('[data-testid="repository-packages"]').exists()).toBe(true);
 
     await wrapper.get('[data-testid="repository-header-toggle"]').trigger("click");

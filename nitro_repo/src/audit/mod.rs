@@ -96,10 +96,6 @@ pub fn classify_api_action(http_method: &str, http_route: &str) -> Option<&'stat
         ("GET", "/api/repository/{repository_id}") => Some("repository.get"),
         ("GET", "/api/repository/{repository_id}/names") => Some("repository.names.get"),
         ("GET", "/api/repository/types") => Some("repository.types.list"),
-        ("GET", "/api/repository/page/{repository_id}") => Some("repository.page.get"),
-        ("GET", "/api/repository/page/{storage-name}/{repository-name}") => {
-            Some("repository.page.get")
-        }
         ("GET", "/api/repository/config/{key}/schema") => Some("repository.config.schema"),
         ("POST", "/api/repository/config/{key}/validate") => Some("repository.config.validate"),
         ("GET", "/api/repository/config/{key}/default") => Some("repository.config.default"),

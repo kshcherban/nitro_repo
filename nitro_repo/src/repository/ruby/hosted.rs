@@ -12,7 +12,7 @@ use nr_core::{
     },
     repository::{
         Visibility,
-        config::{RepositoryConfigType, repository_page::RepositoryPageType},
+        config::RepositoryConfigType,
         project::{ReleaseType, RubyPackageMetadata, VersionData},
     },
     storage::StoragePath,
@@ -723,7 +723,6 @@ impl Repository for RubyHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             RubyRepositoryConfigType::get_type_static(),
-            RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
     }

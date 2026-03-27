@@ -45,7 +45,7 @@ use super::{
     utils::{generate_go_mod, generate_go_module_info},
 };
 use crate::repository::{RepositoryAuthConfigType, utils::RepositoryExt};
-use nr_core::repository::config::{RepositoryConfigType, repository_page::RepositoryPageType};
+use nr_core::repository::config::RepositoryConfigType;
 use nr_core::repository::project::{ReleaseType, VersionData};
 use nr_core::user::permissions::RepositoryActions;
 
@@ -651,7 +651,6 @@ impl Repository for GoHosted {
     fn config_types(&self) -> Vec<&str> {
         vec![
             super::configs::GoRepositoryConfigType::get_type_static(),
-            RepositoryPageType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]
     }

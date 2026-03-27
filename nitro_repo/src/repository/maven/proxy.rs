@@ -16,7 +16,7 @@ use nr_core::{
     database::entities::repository::{DBRepository, DBRepositoryConfig},
     repository::{
         Visibility,
-        config::{RepositoryConfigType as _, repository_page::RepositoryPageType},
+        config::RepositoryConfigType as _,
         project::{ProxyArtifactKey, ProxyArtifactMeta},
         proxy_url::ProxyURL,
     },
@@ -547,7 +547,6 @@ impl Repository for MavenProxy {
     }
     fn config_types(&self) -> Vec<&str> {
         vec![
-            RepositoryPageType::get_type_static(),
             MavenRepositoryConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
         ]

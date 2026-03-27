@@ -42,17 +42,6 @@
       </v-card-text>
     </v-card>
 
-    <v-row
-      v-if="repositoryPage"
-      class="repository-page__content"
-      align="stretch"
-      no-gutters>
-      <v-col cols="12">
-        <RepositoryPageViewer
-          :repository="repository"
-          :page="repositoryPage" />
-      </v-col>
-    </v-row>
     <RepositoryPackagesPublic
       v-if="showPackages"
       :repository-id="repository.id"
@@ -72,16 +61,13 @@ import ErrorOnRequest from "@/components/ErrorOnRequest.vue";
 import RepositoryHelper from "@/components/nr/repository/RepositoryHelper.vue";
 import RepositoryIcon from "@/components/nr/repository/RepositoryIcon.vue";
 import RepositoryPackagesPublic from "@/components/nr/repository/RepositoryPackagesPublic.vue";
-import RepositoryPageViewer from "@/components/nr/repository/RepositoryPageViewer.vue";
 import { computed, onMounted, ref } from "vue";
-import http from "@/http";
 import router from "@/router";
 import { useRepositoryStore } from "@/stores/repositories";
 import {
   createRepositoryRoute,
   findRepositoryType,
   supportsRepositoryPackageView,
-  type RepositoryPage,
   type RepositoryWithStorageName,
 } from "@/types/repository";
 
@@ -89,7 +75,6 @@ const repoStore = useRepositoryStore();
 
 const repositoryId = ref<string | undefined>(undefined);
 const repository = ref<RepositoryWithStorageName | undefined>(undefined);
-const repositoryPage = ref<RepositoryPage | undefined>(undefined);
 const error = ref<string | null>(null);
 const errorCode = ref<number | undefined>(undefined);
 const isHeaderExpanded = ref(false);
@@ -112,15 +97,6 @@ const url = computed(() => {
   return createRepositoryRoute(repository.value);
 });
 
-function isPageUnsupported(err: unknown): boolean {
-  const status = (err as any)?.response?.status;
-  if (status !== 404 && status !== 400) {
-    return false;
-  }
-  const message: string | undefined = (err as any)?.response?.data;
-  return typeof message === "string" && message.includes("does not support config key page");
-}
-
 async function fetchRepository() {
   if (!repositoryId.value) {
     error.value = "Repository not found";
@@ -129,25 +105,11 @@ async function fetchRepository() {
 
   try {
     repository.value = await repoStore.getRepositoryById(repositoryId.value);
-  } catch (err) {
-    error.value = "Failed to load repository details.";
-    return;
-  }
-
-  try {
-    const response = await http.get<RepositoryPage>(`/api/repository/page/${repositoryId.value}`);
-    repositoryPage.value = response.data;
     error.value = null;
     errorCode.value = undefined;
-  } catch (err) {
-    if (isPageUnsupported(err)) {
-      repositoryPage.value = undefined;
-      return;
-    }
-
-    console.error("Failed to load repository page", err);
-    errorCode.value = (err as any)?.response?.status;
-    error.value = "Failed to fetch repository";
+  } catch (err: any) {
+    errorCode.value = err?.response?.status;
+    error.value = "Failed to load repository details.";
   }
 }
 
@@ -250,9 +212,5 @@ onMounted(() => {
 
 .repository-page__meta :deep(.copyURL) {
   margin: 0;
-}
-
-.repository-page__content {
-  margin-top: 1.5rem;
 }
 </style>

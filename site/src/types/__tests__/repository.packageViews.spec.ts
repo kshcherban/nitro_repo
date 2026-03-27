@@ -1,4 +1,5 @@
 import {
+  configTypes,
   repositoryTypes,
   shouldDisplayRepositoryIndexingWarning,
   supportsRepositoryPackageView,
@@ -23,5 +24,9 @@ describe("Repository package view support", () => {
 
   it("keeps indexing warnings for non-Ruby proxy repositories", () => {
     expect(shouldDisplayRepositoryIndexingWarning("npm", "proxy")).toBe(true);
+  });
+
+  it("does not expose the removed repository page config", () => {
+    expect(configTypes.find((configType) => configType.name === "page")).toBeUndefined();
   });
 });

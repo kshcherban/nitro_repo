@@ -11,7 +11,6 @@ use uuid::Uuid;
 
 use crate::database::entities::repository::DBRepositoryConfig;
 
-pub mod repository_page;
 #[derive(Debug, Error)]
 pub enum RepositoryConfigError {
     #[error("Invalid Config: {0}")]

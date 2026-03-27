@@ -17,7 +17,6 @@ use nr_core::{
         Visibility,
         config::{
             RepositoryConfigType, get_repository_config_or_default,
-            repository_page::RepositoryPageType,
         },
         project::ProjectResolution,
     },
@@ -294,7 +293,6 @@ impl Repository for MavenHosted {
 
     fn config_types(&self) -> Vec<&str> {
         vec![
-            RepositoryPageType::get_type_static(),
             MavenPushRulesConfigType::get_type_static(),
             MavenRepositoryConfigType::get_type_static(),
             RepositoryAuthConfigType::get_type_static(),
