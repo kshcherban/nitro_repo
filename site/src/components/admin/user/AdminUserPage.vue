@@ -284,7 +284,6 @@ async function changePassword() {
     );
     console.error(resolved.debugMessage);
     showError(resolved.title, resolved.message);
-    alerts.error(resolved.title, resolved.message);
   }
 }
 
@@ -310,7 +309,6 @@ async function saveUserDetails() {
     );
     console.error(resolved.debugMessage);
     showError(resolved.title, resolved.message);
-    alerts.error(resolved.title, resolved.message);
   } finally {
     savingUser.value = false;
   }
@@ -335,7 +333,6 @@ async function setActive(active: boolean) {
       "Failed to update user status.",
     );
     showError(resolved.title, resolved.message);
-    alerts.error(resolved.title, resolved.message);
   } finally {
     statusUpdating.value = false;
   }
@@ -365,7 +362,6 @@ async function deleteUser() {
       "Failed to delete user.",
     );
     showError(resolved.title, resolved.message);
-    alerts.error(resolved.title, resolved.message);
   } finally {
     deletingUser.value = false;
   }

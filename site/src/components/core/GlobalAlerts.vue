@@ -11,6 +11,7 @@
         border="start"
         density="comfortable"
         class="global-alert"
+        :data-kind="alert.kind"
         closable
         @click:close="dismiss(alert.id)">
         <div class="global-alert__title">{{ alert.title }}</div>
@@ -35,13 +36,25 @@ function dismiss(id: number) {
 <style scoped lang="scss">
 .global-alerts {
   position: fixed;
-  top: 1.5rem;
   right: 1.5rem;
+  bottom: 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  width: min(360px, calc(100vw - 2rem));
+  width: min(380px, calc(100vw - 2rem));
   z-index: 2200;
+}
+
+.global-alert {
+  box-shadow: var(--nr-shadow-8);
+}
+
+.global-alert[data-kind="warning"] {
+  border-left-color: var(--nr-warning);
+}
+
+.global-alert[data-kind="info"] {
+  border-left-color: var(--nr-info);
 }
 
 .global-alert__title {
@@ -72,6 +85,7 @@ function dismiss(id: number) {
   .global-alerts {
     left: 1rem;
     right: 1rem;
+    bottom: 1rem;
     width: auto;
   }
 }

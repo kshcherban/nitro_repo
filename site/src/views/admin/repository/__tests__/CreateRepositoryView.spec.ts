@@ -110,7 +110,7 @@ const vuetifyStubs = {
   }),
   "v-form": defineComponent({
     emits: ["submit"],
-    template: "<form data-testid='repository-create-form'><slot /></form>",
+    template: "<form data-testid='repository-create-form' @submit.prevent='$emit(\"submit\", $event)'><slot /></form>",
   }),
   "v-row": defineComponent({
     template: "<div class='v-row'><slot /></div>",
@@ -233,5 +233,40 @@ describe("CreateRepositoryView.vue", () => {
     expect(selects).toHaveLength(2);
     expect((selects[1].element as HTMLSelectElement).value).toBe("storage-a");
     expect(selects[1].text()).toContain("Alpha (s3)");
+  });
+
+  it("renders inline repository creation errors without a global toast", async () => {
+    const http = (await import("@/http")).default as { post: ReturnType<typeof vi.fn> };
+    http.post.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          message: "Repository already exists.",
+        },
+      },
+      toJSON: () => ({}),
+    });
+
+    const wrapper = mount(CreateRepositoryView, {
+      global: {
+        stubs: {
+          ...vuetifyStubs,
+          ...controlStubs,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    const inputs = wrapper.findAll("input");
+    await inputs[0]!.setValue("npm-hosted");
+    const selects = wrapper.findAll("select");
+    await selects[0]!.setValue("npm");
+    await wrapper.get('[data-testid="repository-create-form"]').trigger("submit");
+    await flushPromises();
+
+    const inlineError = wrapper.get('[data-testid="repository-create-alert"]');
+    expect(inlineError.text()).toContain("Unable to create repository");
+    expect(mockAlerts.error).not.toHaveBeenCalled();
   });
 });

@@ -58,7 +58,8 @@ const vuetifyStubs = {
     template: `<div v-if="modelValue" data-stub="v-dialog"><slot /></div>`,
   },
   "v-btn": {
-    template: `<button data-stub="v-btn"><slot /></button>`,
+    props: ["disabled"],
+    template: `<button data-stub="v-btn" :disabled="disabled"><slot /></button>`,
   },
   "v-icon": {
     template: `<i data-stub="v-icon"><slot /></i>`,
@@ -97,7 +98,7 @@ describe("BasicRepositoryInfo", () => {
     expect(wrapper.findAll('[data-testid="repository-meta-item"]').length).toBeGreaterThan(0);
   });
 
-  it("provides themed action buttons for lifecycle operations", () => {
+  it("renders delete action and a disabled repository toggle placeholder", () => {
     const wrapper = mount(BasicRepositoryInfo, {
       props: { repository },
       global: {
@@ -106,7 +107,9 @@ describe("BasicRepositoryInfo", () => {
     });
 
     expect(wrapper.find('[data-testid="repository-toggle"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="repository-toggle"]').attributes("disabled")).toBeDefined();
     expect(wrapper.find('[data-testid="repository-delete"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("Repository activation controls are coming soon.");
   });
 
   it("opens a confirmation dialog before deleting a repository", async () => {

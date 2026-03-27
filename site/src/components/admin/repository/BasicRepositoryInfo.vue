@@ -55,7 +55,7 @@
             variant="tonal"
             class="text-none"
             data-testid="repository-toggle"
-            @click="showNotImplemented">
+            disabled>
             <v-icon
               class="mr-2"
               icon="mdi-toggle-switch" />
@@ -72,6 +72,11 @@
               icon="mdi-delete-outline" />
             Delete Repository
           </v-btn>
+        </div>
+        <div
+          class="repository-info-card__hint text-body-2 text-medium-emphasis"
+          data-testid="repository-toggle-hint">
+          Repository activation controls are coming soon.
         </div>
       </div>
     </v-card-text>
@@ -232,9 +237,6 @@ async function confirmDelete() {
   }
 }
 
-function showNotImplemented() {
-  alerts.error("Not implemented", "This feature is not available yet.");
-}
 </script>
 <style lang="scss" scoped>
 @use "@/assets/styles/theme.scss" as *;
@@ -261,6 +263,11 @@ function showNotImplemented() {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+  }
+
+  &__hint {
+    flex-basis: 100%;
+    margin-top: -0.5rem;
   }
 
   &__buttons {

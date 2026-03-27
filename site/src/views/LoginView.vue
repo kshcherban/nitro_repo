@@ -197,7 +197,6 @@ async function login() {
     const status = error?.response?.status;
     if (status === 401) {
       failedLogin.value = true;
-      alerts.error("Login failed", "Invalid username or password.");
     } else {
       console.error(error);
       alerts.error("Login failed", "An error occurred while trying to login.");

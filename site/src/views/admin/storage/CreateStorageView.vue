@@ -103,7 +103,6 @@ async function createStorage() {
       title: "Storage type required",
       message,
     };
-    alerts.error("Storage type required", message);
     return;
   }
   const data = {

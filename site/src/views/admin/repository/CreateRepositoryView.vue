@@ -207,6 +207,11 @@ const resetError = () => {
   errorBanner.value.title = "";
   errorBanner.value.message = "";
 };
+const showError = (title: string, message: string) => {
+  errorBanner.value.visible = true;
+  errorBanner.value.title = title;
+  errorBanner.value.message = message;
+};
 watch(
   selectedRepositoryType,
   async (newValue, old) => {
@@ -345,11 +350,8 @@ async function createRepository() {
     });
   } catch (error) {
     const resolved = resolveRepositoryError(error);
-    errorBanner.value.visible = true;
-    errorBanner.value.title = resolved.title;
-    errorBanner.value.message = resolved.message;
+    showError(resolved.title, resolved.message);
     console.error(resolved.debugMessage);
-    alerts.error(resolved.title, resolved.message);
   } finally {
     isSubmitting.value = false;
   }
@@ -393,7 +395,7 @@ async function maybeUpdateStorageCache(): Promise<boolean> {
     max_entries: parseInt(s3Cache.value.maxEntries || "0", 10) || 2048,
   };
   if (updatedCache.max_bytes === 0) {
-    alerts.error("Invalid cache size", "Enter a positive cache size for the S3 cache.");
+    showError("Invalid cache size", "Enter a positive cache size for the S3 cache.");
     return false;
   }
   if (cachesEqual(currentCache, updatedCache)) {
@@ -413,7 +415,7 @@ async function maybeUpdateStorageCache(): Promise<boolean> {
     return true;
   } catch (error) {
     console.error("Failed to update storage cache", error);
-    alerts.error(
+    showError(
       "Failed to update cache settings",
       "Unable to save S3 cache settings for the selected storage.",
     );

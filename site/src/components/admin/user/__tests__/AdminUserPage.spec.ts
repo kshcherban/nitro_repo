@@ -358,4 +358,25 @@ describe("AdminUserPage.vue", () => {
       "User profile details have been saved.",
     );
   });
+
+  it("renders the floating error without a global toast when saving fails", async () => {
+    const wrapper = factory();
+    const http = await import("@/http");
+
+    (http.default.put as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          message: "Username already exists.",
+        },
+      },
+      toJSON: () => ({}),
+    });
+
+    await wrapper.find(".admin-user-page__form").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.find(".floating-error-banner").exists()).toBe(true);
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+  });
 });
